@@ -18,12 +18,9 @@ class BaseConfig():
     if not JWT_SECRET_KEY:
         JWT_SECRET_KEY = ''.join(random.choice( string.ascii_lowercase  ) for i in range( 32 ))
 
-    GITHUB_CLIENT_ID     = os.getenv('GITHUB_CLIENT_ID' , None)
-    GITHUB_CLIENT_SECRET = os.getenv('GITHUB_SECRET_KEY', None)
-    
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=1)
 
-    SQLALCHEMY_TRACK_MODIFICATIONS = False
+    SQLALCHEMY_TRACK_MODIFICATIONS = True
 
     DB_ENGINE   = os.getenv('DB_ENGINE'   , None)
     DB_USERNAME = os.getenv('DB_USERNAME' , None)
@@ -32,7 +29,7 @@ class BaseConfig():
     DB_PORT     = os.getenv('DB_PORT'     , None)
     DB_NAME     = os.getenv('DB_NAME'     , None)
 
-    USE_SQLITE  = True 
+    USE_SQLITE  = False
 
     # try to set up a Relational DBMS
     if DB_ENGINE and DB_NAME and DB_USERNAME:

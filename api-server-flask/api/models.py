@@ -89,8 +89,8 @@ class Warehouse(db.Model):
     warehouse_id = db.Column(db.Integer(), primary_key=True)
     name = db.Column(db.String(255), nullable=False)
     location = db.Column(db.String(255))
-    created_at = db.Column(db.DateTime(), default=datetime.now())
-    updated_at = db.Column(db.DateTime(), default=datetime.now(), onupdate=datetime.now())
+    created_at = db.Column(db.DateTime(), default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime(), default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def __repr__(self):
         return f"Warehouse {self.name}"
@@ -105,6 +105,30 @@ class Warehouse(db.Model):
 
     def to_dict(self):
         return {'warehouse_id': self.warehouse_id, 'name': self.name, 'location': self.location}
+
+    @classmethod
+    def all(cls):
+        def format_date(value):
+            if isinstance(value, int):
+                try:
+                    return datetime.utcfromtimestamp(value).isoformat()
+                except:
+                    return None
+            elif isinstance(value, datetime):
+                return value.isoformat()
+            return None
+
+        warehouses = cls.query.all()
+        return [
+            {
+                'warehouse_id': w.warehouse_id,
+                'name': w.name,
+                'location': w.location,
+                'created_at': format_date(w.created_at),
+                'updated_at': format_date(w.updated_at),
+            }
+            for w in warehouses
+        ]
 
 
 class Company(db.Model):

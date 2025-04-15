@@ -1,3 +1,5 @@
+// Update to src/routes/MainRoutes.js
+
 import React, { lazy } from 'react';
 import { Route, Switch, useLocation } from 'react-router-dom';
 
@@ -19,6 +21,9 @@ const UtilsTablerIcons = Loadable(lazy(() => import('../views/utilities/TablerIc
 // sample page routing
 const SamplePage = Loadable(lazy(() => import('../views/sample-page')));
 
+// warehouse management routing
+const OrderUpload = Loadable(lazy(() => import('../views/warehouse/OrderUpload')));
+
 //-----------------------|| MAIN ROUTING ||-----------------------//
 
 const MainRoutes = () => {
@@ -28,14 +33,13 @@ const MainRoutes = () => {
         <Route
             path={[
                 '/dashboard/default',
-
                 '/utils/util-typography',
                 '/utils/util-color',
                 '/utils/util-shadow',
                 '/icons/tabler-icons',
                 '/icons/material-icons',
-
-                '/sample-page'
+                '/sample-page',
+                '/warehouse/upload-orders'
             ]}
         >
             <MainLayout>
@@ -50,6 +54,9 @@ const MainRoutes = () => {
                         <Route path="/icons/material-icons" component={UtilsMaterialIcons} />
 
                         <Route path="/sample-page" component={SamplePage} />
+                        
+                        {/* Warehouse Management Routes */}
+                        <Route path="/warehouse/upload-orders" component={OrderUpload} />
                     </AuthGuard>
                 </Switch>
             </MainLayout>

@@ -5,10 +5,15 @@ Copyright (c) 2019 - present AppSeed.us
 
 from datetime import datetime, timezone, timedelta
 
+import werkzeug
+
+from .models import db, Warehouse, Company
+from .services import order_service
+
 from functools import wraps
 
 from flask import request
-from flask_restx import Api, Resource, fields
+from flask_restx import Api, Resource, fields,reqparse
 import jwt
 
 from .models import db, Users, JWTTokenBlocklist
@@ -195,48 +200,118 @@ class LogoutUser(Resource):
         return {"success": True}, 200
 
 
-@rest_api.route('/api/sessions/oauth/github/')
-class GitHubLogin(Resource):
+@rest_api.route('/api/warehouses')
+class WarehouseList(Resource):
+    """
+    Endpoint for retrieving all warehouses
+    """
+
     def get(self):
-        code = request.args.get('code')
-        client_id = BaseConfig.GITHUB_CLIENT_ID
-        client_secret = BaseConfig.GITHUB_CLIENT_SECRET
-        root_url = 'https://github.com/login/oauth/access_token'
+        """
+        Get list of all warehouses
+        """
+        try:
+            warehouses = Warehouse.query.all()
+            warehouse_list = []
 
-        params = { 'client_id': client_id, 'client_secret': client_secret, 'code': code }
+            for warehouse in warehouses:
+                warehouse_list.append({
+                    'id': warehouse.warehouse_id,
+                    'name': warehouse.name,
+                    'location': warehouse.location
+                })
 
-        data = requests.post(root_url, params=params, headers={
-            'Content-Type': 'application/x-www-form-urlencoded',
-        })
+            return {
+                'success': True,
+                'warehouses': warehouse_list
+            }, 200
 
-        response = data._content.decode('utf-8')
-        access_token = response.split('&')[0].split('=')[1]
+        except Exception as e:
+            return {
+                'success': False,
+                'msg': f'Error retrieving warehouses: {str(e)}'
+            }, 400
 
-        user_data = requests.get('https://api.github.com/user', headers={
-            "Authorization": "Bearer " + access_token
-        }).json()
-        
-        user_exists = Users.get_by_username(user_data['login'])
-        if user_exists:
-            user = user_exists
-        else:
-            try:
-                user = Users(username=user_data['login'], email=user_data['email'])
-                user.save()
-            except:
-                user = Users(username=user_data['login'])
-                user.save()
-        
-        user_json = user.toJSON()
+@rest_api.route('/api/companies')
+class CompanyList(Resource):
+    """
+    Endpoint for retrieving all companies
+    """
 
-        token = jwt.encode({"username": user_json['username'], 'exp': datetime.utcnow() + timedelta(minutes=30)}, BaseConfig.SECRET_KEY)
-        user.set_jwt_auth_active(True)
-        user.save()
+    def get(self):
+        """
+        Get list of all companies
+        """
+        try:
+            companies = Company.query.all()
+            company_list = []
 
-        return {"success": True,
-                "user": {
-                    "_id": user_json['_id'],
-                    "email": user_json['email'],
-                    "username": user_json['username'],
-                    "token": token,
-                }}, 200
+            for company in companies:
+                company_list.append({
+                    'id': company.company_id,
+                    'name': company.name
+                })
+
+            return {
+                'success': True,
+                'companies': company_list
+            }, 200
+
+        except Exception as e:
+            return {
+                'success': False,
+                'msg': f'Error retrieving companies: {str(e)}'
+            }, 400
+
+# Define the request parser for file upload
+upload_parser = reqparse.RequestParser()
+upload_parser.add_argument('file',
+                           type=werkzeug.datastructures.FileStorage,
+                           location='files',
+                           required=True,
+                           help='Excel/CSV file with order data')
+upload_parser.add_argument('warehouse_id',
+                           type=int,
+                           location='form',  # Add this line
+                           required=True,
+                           help='Warehouse ID must be provided')
+upload_parser.add_argument('company_id',
+                           type=int,
+                           location='form',  # Add this line
+                           required=True,
+                           help='Company ID must be provided')
+
+# Response model for order upload
+order_upload_response = rest_api.model('OrderUploadResponse', {
+    'success': fields.Boolean(description='Success status of upload'),
+    'msg': fields.String(description='Message describing the result'),
+    'orders_processed': fields.Integer(description='Number of orders processed'),
+    'products_processed': fields.Integer(description='Number of products processed'),
+    'errors': fields.List(fields.String, description='List of errors encountered')
+})
+
+@rest_api.route('/api/orders/upload')
+class OrderUpload(Resource):
+    """
+    Handles the upload of Excel/CSV files containing order data
+    """
+
+    @rest_api.expect(upload_parser)
+    @rest_api.response(200, 'Success', order_upload_response)
+    @rest_api.response(400, 'Bad Request', order_upload_response)
+    def post(self):
+        # Parse the request arguments
+        args = upload_parser.parse_args()
+        uploaded_file = args['file']
+        warehouse_id = args['warehouse_id']
+        company_id = args['company_id']
+
+        # Call the service layer to process the upload
+        result, status_code = order_service.process_order_upload(
+            uploaded_file,
+            warehouse_id,
+            company_id,
+            123
+        )
+
+        return result, status_code
