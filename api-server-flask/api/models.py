@@ -204,6 +204,7 @@ class Product(db.Model):
     __tablename__ = 'product'
 
     product_id = db.Column(db.Integer(), primary_key=True)
+    product_string = db.Column(db.String())
     name = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text())
     price = db.Column(db.Numeric(10, 2))
@@ -230,7 +231,7 @@ class OrderRequest(db.Model):
     __tablename__ = 'order_request'
 
     order_request_id = db.Column(db.Integer(), primary_key=True)
-    original_order_id = db.Column(db.Integer(), unique=True, nullable=False)  # original order id coming from upload
+    original_order_id = db.Column(db.String(), unique=True, nullable=False)  # original order id coming from upload
     warehouse_id = db.Column(db.Integer(), db.ForeignKey('warehouse.warehouse_id'))
     company_id = db.Column(db.Integer(), db.ForeignKey('company.company_id'))
     dealer_id = db.Column(db.Integer(), db.ForeignKey('dealer.dealer_id'))

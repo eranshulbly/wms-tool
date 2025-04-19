@@ -25,18 +25,18 @@ def get_or_create_product(product_id, product_description):
         return _product_cache[product_id]
 
     # Try to find by ID
-    product = db.session.query(Product).filter(Product.product_id == product_id).first()
+    product = db.session.query(Product).filter(Product.product_string == product_id).first()
 
     if not product:
         # Create new product
         product = Product(
-            product_id=product_id,
+            product_string=product_id,
             name=product_description,
             description=product_description
         )
         product.save()
 
     # Update cache
-    _product_cache[product_id] = product.product_id
+    _product_cache[product_id] = product.product_string
 
-    return product.product_id
+    return product.product_string

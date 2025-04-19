@@ -32,7 +32,7 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id):
             # Extract data from row
             order_id = str(row.get('Order #'))
             order_date_str = row.get('Date')
-            product_id = int(row.get('Part #'))
+            product_id = str(row.get('Part #'))
             product_description = row.get('Part Description')
             dealer_name = row.get('Account Name') or row.get('Cash Customer Name')
             dealer_code = row.get('Dealer Code')
@@ -100,11 +100,10 @@ def create_order_request(order_id, warehouse_id, company_id, dealer_id, order_da
         warehouse_id=warehouse_id,
         company_id=company_id,
         dealer_id=dealer_id,
-        order_date=order_date,
+        order_date=order_date.strftime("%Y-%m-%d %H:%M:%S.%f"),
         requested_by=user_id,
         status='Open'
     )
-    order_request.save()
 
     # Create initial order state history
     initial_state = db.session.query(OrderState).filter(OrderState.state_name == 'Open').first()
@@ -115,6 +114,7 @@ def create_order_request(order_id, warehouse_id, company_id, dealer_id, order_da
             changed_by=user_id
         )
         state_history.save()
+    order_request.save()
 
     return order_request.order_request_id
 
