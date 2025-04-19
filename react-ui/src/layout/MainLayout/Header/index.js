@@ -59,12 +59,12 @@ const Header = ({ handleLeftDrawerToggle }) => {
             </div>
 
             {/* header search */}
-            <SearchSection theme="light" />
+            {/*<SearchSection theme="light" />*/}
             <div className={classes.grow} />
             <div className={classes.grow} />
 
             {/* notification & profile */}
-            <NotificationSection />
+            {/*<NotificationSection />*/}
             <ProfileSection />
         </React.Fragment>
     );

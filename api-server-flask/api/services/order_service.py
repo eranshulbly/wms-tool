@@ -7,19 +7,19 @@ import os
 import uuid
 import chardet
 import pandas as pd
+import csv
 from werkzeug.utils import secure_filename
 from flask import current_app
 
-from ..models import Warehouse, Company
+from ..models import db, Warehouse, Company
 from ..business import order_business, dealer_business, product_business
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 
-# Update the process_order_upload function in api/services/order_service.py
 
 def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
     """
-    Process the uploaded order file
+    Process the uploaded order file within a single database transaction
 
     Args:
         uploaded_file: The uploaded file object
@@ -54,6 +54,9 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
 
     # Save and process the file
     temp_path = None
+    # Start a database transaction
+    transaction = db.session.begin_nested()
+
     try:
         # Create tmp directory if it doesn't exist
         tmp_dir = os.path.join(BASE_DIR, 'tmp')
@@ -71,9 +74,7 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
         # Read the file based on its extension with more robust error handling
         if file_extension == '.csv':
             try:
-                import csv
                 # Use more robust CSV parsing options
-
                 df = pd.read_csv(
                     temp_path,
                     encoding=encoding,
@@ -108,6 +109,8 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
         elif file_extension in ['.xls', '.xlsx']:
             df = pd.read_excel(temp_path)
         else:
+            # Rollback the transaction if file format is unsupported
+            transaction.rollback()
             return {
                 'success': False,
                 'msg': 'Unsupported file format. Please upload a CSV or Excel file.',
@@ -124,10 +127,14 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
         print(f"DataFrame columns: {df.columns.tolist()}")
         print(f"DataFrame shape: {df.shape}")
 
-        # Process the dataframe
+        # Process the dataframe using the business logic
+        # The transaction will be used by all database operations
         result = order_business.process_order_dataframe(
             df, warehouse_id, company_id, user_id
         )
+
+        # If we got here without exceptions, commit the transaction
+        db.session.commit()
 
         # Clean up the temporary file
         if temp_path and os.path.exists(temp_path):
@@ -142,6 +149,9 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
         }, 200
 
     except Exception as e:
+        # Rollback the transaction in case of any exception
+        db.session.rollback()
+
         # Clean up temp file if it exists
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)

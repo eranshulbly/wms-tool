@@ -13,7 +13,7 @@ const reducer = combineReducers({
         {
             key: 'account',
             storage,
-            keyPrefix: 'berry-'
+            keyPrefix: 'Warehub-'
         },
         accountReducer
     ),

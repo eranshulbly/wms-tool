@@ -3,6 +3,7 @@
 Product Business Logic
 """
 
+from datetime import datetime
 from ..models import db, Product
 
 # Cache to avoid repeated database lookups
@@ -28,15 +29,20 @@ def get_or_create_product(product_id, product_description):
     product = db.session.query(Product).filter(Product.product_string == product_id).first()
 
     if not product:
-        # Create new product
+        # Create new product with current timestamp
+        current_time = datetime.utcnow()
         product = Product(
             product_string=product_id,
             name=product_description,
-            description=product_description
+            description=product_description,
+            created_at=current_time,
+            updated_at=current_time
         )
-        product.save()
+        # Add to session but don't commit - the transaction is managed at the service level
+        db.session.add(product)
+        db.session.flush()  # This assigns the ID without committing
 
     # Update cache
-    _product_cache[product_id] = product.product_string
+    _product_cache[product_id] = product.product_id
 
-    return product.product_string
+    return product.product_id

@@ -39,7 +39,6 @@
 
 - Isolate API URL in config. Impacted files:
     - `src/config.js`
-    - `src/layout/.../ProfileSection/index.js`
     - `src/views/pages/auth/.../RestLogin.js`
     - `src/views/pages/auth/.../RestRegister.js`
 
@@ -51,5 +50,5 @@
 ## [0.0.1] 2021-07-01
 ### Initial import
 
-- UI: Berry v1.3.0 (free version)
+- UI: Warehub v1.3.0 (free version)
 

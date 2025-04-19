@@ -1,4 +1,4 @@
-// Update to src/routes/MainRoutes.js
+// Updated MainRoutes.js file with Order Management route
 
 import React, { lazy } from 'react';
 import { Route, Switch, useLocation } from 'react-router-dom';
@@ -11,18 +11,10 @@ import AuthGuard from './../utils/route-guard/AuthGuard';
 // dashboard routing
 const DashboardDefault = Loadable(lazy(() => import('../views/dashboard/Default')));
 
-// utilities routing
-const UtilsTypography = Loadable(lazy(() => import('../views/utilities/Typography')));
-const UtilsColor = Loadable(lazy(() => import('../views/utilities/Color')));
-const UtilsShadow = Loadable(lazy(() => import('../views/utilities/Shadow')));
-const UtilsMaterialIcons = Loadable(lazy(() => import('../views/utilities/MaterialIcons')));
-const UtilsTablerIcons = Loadable(lazy(() => import('../views/utilities/TablerIcons')));
-
-// sample page routing
-const SamplePage = Loadable(lazy(() => import('../views/sample-page')));
-
 // warehouse management routing
 const OrderUpload = Loadable(lazy(() => import('../views/warehouse/OrderUpload')));
+const WarehouseDashboard = Loadable(lazy(() => import('../views/warehouse/WarehouseDashboard')));
+const OrderManagement = Loadable(lazy(() => import('../views/warehouse/OrderManagement')));
 
 //-----------------------|| MAIN ROUTING ||-----------------------//
 
@@ -39,24 +31,19 @@ const MainRoutes = () => {
                 '/icons/tabler-icons',
                 '/icons/material-icons',
                 '/sample-page',
-                '/warehouse/upload-orders'
+                '/warehouse/upload-orders',
+                '/warehouse/dashboard',
+                '/warehouse/manage-orders'
             ]}
         >
             <MainLayout>
                 <Switch location={location} key={location.pathname}>
                     <AuthGuard>
-                        <Route path="/dashboard/default" component={DashboardDefault} />
+                        <Route path="/dashboard/default" component={WarehouseDashboard} />
 
-                        <Route path="/utils/util-typography" component={UtilsTypography} />
-                        <Route path="/utils/util-color" component={UtilsColor} />
-                        <Route path="/utils/util-shadow" component={UtilsShadow} />
-                        <Route path="/icons/tabler-icons" component={UtilsTablerIcons} />
-                        <Route path="/icons/material-icons" component={UtilsMaterialIcons} />
-
-                        <Route path="/sample-page" component={SamplePage} />
-                        
                         {/* Warehouse Management Routes */}
                         <Route path="/warehouse/upload-orders" component={OrderUpload} />
+                        <Route path="/warehouse/manage-orders" component={OrderManagement} />
                     </AuthGuard>
                 </Switch>
             </MainLayout>

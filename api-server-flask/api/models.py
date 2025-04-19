@@ -227,10 +227,10 @@ class Product(db.Model):
                 'price': str(self.price)}
 
 
-class OrderRequest(db.Model):
-    __tablename__ = 'order_request'
+class PotentialOrder(db.Model):
+    __tablename__ = 'potential_order'
 
-    order_request_id = db.Column(db.Integer(), primary_key=True)
+    potential_order_id = db.Column(db.Integer(), primary_key=True)
     original_order_id = db.Column(db.String(), unique=True, nullable=False)  # original order id coming from upload
     warehouse_id = db.Column(db.Integer(), db.ForeignKey('warehouse.warehouse_id'))
     company_id = db.Column(db.Integer(), db.ForeignKey('company.company_id'))
@@ -245,19 +245,19 @@ class OrderRequest(db.Model):
     company = db.relationship('Company', backref=db.backref('orders', lazy=True))
 
     def __repr__(self):
-        return f"OrderRequest {self.order_request_id} - {self.status}"
+        return f"PotentialOrder {self.potential_order_id} - {self.status}"
 
     def save(self):
         db.session.add(self)
         db.session.commit()
 
     @classmethod
-    def get_by_id(cls, order_request_id):
-        return cls.query.get_or_404(order_request_id)
+    def get_by_id(cls, potential_order_id):
+        return cls.query.get_or_404(potential_order_id)
 
     def to_dict(self):
         return {
-            'order_request_id': self.order_request_id,
+            'potential_order_id': self.potential_order_id,
             'warehouse_id': self.warehouse_id,
             'company_id': self.company_id,
             'order_date': self.order_date,
@@ -265,11 +265,11 @@ class OrderRequest(db.Model):
         }
 
 
-class OrderRequestProduct(db.Model):
-    __tablename__ = 'order_request_product'
+class PotentialOrderProduct(db.Model):
+    __tablename__ = 'potential_order_product'
 
-    order_request_product_id = db.Column(db.Integer(), primary_key=True)
-    order_request_id = db.Column(db.Integer(), db.ForeignKey('order_request.order_request_id'))
+    potential_order_product_id = db.Column(db.Integer(), primary_key=True)
+    potential_order_id = db.Column(db.Integer(), db.ForeignKey('potential_order.potential_order_id'))
     product_id = db.Column(db.Integer(), db.ForeignKey('product.product_id'))
     quantity = db.Column(db.Integer(), nullable=False)
     mrp = db.Column(db.Numeric(10, 2))  # Maximum Retail Price of the product
@@ -277,24 +277,24 @@ class OrderRequestProduct(db.Model):
     created_at = db.Column(db.DateTime(), default=datetime.now())
     updated_at = db.Column(db.DateTime(), default=datetime.now(), onupdate=datetime.now())
 
-    order_request = db.relationship('OrderRequest', backref=db.backref('products', lazy=True))
-    product = db.relationship('Product', backref=db.backref('order_requests', lazy=True))
+    potential_order = db.relationship('PotentialOrder', backref=db.backref('products', lazy=True))
+    product = db.relationship('Product', backref=db.backref('potential_orders', lazy=True))
 
     def __repr__(self):
-        return f"OrderRequestProduct {self.order_request_product_id} - {self.product.name}"
+        return f"PotentialOrderProduct {self.potential_order_product_id} - {self.product.name}"
 
     def save(self):
         db.session.add(self)
         db.session.commit()
 
     @classmethod
-    def get_by_id(cls, order_request_product_id):
-        return cls.query.get_or_404(order_request_product_id)
+    def get_by_id(cls, potential_order_product_id):
+        return cls.query.get_or_404(potential_order_product_id)
 
     def to_dict(self):
         return {
-            'order_request_product_id': self.order_request_product_id,
-            'order_request_id': self.order_request_id,
+            'potential_order_product_id': self.potential_order_product_id,
+            'potential_order_id': self.potential_order_id,
             'product_id': self.product_id,
             'quantity': self.quantity,
             'mrp': str(self.mrp),
@@ -306,7 +306,7 @@ class Order(db.Model):
     __tablename__ = 'order'
 
     order_id = db.Column(db.Integer(), primary_key=True)
-    order_request_id = db.Column(db.Integer(), db.ForeignKey('order_request.order_request_id'))
+    potential_order_id = db.Column(db.Integer(), db.ForeignKey('potential_order.potential_order_id'))
     order_number = db.Column(db.String(255), unique=True, nullable=False)
     dispatched_date = db.Column(db.DateTime())
     delivery_date = db.Column(db.DateTime())
@@ -314,7 +314,7 @@ class Order(db.Model):
     created_at = db.Column(db.DateTime(), default=datetime.now())
     updated_at = db.Column(db.DateTime(), default=datetime.now(), onupdate=datetime.now())
 
-    order_request = db.relationship('OrderRequest', backref=db.backref('final_order', lazy=True))
+    potential_order = db.relationship('PotentialOrder', backref=db.backref('final_order', lazy=True))
 
     def __repr__(self):
         return f"Order {self.order_number} - {self.status}"
@@ -330,7 +330,7 @@ class Order(db.Model):
     def to_dict(self):
         return {
             'order_id': self.order_id,
-            'order_request_id': self.order_request_id,
+            'potential_order_id': self.potential_order_id,
             'order_number': self.order_number,
             'dispatched_date': self.dispatched_date,
             'delivery_date': self.delivery_date,
@@ -429,12 +429,12 @@ class OrderStateHistory(db.Model):
     __tablename__ = 'order_state_history'
 
     order_state_history_id = db.Column(db.Integer(), primary_key=True)
-    order_request_id = db.Column(db.Integer(), db.ForeignKey('order_request.order_request_id'))
+    potential_order_id = db.Column(db.Integer(), db.ForeignKey('potential_order.potential_order_id'))
     state_id = db.Column(db.Integer(), db.ForeignKey('order_state.state_id'))
     changed_by = db.Column(db.Integer())  # User who changed the state
     changed_at = db.Column(db.DateTime(), default=datetime.now())
 
-    order_request = db.relationship('OrderRequest', backref=db.backref('state_history', lazy=True))
+    potential_order = db.relationship('PotentialOrder', backref=db.backref('state_history', lazy=True))
     order_state = db.relationship('OrderState', backref=db.backref('state_history', lazy=True))
 
     def __repr__(self):
@@ -451,7 +451,7 @@ class OrderStateHistory(db.Model):
     def to_dict(self):
         return {
             'order_state_history_id': self.order_state_history_id,
-            'order_request_id': self.order_request_id,
+            'potential_order_id': self.potential_order_id,
             'state_id': self.state_id,
             'changed_by': self.changed_by,
             'changed_at': self.changed_at

@@ -50,7 +50,7 @@ def after_request(response):
             response_data = json.loads(response.get_data())
             if "errors" in response_data:
                 response_data = {"success": False,
-                                "msg": list(response_data["errors"].items())[0][1]}
+                                "msg": response_data["errors"]}
                 response.set_data(json.dumps(response_data))
             response.headers.add('Content-Type', 'application/json')
         except json.JSONDecodeError:

@@ -3,6 +3,7 @@
 Dealer Business Logic
 """
 
+from datetime import datetime
 from ..models import db, Dealer
 
 # Cache to avoid repeated database lookups
@@ -29,9 +30,16 @@ def get_or_create_dealer(dealer_name, dealer_code=None, dealer_last_name=None):
     dealer = db.session.query(Dealer).filter(Dealer.name == dealer_name).first()
 
     if not dealer:
-        # Create new dealer
-        dealer = Dealer(name=dealer_name)
-        dealer.save()
+        # Create new dealer with current timestamp
+        current_time = datetime.utcnow()
+        dealer = Dealer(
+            name=dealer_name,
+            created_at=current_time,
+            updated_at=current_time
+        )
+        # Add to session but don't commit - the transaction is managed at the service level
+        db.session.add(dealer)
+        db.session.flush()  # This assigns the ID without committing
 
     # Update cache
     _dealer_cache[dealer_name] = dealer.dealer_id

@@ -1,14 +1,14 @@
-// Create a new file: src/menu-items/warehouse.js
+// Updated menu items for warehouse management
 
-import React from 'react';
-import { IconFileUpload, IconPackage, IconTruckDelivery, IconBoxSeam } from '@tabler/icons';
+import { IconFileUpload, IconPackage, IconTruckDelivery, IconBoxSeam, IconDashboard } from '@tabler/icons';
 
 // constant
 const icons = {
     IconFileUpload,
     IconPackage,
     IconTruckDelivery,
-    IconBoxSeam
+    IconBoxSeam,
+    IconDashboard
 };
 
 // ==============================|| WAREHOUSE MENU ITEMS ||============================== //
@@ -31,7 +31,7 @@ const warehouse = {
             title: 'Manage Orders',
             type: 'item',
             url: '/warehouse/manage-orders',
-            icon: icons.IconPackage,
+            icon: icons.IconList,
             breadcrumbs: false
         },
         {
