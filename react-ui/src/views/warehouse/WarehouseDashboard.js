@@ -37,7 +37,8 @@ import {
   IconUser,
   IconClock
 } from '@tabler/icons';
-import { gridSpacing } from '../../store/constant'
+import { gridSpacing } from '../../store/constant';
+import dashboardService from '../../services/dashboardService';
 
 // Custom styles for the dashboard
 const useStyles = makeStyles((theme) => ({
@@ -164,95 +165,28 @@ const useStyles = makeStyles((theme) => ({
   }
 }));
 
-// Mock data for warehouses and companies
-const mockWarehouses = [
-  { warehouse_id: 1, name: 'Main Warehouse', location: 'New York' },
-  { warehouse_id: 2, name: 'West Coast Facility', location: 'Los Angeles' },
-  { warehouse_id: 3, name: 'Central Distribution', location: 'Chicago' }
-];
-
-const mockCompanies = [
-  { company_id: 1, name: 'Acme Corporation' },
-  { company_id: 2, name: 'Globex Industries' },
-  { company_id: 3, name: 'Wayne Enterprises' }
-];
-
-// Mock data for order statuses
-const mockOrderStatusData = {
+// Define order status data
+const orderStatusData = {
   open: {
-    count: 15,
     icon: <IconClipboardList size={42} color="#ed6c02" />,
     label: 'Open Orders',
     chipClass: 'chipOpen'
   },
   picking: {
-    count: 8,
     icon: <IconPackage size={42} color="#1976d2" />,
     label: 'Picking',
     chipClass: 'chipPicking'
   },
   packing: {
-    count: 12,
     icon: <IconBoxSeam size={42} color="#9c27b0" />,
     label: 'Packing',
     chipClass: 'chipPacking'
   },
   dispatch: {
-    count: 5,
     icon: <IconTruckDelivery size={42} color="#2e7d32" />,
     label: 'Dispatch Ready',
     chipClass: 'chipDispatch'
   }
-};
-
-// Mock data for orders
-const generateMockOrders = (status, count) => {
-  const orders = [];
-  for (let i = 1; i <= count; i++) {
-    const orderDate = new Date();
-    orderDate.setDate(orderDate.getDate() - Math.floor(Math.random() * 14));
-
-    orders.push({
-      order_request_id: `${status.substring(0, 1).toUpperCase()}${Math.floor(Math.random() * 90000) + 10000}`,
-      original_order_id: `ORD-${Math.floor(Math.random() * 90000) + 10000}`,
-      dealer_name: `Dealer ${Math.floor(Math.random() * 20) + 1}`,
-      assigned_to: `User ${Math.floor(Math.random() * 5) + 1}`,
-      order_date: orderDate.toISOString(),
-      status: status,
-      current_state_time: new Date(new Date().getTime() - Math.floor(Math.random() * 24 * 60 * 60 * 1000)).toISOString(),
-      products: Math.floor(Math.random() * 10) + 1,
-      state_history: [
-        {
-          state_name: 'Open',
-          timestamp: new Date(new Date().getTime() - Math.floor(Math.random() * 7 * 24 * 60 * 60 * 1000)).toISOString(),
-          user: `User ${Math.floor(Math.random() * 5) + 1}`
-        },
-        ...(status !== 'open' ? [{
-          state_name: 'Picking',
-          timestamp: new Date(new Date().getTime() - Math.floor(Math.random() * 5 * 24 * 60 * 60 * 1000)).toISOString(),
-          user: `User ${Math.floor(Math.random() * 5) + 1}`
-        }] : []),
-        ...(status === 'packing' || status === 'dispatch' ? [{
-          state_name: 'Packing',
-          timestamp: new Date(new Date().getTime() - Math.floor(Math.random() * 3 * 24 * 60 * 60 * 1000)).toISOString(),
-          user: `User ${Math.floor(Math.random() * 5) + 1}`
-        }] : []),
-        ...(status === 'dispatch' ? [{
-          state_name: 'Dispatch',
-          timestamp: new Date(new Date().getTime() - Math.floor(Math.random() * 1 * 24 * 60 * 60 * 1000)).toISOString(),
-          user: `User ${Math.floor(Math.random() * 5) + 1}`
-        }] : [])
-      ]
-    });
-  }
-  return orders;
-};
-
-const mockOrders = {
-  open: generateMockOrders('open', mockOrderStatusData.open.count),
-  picking: generateMockOrders('picking', mockOrderStatusData.picking.count),
-  packing: generateMockOrders('packing', mockOrderStatusData.packing.count),
-  dispatch: generateMockOrders('dispatch', mockOrderStatusData.dispatch.count)
 };
 
 const WarehouseDashboard = () => {
@@ -262,36 +196,39 @@ const WarehouseDashboard = () => {
   const [warehouses, setWarehouses] = useState([]);
   const [companies, setCompanies] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [orderStatusData, setOrderStatusData] = useState({});
+  const [statusCounts, setStatusCounts] = useState({});
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedStatus, setSelectedStatus] = useState('');
   const [selectedOrders, setSelectedOrders] = useState([]);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [orderDetailsOpen, setOrderDetailsOpen] = useState(false);
+  const [recentOrders, setRecentOrders] = useState([]);
+  const [loadingOrders, setLoadingOrders] = useState(false);
 
   // Fetch warehouses and companies on component mount
   useEffect(() => {
     const fetchInitialData = async () => {
       setLoading(true);
       try {
-        // In a real app, you would fetch this data from your API
-        // const warehouseResponse = await axios.get(`${config.API_SERVER}warehouses`);
-        // const companyResponse = await axios.get(`${config.API_SERVER}companies`);
-
-        // Using mock data for now
-        setWarehouses(mockWarehouses);
-        setCompanies(mockCompanies);
-
-        // Set default selections
-        if (mockWarehouses.length > 0) {
-          setWarehouse(mockWarehouses[0].warehouse_id);
-        }
-        if (mockCompanies.length > 0) {
-          setCompany(mockCompanies[0].company_id);
+        // Fetch warehouses
+        const warehouseResponse = await dashboardService.getWarehouses();
+        if (warehouseResponse.success) {
+          setWarehouses(warehouseResponse.warehouses);
+          // Set default warehouse selection
+          if (warehouseResponse.warehouses.length > 0) {
+            setWarehouse(warehouseResponse.warehouses[0].id);
+          }
         }
 
-        // Set order status data
-        setOrderStatusData(mockOrderStatusData);
+        // Fetch companies
+        const companyResponse = await dashboardService.getCompanies();
+        if (companyResponse.success) {
+          setCompanies(companyResponse.companies);
+          // Set default company selection
+          if (companyResponse.companies.length > 0) {
+            setCompany(companyResponse.companies[0].id);
+          }
+        }
       } catch (error) {
         console.error('Error fetching initial data:', error);
       } finally {
@@ -309,20 +246,17 @@ const WarehouseDashboard = () => {
 
       setLoading(true);
       try {
-        // In a real app, you would fetch this data from your API
-        // const response = await axios.get(`${config.API_SERVER}orders/status`, {
-        //   params: { warehouse_id: warehouse, company_id: company }
-        // });
+        // Fetch order status counts
+        const statusResponse = await dashboardService.getOrderStatusCounts(warehouse, company);
+        if (statusResponse.success) {
+          setStatusCounts(statusResponse.status_counts);
+        }
 
-        // Using mock data for now
-        // Simulating an API delay
-        await new Promise(resolve => setTimeout(resolve, 1000));
-
-        // Just update the counts to simulate data change
-        const updatedOrderStatusData = { ...mockOrderStatusData };
-
-        // Update with "real" data based on selection
-        setOrderStatusData(updatedOrderStatusData);
+        // Fetch recent activity
+        const recentActivityResponse = await dashboardService.getRecentActivity(warehouse, company, 10);
+        if (recentActivityResponse.success) {
+          setRecentOrders(recentActivityResponse.recent_orders);
+        }
       } catch (error) {
         console.error('Error fetching order data:', error);
       } finally {
@@ -344,10 +278,24 @@ const WarehouseDashboard = () => {
   };
 
   // Handle card click to show orders in that status
-  const handleStatusCardClick = (status) => {
+  const handleStatusCardClick = async (status) => {
     setSelectedStatus(status);
-    setSelectedOrders(mockOrders[status]);
-    setDialogOpen(true);
+    setLoadingOrders(true);
+
+    try {
+      const response = await dashboardService.getOrdersByStatus(status, warehouse, company);
+      if (response.success) {
+        setSelectedOrders(response.orders);
+      } else {
+        setSelectedOrders([]);
+      }
+    } catch (error) {
+      console.error(`Error fetching ${status} orders:`, error);
+      setSelectedOrders([]);
+    } finally {
+      setLoadingOrders(false);
+      setDialogOpen(true);
+    }
   };
 
   // Handle dialog close
@@ -356,9 +304,16 @@ const WarehouseDashboard = () => {
   };
 
   // Handle opening order details
-  const handleOrderClick = (order) => {
-    setSelectedOrder(order);
-    setOrderDetailsOpen(true);
+  const handleOrderClick = async (order) => {
+    try {
+      const response = await dashboardService.getOrderDetails(order.order_request_id);
+      if (response.success) {
+        setSelectedOrder(response.order);
+        setOrderDetailsOpen(true);
+      }
+    } catch (error) {
+      console.error('Error fetching order details:', error);
+    }
   };
 
   // Handle closing order details
@@ -437,7 +392,7 @@ const WarehouseDashboard = () => {
                     label="Warehouse"
                   >
                     {warehouses.map((wh) => (
-                      <MenuItem key={wh.warehouse_id} value={wh.warehouse_id}>
+                      <MenuItem key={wh.id} value={wh.id}>
                         {wh.name}
                       </MenuItem>
                     ))}
@@ -455,7 +410,7 @@ const WarehouseDashboard = () => {
                     label="Company"
                   >
                     {companies.map((comp) => (
-                      <MenuItem key={comp.company_id} value={comp.company_id}>
+                      <MenuItem key={comp.id} value={comp.id}>
                         {comp.name}
                       </MenuItem>
                     ))}
@@ -476,14 +431,14 @@ const WarehouseDashboard = () => {
               <CardContent>
                 <Box display="flex" alignItems="center">
                   <Box className={classes.iconContainer}>
-                    {orderStatusData.open?.icon}
+                    {orderStatusData.open.icon}
                   </Box>
                   <Box>
                     <Typography variant="h3" className={classes.orderCount}>
-                      {loading ? <CircularProgress size={30} /> : orderStatusData.open?.count}
+                      {loading ? <CircularProgress size={30} /> : (statusCounts.open?.count || 0)}
                     </Typography>
                     <Typography variant="subtitle1" className={classes.statusLabel}>
-                      {orderStatusData.open?.label}
+                      {orderStatusData.open.label}
                     </Typography>
                   </Box>
                 </Box>
@@ -497,14 +452,14 @@ const WarehouseDashboard = () => {
               <CardContent>
                 <Box display="flex" alignItems="center">
                   <Box className={classes.iconContainer}>
-                    {orderStatusData.picking?.icon}
+                    {orderStatusData.picking.icon}
                   </Box>
                   <Box>
                     <Typography variant="h3" className={classes.orderCount}>
-                      {loading ? <CircularProgress size={30} /> : orderStatusData.picking?.count}
+                      {loading ? <CircularProgress size={30} /> : (statusCounts.picking?.count || 0)}
                     </Typography>
                     <Typography variant="subtitle1" className={classes.statusLabel}>
-                      {orderStatusData.picking?.label}
+                      {orderStatusData.picking.label}
                     </Typography>
                   </Box>
                 </Box>
@@ -518,14 +473,14 @@ const WarehouseDashboard = () => {
               <CardContent>
                 <Box display="flex" alignItems="center">
                   <Box className={classes.iconContainer}>
-                    {orderStatusData.packing?.icon}
+                    {orderStatusData.packing.icon}
                   </Box>
                   <Box>
                     <Typography variant="h3" className={classes.orderCount}>
-                      {loading ? <CircularProgress size={30} /> : orderStatusData.packing?.count}
+                      {loading ? <CircularProgress size={30} /> : (statusCounts.packing?.count || 0)}
                     </Typography>
                     <Typography variant="subtitle1" className={classes.statusLabel}>
-                      {orderStatusData.packing?.label}
+                      {orderStatusData.packing.label}
                     </Typography>
                   </Box>
                 </Box>
@@ -539,14 +494,14 @@ const WarehouseDashboard = () => {
               <CardContent>
                 <Box display="flex" alignItems="center">
                   <Box className={classes.iconContainer}>
-                    {orderStatusData.dispatch?.icon}
+                    {orderStatusData.dispatch.icon}
                   </Box>
                   <Box>
                     <Typography variant="h3" className={classes.orderCount}>
-                      {loading ? <CircularProgress size={30} /> : orderStatusData.dispatch?.count}
+                      {loading ? <CircularProgress size={30} /> : (statusCounts.dispatch?.count || 0)}
                     </Typography>
                     <Typography variant="subtitle1" className={classes.statusLabel}>
-                      {orderStatusData.dispatch?.label}
+                      {orderStatusData.dispatch.label}
                     </Typography>
                   </Box>
                 </Box>
@@ -582,28 +537,28 @@ const WarehouseDashboard = () => {
                         </Box>
                       </TableCell>
                     </TableRow>
+                  ) : recentOrders.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={6} align="center">No recent orders found</TableCell>
+                    </TableRow>
                   ) : (
-                    // Combine all statuses and sort by date (most recent first)
-                    [...mockOrders.open, ...mockOrders.picking, ...mockOrders.packing, ...mockOrders.dispatch]
-                      .sort((a, b) => new Date(b.order_date) - new Date(a.order_date))
-                      .slice(0, 10) // Only show 10 most recent
-                      .map((order) => (
-                        <TableRow key={order.order_request_id} hover onClick={() => handleOrderClick(order)} style={{ cursor: 'pointer' }}>
-                          <TableCell>{order.order_request_id}</TableCell>
-                          <TableCell>{order.dealer_name}</TableCell>
-                          <TableCell>{getStatusChip(order.status)}</TableCell>
-                          <TableCell>{formatDate(order.order_date)}</TableCell>
-                          <TableCell>{order.assigned_to || 'Unassigned'}</TableCell>
-                          <TableCell>
-                            <IconButton size="small" onClick={(e) => {
-                              e.stopPropagation();
-                              handleOrderClick(order);
-                            }}>
-                              <IconSearch size={18} />
-                            </IconButton>
-                          </TableCell>
-                        </TableRow>
-                      ))
+                    recentOrders.map((order) => (
+                      <TableRow key={order.order_request_id} hover onClick={() => handleOrderClick(order)} style={{ cursor: 'pointer' }}>
+                        <TableCell>{order.order_request_id}</TableCell>
+                        <TableCell>{order.dealer_name}</TableCell>
+                        <TableCell>{getStatusChip(order.status)}</TableCell>
+                        <TableCell>{formatDate(order.order_date)}</TableCell>
+                        <TableCell>{order.assigned_to || 'Unassigned'}</TableCell>
+                        <TableCell>
+                          <IconButton size="small" onClick={(e) => {
+                            e.stopPropagation();
+                            handleOrderClick(order);
+                          }}>
+                            <IconSearch size={18} />
+                          </IconButton>
+                        </TableCell>
+                      </TableRow>
+                    ))
                   )}
                 </TableBody>
               </Table>
@@ -638,25 +593,39 @@ const WarehouseDashboard = () => {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {selectedOrders.map((order) => (
-                  <TableRow key={order.order_request_id} hover onClick={() => handleOrderClick(order)} style={{ cursor: 'pointer' }}>
-                    <TableCell>{order.order_request_id}</TableCell>
-                    <TableCell>{order.original_order_id}</TableCell>
-                    <TableCell>{order.dealer_name}</TableCell>
-                    <TableCell>{formatDate(order.order_date)}</TableCell>
-                    <TableCell>{getTimeInState(order.current_state_time)}</TableCell>
-                    <TableCell>{order.assigned_to || 'Unassigned'}</TableCell>
-                    <TableCell>{order.products}</TableCell>
-                    <TableCell>
-                      <IconButton size="small" onClick={(e) => {
-                        e.stopPropagation();
-                        handleOrderClick(order);
-                      }}>
-                        <IconSearch size={18} />
-                      </IconButton>
+                {loadingOrders ? (
+                  <TableRow>
+                    <TableCell colSpan={8}>
+                      <Box className={classes.loadingContainer}>
+                        <CircularProgress />
+                      </Box>
                     </TableCell>
                   </TableRow>
-                ))}
+                ) : selectedOrders.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={8} align="center">No orders found</TableCell>
+                  </TableRow>
+                ) : (
+                  selectedOrders.map((order) => (
+                    <TableRow key={order.order_request_id} hover onClick={() => handleOrderClick(order)} style={{ cursor: 'pointer' }}>
+                      <TableCell>{order.order_request_id}</TableCell>
+                      <TableCell>{order.original_order_id}</TableCell>
+                      <TableCell>{order.dealer_name}</TableCell>
+                      <TableCell>{formatDate(order.order_date)}</TableCell>
+                      <TableCell>{getTimeInState(order.current_state_time)}</TableCell>
+                      <TableCell>{order.assigned_to || 'Unassigned'}</TableCell>
+                      <TableCell>{order.products}</TableCell>
+                      <TableCell>
+                        <IconButton size="small" onClick={(e) => {
+                          e.stopPropagation();
+                          handleOrderClick(order);
+                        }}>
+                          <IconSearch size={18} />
+                        </IconButton>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
               </TableBody>
             </Table>
           </TableContainer>
@@ -769,7 +738,7 @@ const WarehouseDashboard = () => {
                 </Typography>
 
                 <Box mt={2}>
-                  {selectedOrder.state_history.map((state, index) => (
+                  {selectedOrder.state_history && selectedOrder.state_history.map((state, index) => (
                     <Box key={index} className={classes.timelineItem} mb={2}>
                       <Typography variant="subtitle1">
                         {state.state_name}

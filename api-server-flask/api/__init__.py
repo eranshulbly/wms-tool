@@ -10,6 +10,8 @@ from flask_cors import CORS
 
 from .routes import rest_api
 from .models import db
+# Import dashboard routes to register them with rest_api
+from . import dashboard_routes
 
 app = Flask(__name__)
 

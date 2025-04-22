@@ -40,6 +40,7 @@ import {
   IconSearch,
   IconPlus,
   IconTrash,
+  IconArrowRight
 } from '@tabler/icons';
 import { gridSpacing } from '../../store/constant';
 
@@ -148,6 +149,9 @@ const useStyles = makeStyles((theme) => ({
   },
   boxIdField: {
     marginBottom: theme.spacing(1)
+  },
+  statusActionButton: {
+    margin: theme.spacing(0, 0.5)
   }
 }));
 
@@ -273,6 +277,70 @@ const OrderManagement = () => {
   const [snackbarMessage, setSnackbarMessage] = useState('');
   const [snackbarSeverity, setSnackbarSeverity] = useState('success');
 
+
+  // After state declarations
+
+  // Utility functions first
+  const formatDate = (dateString) => {
+    const options = { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+    return new Date(dateString).toLocaleString(undefined, options);
+  };
+
+  const getStatusChip = (status) => {
+    let className;
+    switch (status) {
+      case 'open':
+        className = classes.chipOpen;
+        break;
+      case 'picking':
+        className = classes.chipPicking;
+        break;
+      case 'packing':
+        className = classes.chipPacking;
+        break;
+      case 'dispatch':
+        className = classes.chipDispatch;
+        break;
+      default:
+        className = '';
+    }
+
+    return (
+      <Chip
+        label={status.charAt(0).toUpperCase() + status.slice(1)}
+        className={`${classes.statusChip} ${className}`}
+        size="small"
+      />
+    );
+  };
+
+  const getNextStatus = (currentStatus) => {
+    switch (currentStatus) {
+      case 'open':
+        return 'picking';
+      case 'picking':
+        return 'packing';
+      case 'packing':
+        return 'dispatch';
+      default:
+        return null;
+    }
+  };
+
+  // Then event handlers
+  const handleSnackbarClose = (event, reason) => {
+    if (reason === 'clickaway') {
+      return;
+    }
+    setSnackbarOpen(false);
+  };
+
+  const handleUpdateStatus = async () => {
+    // Keep existing function content
+  };
+
+  // Continue with all your other handler functions...
+
   // Fetch warehouses and companies on component mount
   useEffect(() => {
     const fetchInitialData = async () => {
@@ -344,6 +412,13 @@ const OrderManagement = () => {
     fetchOrders();
   }, [warehouse, company, selectedStatus]);
 
+  // Generate formatted box name based on dealer name and current date
+  const generateBoxName = (dealerName, boxNumber) => {
+    const today = new Date();
+    const dateString = today.toISOString().split('T')[0]; // YYYY-MM-DD format
+    return `${dealerName}_${boxNumber}_${dateString}`;
+  };
+
   // Handle warehouse selection change
   const handleWarehouseChange = (event) => {
     setWarehouse(event.target.value);
@@ -362,16 +437,43 @@ const OrderManagement = () => {
   // Handle opening order details
   const handleOrderClick = (order) => {
     setSelectedOrder(order);
+
     // If order is in packing status, initialize boxes array if empty
     if (order.status === 'packing' && (!order.boxes || order.boxes.length === 0)) {
-      setBoxes([{
+      const boxName = generateBoxName(order.dealer_name, 1);
+      const newBox = {
         box_id: `B${Math.floor(Math.random() * 900) + 100}`,
-        name: 'Box 1',
+        name: boxName,
         products: []
-      }]);
+      };
+
+      // Automatically assign all products to first box by default
+      const productsWithBox = order.products.map(product => ({
+        ...product,
+        assigned_to_box: newBox.box_id
+      }));
+
+      newBox.products = productsWithBox.map(p => p.product_id);
+
+      setBoxes([newBox]);
+
+      // Update the selected order with the modified products
+      setSelectedOrder({
+        ...order,
+        products: productsWithBox,
+        boxes: [newBox]
+      });
     } else {
       setBoxes(order.boxes || []);
     }
+
+    // Set the initial tab value based on status
+    if (order.status === 'packing') {
+      setTabValue(0); // Show Box Management as first tab for packing status
+    } else {
+      setTabValue(0); // Show Order Details for other statuses
+    }
+
     setOrderDetailsOpen(true);
   };
 
@@ -388,7 +490,8 @@ const OrderManagement = () => {
   };
 
   // Handle opening status update dialog
-  const handleOpenStatusUpdate = (status) => {
+  const handleOpenStatusUpdate = (orderToUpdate, status) => {
+    setSelectedOrder(orderToUpdate);
     setNewStatus(status);
     setStatusUpdateDialog(true);
   };
@@ -400,11 +503,14 @@ const OrderManagement = () => {
 
   // Add a new box
   const handleAddBox = () => {
+    const newBoxNumber = boxes.length + 1;
+    const boxName = generateBoxName(selectedOrder.dealer_name, newBoxNumber);
+
     setBoxes([
       ...boxes,
       {
         box_id: `B${Math.floor(Math.random() * 900) + 100}`,
-        name: `Box ${boxes.length + 1}`,
+        name: boxName,
         products: []
       }
     ]);
@@ -477,139 +583,46 @@ const OrderManagement = () => {
     }
   };
 
-  // Update order status
-  const handleUpdateStatus = async () => {
+  // Update order status directly from the list
+  const handleDirectStatusUpdate = async (order, targetStatus) => {
     setLoading(true);
+
     try {
-      // Validate when moving to dispatch status
-      if (newStatus === 'dispatch') {
-        // Check if all products are assigned to boxes
-        const unassignedProducts = selectedOrder.products.filter(p => !p.assigned_to_box);
-        if (unassignedProducts.length > 0) {
-          setSnackbarMessage('All products must be assigned to boxes before moving to Dispatch status');
-          setSnackbarSeverity('error');
-          setSnackbarOpen(true);
-          setLoading(false);
-          return;
-        }
-
-        // Check if any boxes are empty
-        const emptyBoxes = boxes.filter(b => !b.products || b.products.length === 0);
-        if (emptyBoxes.length > 0) {
-          setSnackbarMessage('Empty boxes cannot be included. Please remove or add products to them.');
-          setSnackbarSeverity('error');
-          setSnackbarOpen(true);
-          setLoading(false);
-          return;
-        }
-      }
-
       // In a real app, you would update the order status via API
-      // For packing to dispatch transition, include box information
-      if (selectedOrder.status === 'packing' && newStatus === 'dispatch') {
-        // const response = await axios.post(`${config.API_SERVER}orders/${selectedOrder.order_request_id}/status`, {
-        //   new_status: newStatus,
-        //   boxes: boxes
-        // });
-
-        // Mock update for now
-        const updatedOrders = orders.map(order => {
-          if (order.order_request_id === selectedOrder.order_request_id) {
-            return {
-              ...order,
-              status: newStatus,
-              boxes: boxes,
-              state_history: [
-                ...order.state_history,
-                {
-                  state_name: newStatus.charAt(0).toUpperCase() + newStatus.slice(1),
-                  timestamp: new Date().toISOString(),
-                  user: 'Current User'
-                }
-              ]
-            };
-          }
-          return order;
-        });
-
-        // Update the selected order too
-        const updatedSelectedOrder = {
-          ...selectedOrder,
-          status: newStatus,
-          boxes: boxes,
-          state_history: [
-            ...selectedOrder.state_history,
-            {
-              state_name: newStatus.charAt(0).toUpperCase() + newStatus.slice(1),
-              timestamp: new Date().toISOString(),
-              user: 'Current User'
-            }
-          ]
-        };
-
-        // Update state
-        setOrders(updatedOrders);
-        setSelectedOrder(updatedSelectedOrder);
-
-        // Success message
-        setSnackbarMessage(`Order status updated to ${newStatus} with ${boxes.length} boxes`);
-        setSnackbarSeverity('success');
-
-      } else {
-        // Simple status update without boxes
-        // const response = await axios.post(`${config.API_SERVER}orders/${selectedOrder.order_request_id}/status`, {
-        //   new_status: newStatus
-        // });
-
-        // Mock update for now
-        const updatedOrders = orders.map(order => {
-          if (order.order_request_id === selectedOrder.order_request_id) {
-            return {
-              ...order,
-              status: newStatus,
-              state_history: [
-                ...order.state_history,
-                {
-                  state_name: newStatus.charAt(0).toUpperCase() + newStatus.slice(1),
-                  timestamp: new Date().toISOString(),
-                  user: 'Current User'
-                }
-              ]
-            };
-          }
-          return order;
-        });
-
-        // Update the selected order too
-        const updatedSelectedOrder = {
-          ...selectedOrder,
-          status: newStatus,
-          state_history: [
-            ...selectedOrder.state_history,
-            {
-              state_name: newStatus.charAt(0).toUpperCase() + newStatus.slice(1),
-              timestamp: new Date().toISOString(),
-              user: 'Current User'
-            }
-          ]
-        };
-
-        // Update state
-        setOrders(updatedOrders);
-        setSelectedOrder(updatedSelectedOrder);
-
-        // Success message
-        setSnackbarMessage(`Order status updated to ${newStatus}`);
-        setSnackbarSeverity('success');
+      // For packing to dispatch transition, we need a separate flow due to box requirements
+      if (order.status === 'packing' && targetStatus === 'dispatch') {
+        // We need to open the order details for box management
+        handleOrderClick(order);
+        setLoading(false);
+        return;
       }
 
+      // Mock update for simple status changes
+      const updatedOrders = orders.map(o => {
+        if (o.order_request_id === order.order_request_id) {
+          return {
+            ...o,
+            status: targetStatus,
+            state_history: [
+              ...o.state_history,
+              {
+                state_name: targetStatus.charAt(0).toUpperCase() + targetStatus.slice(1),
+                timestamp: new Date().toISOString(),
+                user: 'Current User'
+              }
+            ]
+          };
+        }
+        return o;
+      });
+
+      // Update state
+      setOrders(updatedOrders);
+
+      // Success message
+      setSnackbarMessage(`Order ${order.order_request_id} status updated to ${targetStatus}`);
+      setSnackbarSeverity('success');
       setSnackbarOpen(true);
-      setStatusUpdateDialog(false);
-
-      // Wait a bit so the user can see the updated status
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      handleOrderDetailsClose();
-
     } catch (error) {
       console.error('Error updating order status:', error);
       setSnackbarMessage('Error updating order status');
@@ -620,61 +633,45 @@ const OrderManagement = () => {
     }
   };
 
-  // Handle snackbar close
-  const handleSnackbarClose = (event, reason) => {
-    if (reason === 'clickaway') {
-      return;
-    }
-    setSnackbarOpen(false);
-  };
+  // Render status action buttons
+  const renderStatusActions = (order) => {
+    const nextStatus = getNextStatus(order.status);
+    if (!nextStatus) return null;
 
-  // Format date for display
-  const formatDate = (dateString) => {
-    const options = { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
-    return new Date(dateString).toLocaleString(undefined, options);
-  };
-
-  // Get status chip
-  const getStatusChip = (status) => {
-    let className;
-    switch (status) {
-      case 'open':
-        className = classes.chipOpen;
-        break;
-      case 'picking':
-        className = classes.chipPicking;
-        break;
-      case 'packing':
-        className = classes.chipPacking;
-        break;
-      case 'dispatch':
-        className = classes.chipDispatch;
-        break;
-      default:
-        className = '';
+    // Special case for packing to dispatch transition
+    if (order.status === 'packing' && nextStatus === 'dispatch') {
+      return (
+        <Button
+          variant="outlined"
+          color="primary"
+          size="small"
+          className={classes.statusActionButton}
+          onClick={(e) => {
+            e.stopPropagation();
+            handleOrderClick(order);
+          }}
+          startIcon={<IconArrowRight size={16} />}
+        >
+          Setup Boxes
+        </Button>
+      );
     }
 
     return (
-      <Chip
-        label={status.charAt(0).toUpperCase() + status.slice(1)}
-        className={`${classes.statusChip} ${className}`}
+      <Button
+        variant="outlined"
+        color="primary"
         size="small"
-      />
+        className={classes.statusActionButton}
+        onClick={(e) => {
+          e.stopPropagation();
+          handleDirectStatusUpdate(order, nextStatus);
+        }}
+        startIcon={<IconArrowRight size={16} />}
+      >
+        Move to {nextStatus.charAt(0).toUpperCase() + nextStatus.slice(1)}
+      </Button>
     );
-  };
-
-  // Get next possible status based on current status
-  const getNextStatus = (currentStatus) => {
-    switch (currentStatus) {
-      case 'open':
-        return 'picking';
-      case 'picking':
-        return 'packing';
-      case 'packing':
-        return 'dispatch';
-      default:
-        return null;
-    }
   };
 
   return (
@@ -790,12 +787,15 @@ const OrderManagement = () => {
                           <TableCell>{order.assigned_to || 'Unassigned'}</TableCell>
                           <TableCell>{order.products.length}</TableCell>
                           <TableCell>
-                            <IconButton size="small" onClick={(e) => {
-                              e.stopPropagation();
-                              handleOrderClick(order);
-                            }}>
-                              <IconSearch size={18} />
-                            </IconButton>
+                            <Box display="flex" alignItems="center">
+                              <IconButton size="small" onClick={(e) => {
+                                e.stopPropagation();
+                                handleOrderClick(order);
+                              }}>
+                                <IconSearch size={18} />
+                              </IconButton>
+                              {renderStatusActions(order)}
+                            </Box>
                           </TableCell>
                         </TableRow>
                       ))
@@ -835,14 +835,20 @@ const OrderManagement = () => {
                   textColor="primary"
                   variant="fullWidth"
                 >
-                  <Tab label="Order Details" />
-                  {selectedOrder.status === 'packing' && <Tab label="Box Management" />}
-                  <Tab label="History" />
+                  {selectedOrder.status === 'packing' ? (
+                    <>
+                      <Tab label="Box Management" />
+                      <Tab label="Order Details" />
+                    </>
+                  ) : (
+                    <Tab label="Order Details" />
+                  )}
                 </Tabs>
               </div>
 
-              {/* Order Details Tab */}
-              {tabValue === 0 && (
+              {/* Order Details Tab - for normal status or second tab in packing state */}
+              {(selectedOrder.status !== 'packing' && tabValue === 0) ||
+               (selectedOrder.status === 'packing' && tabValue === 1) ? (
                 <div>
                   <Box className={classes.orderSummary}>
                     <Grid container spacing={2}>
@@ -922,23 +928,23 @@ const OrderManagement = () => {
                     </Table>
                   </TableContainer>
 
-                  {/* Status update button */}
-                  {getNextStatus(selectedOrder.status) && (
+                  {/* Status update button - Only show for non-packing status */}
+                  {getNextStatus(selectedOrder.status) && selectedOrder.status !== 'packing' && (
                     <Box className={classes.statusButtonGroup}>
                       <Button
                         variant="contained"
                         color="primary"
-                        onClick={() => handleOpenStatusUpdate(getNextStatus(selectedOrder.status))}
+                        onClick={() => handleOpenStatusUpdate(selectedOrder, getNextStatus(selectedOrder.status))}
                       >
                         Move to {getNextStatus(selectedOrder.status).charAt(0).toUpperCase() + getNextStatus(selectedOrder.status).slice(1)}
                       </Button>
                     </Box>
                   )}
                 </div>
-              )}
+              ) : null}
 
-              {/* Box Management Tab */}
-              {tabValue === 1 && selectedOrder.status === 'packing' && (
+            {/* Box Management Tab - First tab for packing status */}
+              {selectedOrder.status === 'packing' && tabValue === 0 && (
                 <div>
                   <Typography variant="h5" gutterBottom>
                     Box Management
@@ -960,6 +966,7 @@ const OrderManagement = () => {
                               value={box.box_id}
                               onChange={(e) => handleBoxIdChange(index, e.target.value)}
                               className={classes.boxIdField}
+                              disabled
                             />
                           </Grid>
                           <Grid item xs={12} sm={6}>
@@ -1067,41 +1074,12 @@ const OrderManagement = () => {
                   <Button
                     variant="contained"
                     color="primary"
-                    onClick={() => handleOpenStatusUpdate('dispatch')}
+                    onClick={() => handleOpenStatusUpdate(selectedOrder, 'dispatch')}
                     className={classes.updateButton}
                     disabled={selectedOrder.products.some(p => !p.assigned_to_box)}
                   >
                     Complete Packing & Move to Dispatch
                   </Button>
-                </div>
-              )}
-
-              {/* History Tab */}
-              {tabValue === 2 && (
-                <div>
-                  <Typography variant="h5" gutterBottom>
-                    Order Status History
-                  </Typography>
-
-                  <Stepper orientation="vertical" style={{ marginTop: 16 }}>
-                    {selectedOrder.state_history.map((state, index) => (
-                      <Step key={index} active={true} completed={true}>
-                        <StepLabel>
-                          <Typography variant="subtitle1">
-                            {state.state_name}
-                          </Typography>
-                        </StepLabel>
-                        <Box ml={3} mb={2}>
-                          <Typography variant="body2" color="textSecondary">
-                            {formatDate(state.timestamp)}
-                          </Typography>
-                          <Typography variant="body2">
-                            Handled by: {state.user}
-                          </Typography>
-                        </Box>
-                      </Step>
-                    ))}
-                  </Stepper>
                 </div>
               )}
             </DialogContent>

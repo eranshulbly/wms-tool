@@ -6,9 +6,7 @@ import config from '../config';
 const dashboardService = {
   /**
    * Fetch available warehouses
-   * @returns {Promise};
-
-export default dashboardService; Promise object that resolves to warehouse data
+   * @returns {Promise} Promise object that resolves to warehouse data
    */
   getWarehouses: async () => {
     try {
@@ -115,4 +113,6 @@ export default dashboardService; Promise object that resolves to warehouse data
       throw error;
     }
   }
-}
+};
+
+export default dashboardService;
