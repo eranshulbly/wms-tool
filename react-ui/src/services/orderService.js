@@ -1,9 +1,32 @@
 import axios from 'axios';
 import config from '../config';
 
-// This service handles all API calls related to order management
+// Base API URL
+const API_BASE_URL = 'http://localhost:5000';
 
+// This service handles all API calls related to order management
 const orderService = {
+  /**
+   * Fetch status counts for orders dashboard
+   * @param {number} warehouseId - ID of the selected warehouse
+   * @param {number} companyId - ID of the selected company
+   * @returns {Promise} Promise object that resolves to status counts data
+   */
+  getStatusCounts: async (warehouseId, companyId) => {
+    try {
+      const params = {
+        warehouse_id: warehouseId,
+        company_id: companyId
+      };
+
+      const response = await axios.get(`${API_BASE_URL}/api/orders/status-counts`, { params });
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching status counts:', error);
+      throw error;
+    }
+  },
+
   /**
    * Fetch orders with optional filters
    * @param {number} warehouseId - ID of the selected warehouse
@@ -22,10 +45,38 @@ const orderService = {
         params.status = status;
       }
 
-      const response = await axios.get(`${config.API_SERVER}orders`, { params });
+      const response = await axios.get(`${API_BASE_URL}/api/orders`, { params });
       return response.data;
     } catch (error) {
       console.error('Error fetching orders:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Fetch warehouses
+   * @returns {Promise} Promise object that resolves to warehouses data
+   */
+  getWarehouses: async () => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/warehouses`);
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching warehouses:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Fetch companies
+   * @returns {Promise} Promise object that resolves to companies data
+   */
+  getCompanies: async () => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/companies`);
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching companies:', error);
       throw error;
     }
   },
@@ -37,7 +88,7 @@ const orderService = {
    */
   getOrderById: async (orderId) => {
     try {
-      const response = await axios.get(`${config.API_SERVER}orders/${orderId}`);
+      const response = await axios.get(`${API_BASE_URL}/api/orders/${orderId}`);
       return response.data;
     } catch (error) {
       console.error('Error fetching order details:', error);
@@ -63,43 +114,10 @@ const orderService = {
         requestData.boxes = boxes;
       }
 
-      const response = await axios.post(`${config.API_SERVER}orders/${orderId}/status`, requestData);
+      const response = await axios.post(`${API_BASE_URL}/api/orders/${orderId}`, requestData);
       return response.data;
     } catch (error) {
       console.error('Error updating order status:', error);
-      throw error;
-    }
-  },
-
-  /**
-   * Assign products to boxes
-   * @param {string} orderId - ID of the order
-   * @param {Array} boxAssignments - Array of box assignments with product mappings
-   * @returns {Promise} Promise object that resolves to updated order data
-   */
-  assignProductsToBoxes: async (orderId, boxAssignments) => {
-    try {
-      const response = await axios.post(`${config.API_SERVER}orders/${orderId}/box-assignments`, {
-        box_assignments: boxAssignments
-      });
-      return response.data;
-    } catch (error) {
-      console.error('Error assigning products to boxes:', error);
-      throw error;
-    }
-  },
-
-  /**
-   * Get all possible transitions for an order based on its current status
-   * @param {string} orderId - ID of the order
-   * @returns {Promise} Promise object that resolves to possible transitions
-   */
-  getPossibleTransitions: async (orderId) => {
-    try {
-      const response = await axios.get(`${config.API_SERVER}orders/${orderId}/transitions`);
-      return response.data;
-    } catch (error) {
-      console.error('Error fetching possible transitions:', error);
       throw error;
     }
   }

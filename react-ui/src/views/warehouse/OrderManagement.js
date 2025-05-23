@@ -43,6 +43,7 @@ import {
   IconArrowRight
 } from '@tabler/icons';
 import { gridSpacing } from '../../store/constant';
+import orderService from '../../services/orderService';
 
 // Custom styles for the order management page
 const useStyles = makeStyles((theme) => ({
@@ -280,15 +281,18 @@ const OrderManagement = () => {
 
   // After state declarations
 
-  // Utility functions first
+// Utility functions first
   const formatDate = (dateString) => {
     const options = { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
     return new Date(dateString).toLocaleString(undefined, options);
   };
 
   const getStatusChip = (status) => {
+    // Ensure status is a string and normalize to lowercase for comparison
+    const normalizedStatus = String(status).toLowerCase();
+
     let className;
-    switch (status) {
+    switch (normalizedStatus) {
       case 'open':
         className = classes.chipOpen;
         break;
@@ -307,7 +311,7 @@ const OrderManagement = () => {
 
     return (
       <Chip
-        label={status.charAt(0).toUpperCase() + status.slice(1)}
+        label={normalizedStatus.charAt(0).toUpperCase() + normalizedStatus.slice(1)}
         className={`${classes.statusChip} ${className}`}
         size="small"
       />
@@ -335,34 +339,56 @@ const OrderManagement = () => {
     setSnackbarOpen(false);
   };
 
-  const handleUpdateStatus = async () => {
-    // Keep existing function content
-  };
-
   // Continue with all your other handler functions...
 
-  // Fetch warehouses and companies on component mount
+// Fetch warehouses and companies on component mount
   useEffect(() => {
     const fetchInitialData = async () => {
       setLoading(true);
       try {
-        // In a real app, you would fetch this data from your API
-        // const warehouseResponse = await axios.get(`${config.API_SERVER}warehouses`);
-        // const companyResponse = await axios.get(`${config.API_SERVER}companies`);
+        // Fetch data from the API
+        const warehouseResponse = await orderService.getWarehouses();
+        const companyResponse = await orderService.getCompanies();
 
-        // Using mock data for now
+        if (warehouseResponse.success) {
+          setWarehouses(warehouseResponse.warehouses);
+
+          // Set default selections - Fix for warehouse ID field
+          if (warehouseResponse.warehouses.length > 0) {
+            // Check if the field is warehouse_id or id
+            const firstWarehouse = warehouseResponse.warehouses[0];
+            const warehouseIdField = firstWarehouse.warehouse_id !== undefined ? 'warehouse_id' : 'id';
+            setWarehouse(firstWarehouse[warehouseIdField]);
+          }
+        }
+
+        if (companyResponse.success) {
+          setCompanies(companyResponse.companies);
+
+          // Set default selections - Fix for company ID field
+          if (companyResponse.companies.length > 0) {
+            // Check if the field is company_id or id
+            const firstCompany = companyResponse.companies[0];
+            const companyIdField = firstCompany.company_id !== undefined ? 'company_id' : 'id';
+            setCompany(firstCompany[companyIdField]);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching initial data:', error);
+        // Fallback to mock data if the API is not available
         setWarehouses(mockWarehouses);
         setCompanies(mockCompanies);
 
-        // Set default selections
         if (mockWarehouses.length > 0) {
           setWarehouse(mockWarehouses[0].warehouse_id);
         }
         if (mockCompanies.length > 0) {
           setCompany(mockCompanies[0].company_id);
         }
-      } catch (error) {
-        console.error('Error fetching initial data:', error);
+
+        setSnackbarMessage('Error connecting to API. Using mock data.');
+        setSnackbarSeverity('warning');
+        setSnackbarOpen(true);
       } finally {
         setLoading(false);
       }
@@ -371,26 +397,53 @@ const OrderManagement = () => {
     fetchInitialData();
   }, []);
 
-  // Fetch orders when warehouse, company, or selectedStatus changes
+// Fetch orders when warehouse, company, or selectedStatus changes
   useEffect(() => {
     const fetchOrders = async () => {
       if (!warehouse || !company) return;
 
       setLoading(true);
       try {
-        // In a real app, you would fetch this data from your API
-        // const response = await axios.get(`${config.API_SERVER}orders`, {
-        //   params: {
-        //     warehouse_id: warehouse,
-        //     company_id: company,
-        //     status: selectedStatus !== 'all' ? selectedStatus : undefined
-        //   }
-        // });
+        // Fetch data from our API
+        const response = await orderService.getOrders(
+          warehouse,
+          company,
+          selectedStatus !== 'all' ? selectedStatus : null
+        );
 
-        // Using mock data for now
-        // Simulating an API delay
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        if (response.success) {
+          // Ensure all orders have a valid status
+          const processedOrders = response.orders.map(order => ({
+            ...order,
+            // Default to 'open' if status is null or undefined
+            status: order.status || 'open'
+          }));
 
+          setOrders(processedOrders || []);
+        } else {
+          console.error('Error in API response:', response.msg);
+
+          // Fallback to mock data if the API fails
+          if (selectedStatus === 'all') {
+            // Combine all statuses
+            setOrders([
+              ...mockOrders.open,
+              ...mockOrders.picking,
+              ...mockOrders.packing,
+              ...mockOrders.dispatch
+            ]);
+          } else {
+            setOrders(mockOrders[selectedStatus] || []);
+          }
+
+          setSnackbarMessage('Error fetching orders. Using mock data.');
+          setSnackbarSeverity('warning');
+          setSnackbarOpen(true);
+        }
+      } catch (error) {
+        console.error('Error fetching orders:', error);
+
+        // Fallback to mock data if the API fails
         if (selectedStatus === 'all') {
           // Combine all statuses
           setOrders([
@@ -402,8 +455,10 @@ const OrderManagement = () => {
         } else {
           setOrders(mockOrders[selectedStatus] || []);
         }
-      } catch (error) {
-        console.error('Error fetching orders:', error);
+
+        setSnackbarMessage('Error fetching orders. Using mock data.');
+        setSnackbarSeverity('warning');
+        setSnackbarOpen(true);
       } finally {
         setLoading(false);
       }
@@ -434,44 +489,129 @@ const OrderManagement = () => {
     setSelectedStatus(event.target.value);
   };
 
-  // Handle opening order details
-  const handleOrderClick = (order) => {
-    setSelectedOrder(order);
+// Handle opening order details
+  const handleOrderClick = async (order) => {
+    setLoading(true);
 
-    // If order is in packing status, initialize boxes array if empty
-    if (order.status === 'packing' && (!order.boxes || order.boxes.length === 0)) {
-      const boxName = generateBoxName(order.dealer_name, 1);
-      const newBox = {
-        box_id: `B${Math.floor(Math.random() * 900) + 100}`,
-        name: boxName,
-        products: []
-      };
+    try {
+      // Fetch detailed information for this order
+      const response = await orderService.getOrderById(order.order_request_id);
 
-      // Automatically assign all products to first box by default
-      const productsWithBox = order.products.map(product => ({
-        ...product,
-        assigned_to_box: newBox.box_id
-      }));
+      if (response.success && response.orders && response.orders.length > 0) {
+        // Ensure the order has a valid status before proceeding
+        const detailedOrder = {
+          ...response.orders[0],
+          status: response.orders[0].status || 'open' // Default to 'open' if status is null
+        };
 
-      newBox.products = productsWithBox.map(p => p.product_id);
+        // If order is in packing status, initialize boxes array if empty
+        if (detailedOrder.status === 'packing' && (!detailedOrder.boxes || detailedOrder.boxes.length === 0)) {
+          const boxName = generateBoxName(detailedOrder.dealer_name, 1);
+          const newBox = {
+            box_id: `B${Math.floor(Math.random() * 900) + 100}`,
+            name: boxName,
+            products: []
+          };
 
-      setBoxes([newBox]);
+          // Create a deep copy of products to avoid reference issues
+          const productsWithBox = JSON.parse(JSON.stringify(detailedOrder.products || [])).map(product => ({
+            ...product,
+            assigned_to_box: newBox.box_id
+          }));
 
-      // Update the selected order with the modified products
-      setSelectedOrder({
-        ...order,
-        products: productsWithBox,
-        boxes: [newBox]
-      });
-    } else {
-      setBoxes(order.boxes || []);
-    }
+          newBox.products = productsWithBox.map(p => p.product_id);
 
-    // Set the initial tab value based on status
-    if (order.status === 'packing') {
-      setTabValue(0); // Show Box Management as first tab for packing status
-    } else {
-      setTabValue(0); // Show Order Details for other statuses
+          // Update boxes state
+          setBoxes([newBox]);
+
+          // Create a new object with updated products and boxes
+          const updatedOrder = {
+            ...detailedOrder,
+            products: productsWithBox,
+            boxes: [newBox]
+          };
+
+          setSelectedOrder(updatedOrder);
+        } else {
+          setSelectedOrder(detailedOrder);
+          setBoxes(detailedOrder.boxes || []);
+        }
+
+        // Set the initial tab value based on status
+        setTabValue(detailedOrder.status === 'packing' ? 0 : 0);
+      } else {
+        // If API doesn't return detailed order, use the one from the list
+        // Make a deep copy to avoid reference issues
+        const copiedOrder = JSON.parse(JSON.stringify(order));
+
+        if (copiedOrder.status === 'packing' && (!copiedOrder.boxes || copiedOrder.boxes.length === 0)) {
+          const boxName = generateBoxName(copiedOrder.dealer_name, 1);
+          const newBox = {
+            box_id: `B${Math.floor(Math.random() * 900) + 100}`,
+            name: boxName,
+            products: []
+          };
+
+          // Make sure products is an array
+          copiedOrder.products = copiedOrder.products || [];
+
+          const productsWithBox = copiedOrder.products.map(product => ({
+            ...product,
+            assigned_to_box: newBox.box_id
+          }));
+
+          newBox.products = productsWithBox.map(p => p.product_id);
+
+          setBoxes([newBox]);
+          copiedOrder.products = productsWithBox;
+          copiedOrder.boxes = [newBox];
+        } else {
+          setBoxes(copiedOrder.boxes || []);
+        }
+
+        setSelectedOrder(copiedOrder);
+        setTabValue(copiedOrder.status === 'packing' ? 0 : 0);
+      }
+    } catch (error) {
+      console.error('Error fetching order details:', error);
+
+      // Use the order from the list as fallback
+      // Make a deep copy to avoid reference issues
+      const copiedOrder = JSON.parse(JSON.stringify(order));
+
+      if (copiedOrder.status === 'packing' && (!copiedOrder.boxes || copiedOrder.boxes.length === 0)) {
+        const boxName = generateBoxName(copiedOrder.dealer_name, 1);
+        const newBox = {
+          box_id: `B${Math.floor(Math.random() * 900) + 100}`,
+          name: boxName,
+          products: []
+        };
+
+        // Make sure products is an array
+        copiedOrder.products = copiedOrder.products || [];
+
+        const productsWithBox = copiedOrder.products.map(product => ({
+          ...product,
+          assigned_to_box: newBox.box_id
+        }));
+
+        newBox.products = productsWithBox.map(p => p.product_id);
+
+        setBoxes([newBox]);
+        copiedOrder.products = productsWithBox;
+        copiedOrder.boxes = [newBox];
+      } else {
+        setBoxes(copiedOrder.boxes || []);
+      }
+
+      setSelectedOrder(copiedOrder);
+      setTabValue(copiedOrder.status === 'packing' ? 0 : 0);
+
+      setSnackbarMessage('Error fetching order details');
+      setSnackbarSeverity('error');
+      setSnackbarOpen(true);
+    } finally {
+      setLoading(false);
     }
 
     setOrderDetailsOpen(true);
@@ -553,42 +693,61 @@ const OrderManagement = () => {
     setBoxes(updatedBoxes);
   };
 
-  // Assign product to box
+// Assign product to box
   const handleAssignProductToBox = (productId, boxId) => {
-    if (!selectedOrder) return;
+    if (!selectedOrder || !selectedOrder.products) return;
 
-    // Update the product's box assignment
-    const updatedOrder = { ...selectedOrder };
+    // Create a deep copy of the selectedOrder object to avoid mutation issues
+    const updatedOrder = JSON.parse(JSON.stringify(selectedOrder));
+
+    // Find the product in the cloned object
     const product = updatedOrder.products.find(p => p.product_id === productId);
 
-    if (product) {
-      // If product was previously assigned to a different box, remove it from that box
-      if (product.assigned_to_box) {
-        const oldBox = boxes.find(b => b.box_id === product.assigned_to_box);
-        if (oldBox) {
-          oldBox.products = oldBox.products.filter(p => p !== productId);
+    if (!product) {
+      console.error(`Product with ID ${productId} not found`);
+      return;
+    }
+
+    // Create a deep copy of the boxes array
+    const updatedBoxes = JSON.parse(JSON.stringify(boxes));
+
+    // If product was previously assigned to a different box, remove it from that box
+    if (product.assigned_to_box) {
+      const oldBoxIndex = updatedBoxes.findIndex(b => b.box_id === product.assigned_to_box);
+      if (oldBoxIndex >= 0) {
+        updatedBoxes[oldBoxIndex].products = updatedBoxes[oldBoxIndex].products.filter(p => p !== productId);
+      }
+    }
+
+    // Assign to new box
+    product.assigned_to_box = boxId;
+
+    // Add to new box's product list if boxId is not empty
+    if (boxId) {
+      const newBoxIndex = updatedBoxes.findIndex(b => b.box_id === boxId);
+      if (newBoxIndex >= 0) {
+        // Initialize products array if it doesn't exist
+        if (!updatedBoxes[newBoxIndex].products) {
+          updatedBoxes[newBoxIndex].products = [];
+        }
+
+        // Add the product if it's not already in the box
+        if (!updatedBoxes[newBoxIndex].products.includes(productId)) {
+          updatedBoxes[newBoxIndex].products.push(productId);
         }
       }
-
-      // Assign to new box
-      product.assigned_to_box = boxId;
-
-      // Add to new box's product list
-      const newBox = boxes.find(b => b.box_id === boxId);
-      if (newBox && !newBox.products.includes(productId)) {
-        newBox.products.push(productId);
-      }
-
-      setSelectedOrder(updatedOrder);
     }
+
+    // Update state with the cloned and modified objects
+    setSelectedOrder(updatedOrder);
+    setBoxes(updatedBoxes);
   };
 
-  // Update order status directly from the list
+// Update order status directly from the list
   const handleDirectStatusUpdate = async (order, targetStatus) => {
     setLoading(true);
 
     try {
-      // In a real app, you would update the order status via API
       // For packing to dispatch transition, we need a separate flow due to box requirements
       if (order.status === 'packing' && targetStatus === 'dispatch') {
         // We need to open the order details for box management
@@ -597,7 +756,28 @@ const OrderManagement = () => {
         return;
       }
 
-      // Mock update for simple status changes
+      // Update via API
+      const response = await orderService.updateOrderStatus(order.order_request_id, targetStatus);
+
+      if (response.success) {
+        // Refresh the orders list
+        const updatedOrders = await orderService.getOrders(warehouse, company, selectedStatus !== 'all' ? selectedStatus : null);
+
+        if (updatedOrders.success) {
+          setOrders(updatedOrders.orders || []);
+        }
+
+        // Success message
+        setSnackbarMessage(`Order ${order.order_request_id} status updated to ${targetStatus}`);
+        setSnackbarSeverity('success');
+        setSnackbarOpen(true);
+      } else {
+        throw new Error(response.msg || 'Unknown error occurred');
+      }
+    } catch (error) {
+      console.error('Error updating order status:', error);
+
+      // Fallback: Update state locally
       const updatedOrders = orders.map(o => {
         if (o.order_request_id === order.order_request_id) {
           return {
@@ -619,13 +799,77 @@ const OrderManagement = () => {
       // Update state
       setOrders(updatedOrders);
 
-      // Success message
-      setSnackbarMessage(`Order ${order.order_request_id} status updated to ${targetStatus}`);
-      setSnackbarSeverity('success');
+      setSnackbarMessage(`Error communicating with API. Status updated locally.`);
+      setSnackbarSeverity('warning');
       setSnackbarOpen(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+// Handle the update status action from the modal
+  const handleUpdateStatus = async () => {
+    try {
+      setLoading(true);
+
+      // Special case for packing to dispatch - need to include box data
+      const boxesData = (newStatus === 'dispatch' && selectedOrder.status === 'packing') ? boxes : null;
+
+      // Validate box data for packing to dispatch transition
+      if (newStatus === 'dispatch' && selectedOrder.status === 'packing') {
+        // Check if we have any boxes
+        if (!boxes || boxes.length === 0) {
+          setSnackbarMessage('You must create at least one box');
+          setSnackbarSeverity('error');
+          setSnackbarOpen(true);
+          setLoading(false);
+          return;
+        }
+
+        // Check if all products are assigned to boxes
+        const unassignedProducts = selectedOrder.products.filter(p => !p.assigned_to_box);
+        if (unassignedProducts.length > 0) {
+          setSnackbarMessage(`${unassignedProducts.length} products are not assigned to any box`);
+          setSnackbarSeverity('error');
+          setSnackbarOpen(true);
+          setLoading(false);
+          return;
+        }
+      }
+
+      // Call the API to update the status
+      const response = await orderService.updateOrderStatus(
+        selectedOrder.order_request_id,
+        newStatus,
+        boxesData
+      );
+
+      if (response.success) {
+        // Refresh the orders list
+        const updatedOrders = await orderService.getOrders(
+          warehouse,
+          company,
+          selectedStatus !== 'all' ? selectedStatus : null
+        );
+
+        if (updatedOrders.success) {
+          setOrders(updatedOrders.orders || []);
+        }
+
+        // Close the dialog
+        setStatusUpdateDialog(false);
+        setOrderDetailsOpen(false);
+
+        // Show success message
+        setSnackbarMessage(`Order ${selectedOrder.order_request_id} status updated to ${newStatus}`);
+        setSnackbarSeverity('success');
+        setSnackbarOpen(true);
+      } else {
+        throw new Error(response.msg || 'Unknown error occurred');
+      }
     } catch (error) {
       console.error('Error updating order status:', error);
-      setSnackbarMessage('Error updating order status');
+      setSnackbarMessage(`Failed to update order status: ${error.message}`);
       setSnackbarSeverity('error');
       setSnackbarOpen(true);
     } finally {
@@ -695,11 +939,14 @@ const OrderManagement = () => {
                     onChange={handleWarehouseChange}
                     label="Warehouse"
                   >
-                    {warehouses.map((wh) => (
-                      <MenuItem key={wh.warehouse_id} value={wh.warehouse_id}>
-                        {wh.name}
-                      </MenuItem>
-                    ))}
+                    {warehouses.map((wh) => {
+                      const warehouseId = wh.warehouse_id !== undefined ? wh.warehouse_id : wh.id;
+                      return (
+                          <MenuItem key={warehouseId} value={warehouseId}>
+                            {wh.name}
+                          </MenuItem>
+                      );
+                    })}
                   </Select>
                 </FormControl>
               </Grid>
@@ -713,11 +960,15 @@ const OrderManagement = () => {
                     onChange={handleCompanyChange}
                     label="Company"
                   >
-                    {companies.map((comp) => (
-                      <MenuItem key={comp.company_id} value={comp.company_id}>
+                    {companies.map((comp) => {
+                    // Use either company_id or id based on what's available
+                    const companyId = comp.company_id !== undefined ? comp.company_id : comp.id;
+                    return (
+                      <MenuItem key={companyId} value={companyId}>
                         {comp.name}
                       </MenuItem>
-                    ))}
+                    );
+                  })}
                   </Select>
                 </FormControl>
               </Grid>
