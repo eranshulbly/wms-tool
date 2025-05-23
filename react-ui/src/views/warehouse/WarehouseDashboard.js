@@ -44,12 +44,7 @@ import dashboardService from '../../services/dashboardService';
 const useStyles = makeStyles((theme) => ({
   statusCard: {
     height: '100%',
-    cursor: 'pointer',
-    transition: 'transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out',
-    '&:hover': {
-      transform: 'translateY(-5px)',
-      boxShadow: theme.shadows[10]
-    }
+    // Removed hover effects and cursor pointer since cards are no longer clickable
   },
   openCard: {
     borderTop: `5px solid ${theme.palette.warning.main}`
@@ -162,6 +157,13 @@ const useStyles = makeStyles((theme) => ({
       borderRadius: '50%',
       backgroundColor: theme.palette.primary.main
     }
+  },
+  // New style for clickable table rows
+  tableRow: {
+    cursor: 'pointer',
+    '&:hover': {
+      backgroundColor: theme.palette.action.hover
+    }
   }
 }));
 
@@ -197,13 +199,11 @@ const WarehouseDashboard = () => {
   const [companies, setCompanies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [statusCounts, setStatusCounts] = useState({});
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [selectedStatus, setSelectedStatus] = useState('');
-  const [selectedOrders, setSelectedOrders] = useState([]);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [orderDetailsOpen, setOrderDetailsOpen] = useState(false);
   const [recentOrders, setRecentOrders] = useState([]);
-  const [loadingOrders, setLoadingOrders] = useState(false);
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [filteredOrders, setFilteredOrders] = useState([]);
 
   // Fetch warehouses and companies on component mount
   useEffect(() => {
@@ -267,6 +267,15 @@ const WarehouseDashboard = () => {
     fetchOrderData();
   }, [warehouse, company]);
 
+  // Filter orders based on status filter
+  useEffect(() => {
+    if (statusFilter === 'all') {
+      setFilteredOrders(recentOrders);
+    } else {
+      setFilteredOrders(recentOrders.filter(order => order.status === statusFilter));
+    }
+  }, [recentOrders, statusFilter]);
+
   // Handle warehouse selection change
   const handleWarehouseChange = (event) => {
     setWarehouse(event.target.value);
@@ -277,33 +286,12 @@ const WarehouseDashboard = () => {
     setCompany(event.target.value);
   };
 
-  // Handle card click to show orders in that status
-  const handleStatusCardClick = async (status) => {
-    setSelectedStatus(status);
-    setLoadingOrders(true);
-
-    try {
-      const response = await dashboardService.getOrdersByStatus(status, warehouse, company);
-      if (response.success) {
-        setSelectedOrders(response.orders);
-      } else {
-        setSelectedOrders([]);
-      }
-    } catch (error) {
-      console.error(`Error fetching ${status} orders:`, error);
-      setSelectedOrders([]);
-    } finally {
-      setLoadingOrders(false);
-      setDialogOpen(true);
-    }
+  // Handle status filter change
+  const handleStatusFilterChange = (event) => {
+    setStatusFilter(event.target.value);
   };
 
-  // Handle dialog close
-  const handleDialogClose = () => {
-    setDialogOpen(false);
-  };
-
-  // Handle opening order details
+  // Handle opening order details - now called when clicking table row
   const handleOrderClick = async (order) => {
     try {
       const response = await dashboardService.getOrderDetails(order.order_request_id);
@@ -417,17 +405,35 @@ const WarehouseDashboard = () => {
                   </Select>
                 </FormControl>
               </Grid>
+              <Grid item xs={12} md={6} lg={3}>
+                <FormControl variant="outlined" className={classes.formControl} fullWidth>
+                  <InputLabel id="status-filter-label">Filter by Status</InputLabel>
+                  <Select
+                    labelId="status-filter-label"
+                    id="status-filter"
+                    value={statusFilter}
+                    onChange={handleStatusFilterChange}
+                    label="Filter by Status"
+                  >
+                    <MenuItem value="all">All Orders</MenuItem>
+                    <MenuItem value="open">Open Orders</MenuItem>
+                    <MenuItem value="picking">Picking</MenuItem>
+                    <MenuItem value="packing">Packing</MenuItem>
+                    <MenuItem value="dispatch">Dispatch Ready</MenuItem>
+                  </Select>
+                </FormControl>
+              </Grid>
             </Grid>
           </CardContent>
         </Card>
       </Grid>
 
-      {/* Order status cards */}
+      {/* Order status cards - Now non-clickable */}
       <Grid item xs={12}>
         <Grid container spacing={gridSpacing}>
           {/* Open Orders Card */}
           <Grid item xs={12} sm={6} md={6} lg={3}>
-            <Card className={`${classes.statusCard} ${classes.openCard}`} onClick={() => handleStatusCardClick('open')}>
+            <Card className={`${classes.statusCard} ${classes.openCard}`}>
               <CardContent>
                 <Box display="flex" alignItems="center">
                   <Box className={classes.iconContainer}>
@@ -448,7 +454,7 @@ const WarehouseDashboard = () => {
 
           {/* Picking Card */}
           <Grid item xs={12} sm={6} md={6} lg={3}>
-            <Card className={`${classes.statusCard} ${classes.pickingCard}`} onClick={() => handleStatusCardClick('picking')}>
+            <Card className={`${classes.statusCard} ${classes.pickingCard}`}>
               <CardContent>
                 <Box display="flex" alignItems="center">
                   <Box className={classes.iconContainer}>
@@ -469,7 +475,7 @@ const WarehouseDashboard = () => {
 
           {/* Packing Card */}
           <Grid item xs={12} sm={6} md={6} lg={3}>
-            <Card className={`${classes.statusCard} ${classes.packingCard}`} onClick={() => handleStatusCardClick('packing')}>
+            <Card className={`${classes.statusCard} ${classes.packingCard}`}>
               <CardContent>
                 <Box display="flex" alignItems="center">
                   <Box className={classes.iconContainer}>
@@ -490,7 +496,7 @@ const WarehouseDashboard = () => {
 
           {/* Dispatch Card */}
           <Grid item xs={12} sm={6} md={6} lg={3}>
-            <Card className={`${classes.statusCard} ${classes.dispatchCard}`} onClick={() => handleStatusCardClick('dispatch')}>
+            <Card className={`${classes.statusCard} ${classes.dispatchCard}`}>
               <CardContent>
                 <Box display="flex" alignItems="center">
                   <Box className={classes.iconContainer}>
@@ -511,11 +517,18 @@ const WarehouseDashboard = () => {
         </Grid>
       </Grid>
 
-      {/* Recent activity */}
+      {/* Recent activity - Updated table structure */}
       <Grid item xs={12}>
         <Card>
           <CardContent>
-            <Typography variant="h4" gutterBottom>Recent Activity</Typography>
+            <Typography variant="h4" gutterBottom>
+              Recent Activity
+              {statusFilter !== 'all' && (
+                <Typography variant="subtitle1" component="span" style={{ marginLeft: 16, color: '#666' }}>
+                  - Showing {orderStatusData[statusFilter]?.label || statusFilter} ({filteredOrders.length} orders)
+                </Typography>
+              )}
+            </Typography>
             <TableContainer className={classes.tableContainer}>
               <Table stickyHeader aria-label="recent activity table">
                 <TableHead>
@@ -523,9 +536,9 @@ const WarehouseDashboard = () => {
                     <TableCell>Order ID</TableCell>
                     <TableCell>Dealer</TableCell>
                     <TableCell>Status</TableCell>
-                    <TableCell>Date</TableCell>
+                    <TableCell>Order Date</TableCell>
+                    <TableCell>Time in Current Status</TableCell>
                     <TableCell>Assigned To</TableCell>
-                    <TableCell>Actions</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -537,26 +550,26 @@ const WarehouseDashboard = () => {
                         </Box>
                       </TableCell>
                     </TableRow>
-                  ) : recentOrders.length === 0 ? (
+                  ) : filteredOrders.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={6} align="center">No recent orders found</TableCell>
+                      <TableCell colSpan={6} align="center">
+                        {statusFilter === 'all' ? 'No recent orders found' : `No orders found with status: ${statusFilter}`}
+                      </TableCell>
                     </TableRow>
                   ) : (
-                    recentOrders.map((order) => (
-                      <TableRow key={order.order_request_id} hover onClick={() => handleOrderClick(order)} style={{ cursor: 'pointer' }}>
+                    filteredOrders.map((order) => (
+                      <TableRow
+                        key={order.order_request_id}
+                        hover
+                        onClick={() => handleOrderClick(order)}
+                        className={classes.tableRow}
+                      >
                         <TableCell>{order.order_request_id}</TableCell>
                         <TableCell>{order.dealer_name}</TableCell>
                         <TableCell>{getStatusChip(order.status)}</TableCell>
                         <TableCell>{formatDate(order.order_date)}</TableCell>
+                        <TableCell>{getTimeInState(order.current_state_time)}</TableCell>
                         <TableCell>{order.assigned_to || 'Unassigned'}</TableCell>
-                        <TableCell>
-                          <IconButton size="small" onClick={(e) => {
-                            e.stopPropagation();
-                            handleOrderClick(order);
-                          }}>
-                            <IconSearch size={18} />
-                          </IconButton>
-                        </TableCell>
                       </TableRow>
                     ))
                   )}
@@ -567,77 +580,7 @@ const WarehouseDashboard = () => {
         </Card>
       </Grid>
 
-      {/* Orders list dialog */}
-      <Dialog
-        open={dialogOpen}
-        onClose={handleDialogClose}
-        maxWidth="md"
-        fullWidth
-      >
-        <DialogTitle>
-          {selectedStatus && orderStatusData[selectedStatus]?.label} ({selectedOrders.length})
-        </DialogTitle>
-        <DialogContent>
-          <TableContainer className={classes.tableContainer}>
-            <Table stickyHeader aria-label="orders table">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Order ID</TableCell>
-                  <TableCell>Original Order ID</TableCell>
-                  <TableCell>Dealer</TableCell>
-                  <TableCell>Order Date</TableCell>
-                  <TableCell>Time in State</TableCell>
-                  <TableCell>Assigned To</TableCell>
-                  <TableCell>Products</TableCell>
-                  <TableCell>Actions</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {loadingOrders ? (
-                  <TableRow>
-                    <TableCell colSpan={8}>
-                      <Box className={classes.loadingContainer}>
-                        <CircularProgress />
-                      </Box>
-                    </TableCell>
-                  </TableRow>
-                ) : selectedOrders.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={8} align="center">No orders found</TableCell>
-                  </TableRow>
-                ) : (
-                  selectedOrders.map((order) => (
-                    <TableRow key={order.order_request_id} hover onClick={() => handleOrderClick(order)} style={{ cursor: 'pointer' }}>
-                      <TableCell>{order.order_request_id}</TableCell>
-                      <TableCell>{order.original_order_id}</TableCell>
-                      <TableCell>{order.dealer_name}</TableCell>
-                      <TableCell>{formatDate(order.order_date)}</TableCell>
-                      <TableCell>{getTimeInState(order.current_state_time)}</TableCell>
-                      <TableCell>{order.assigned_to || 'Unassigned'}</TableCell>
-                      <TableCell>{order.products}</TableCell>
-                      <TableCell>
-                        <IconButton size="small" onClick={(e) => {
-                          e.stopPropagation();
-                          handleOrderClick(order);
-                        }}>
-                          <IconSearch size={18} />
-                        </IconButton>
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </TableContainer>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleDialogClose} color="primary">
-            Close
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Order details dialog */}
+      {/* Order details dialog - Same as before */}
       <Dialog
         open={orderDetailsOpen}
         onClose={handleOrderDetailsClose}
