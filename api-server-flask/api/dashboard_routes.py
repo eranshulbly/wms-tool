@@ -1,7 +1,4 @@
 # -*- encoding: utf-8 -*-
-"""
-Dashboard API routes
-"""
 
 from flask import request
 from flask_restx import Resource, fields
@@ -83,6 +80,7 @@ recent_order_model = rest_api.model('RecentOrder', {
     'dealer_name': fields.String(description='Dealer name'),
     'status': fields.String(description='Current status'),
     'order_date': fields.String(description='Order date'),
+    'current_state_time': fields.String(description='Time of current state'),
     'assigned_to': fields.String(description='User assigned to this order')
 })
 
@@ -249,7 +247,7 @@ class OrdersList(Resource):
                 'dispatch': 'Dispatch Ready'
             }
 
-            db_status = status_map.get(status.lower(), '')
+            db_status = status_map.get(status.lower(), '') if status else ''
 
             # Base query for potential orders
             query = db.session.query(
@@ -273,6 +271,9 @@ class OrdersList(Resource):
 
             # Group by order and dealer
             query = query.group_by(PotentialOrder.potential_order_id, Dealer.name)
+
+            # Order by most recent first
+            query = query.order_by(PotentialOrder.created_at.desc())
 
             # Get the results
             results = query.all()
@@ -305,13 +306,22 @@ class OrdersList(Resource):
                 if state_history:
                     current_state_time = state_history[-1][0].changed_at
 
+                # Map database status to frontend status
+                frontend_status_map = {
+                    'Open': 'open',
+                    'Picking': 'picking',
+                    'Packing': 'packing',
+                    'Dispatch Ready': 'dispatch'
+                }
+                frontend_status = frontend_status_map.get(potential_order.status, 'open')
+
                 # Format the order
                 order_data = {
                     'order_request_id': f"PO{potential_order.potential_order_id}",
                     'original_order_id': potential_order.original_order_id,
                     'dealer_name': dealer_name or 'Unknown Dealer',
                     'order_date': potential_order.order_date.isoformat(),
-                    'status': status,  # Use the requested status for consistency
+                    'status': frontend_status,
                     'current_state_time': current_state_time.isoformat(),
                     'assigned_to': f"User {potential_order.requested_by}",  # In a real app, get the actual username
                     'products': product_count,
@@ -470,6 +480,19 @@ class RecentOrders(Resource):
 
             orders = []
             for potential_order, dealer_name, product_count in results:
+                # Get the time of the most recent state change
+                state_history = db.session.query(
+                    OrderStateHistory
+                ).filter(
+                    OrderStateHistory.potential_order_id == potential_order.potential_order_id
+                ).order_by(
+                    OrderStateHistory.changed_at.desc()
+                ).first()
+
+                current_state_time = potential_order.updated_at
+                if state_history:
+                    current_state_time = state_history.changed_at
+
                 # Map database status to frontend status
                 status_map = {
                     'Open': 'open',
@@ -485,6 +508,7 @@ class RecentOrders(Resource):
                     'dealer_name': dealer_name or 'Unknown Dealer',
                     'status': status,
                     'order_date': potential_order.order_date.isoformat(),
+                    'current_state_time': current_state_time.isoformat(),
                     'assigned_to': f"User {potential_order.requested_by}",  # In a real app, get the actual username
                 }
                 orders.append(order_data)

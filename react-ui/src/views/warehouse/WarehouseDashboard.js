@@ -3,196 +3,26 @@ import {
   Grid,
   Card,
   CardContent,
-  Typography,
-  FormControl,
-  InputLabel,
-  MenuItem,
-  Select,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
-  Button,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
-  Paper,
-  CircularProgress,
-  Box,
-  IconButton,
-  Chip,
-  Divider
+  Typography
 } from '@material-ui/core';
-import { makeStyles } from '@material-ui/styles';
-import {
-  IconPackage,
-  IconTruckDelivery,
-  IconBoxSeam,
-  IconClipboardList,
-  IconSearch,
-  IconCalendar,
-  IconUser,
-  IconClock
-} from '@tabler/icons';
 import { gridSpacing } from '../../store/constant';
 import dashboardService from '../../services/dashboardService';
 
-// Custom styles for the dashboard
-const useStyles = makeStyles((theme) => ({
-  statusCard: {
-    height: '100%',
-    // Removed hover effects and cursor pointer since cards are no longer clickable
-  },
-  openCard: {
-    borderTop: `5px solid ${theme.palette.warning.main}`
-  },
-  pickingCard: {
-    borderTop: `5px solid ${theme.palette.primary.main}`
-  },
-  packingCard: {
-    borderTop: `5px solid ${theme.palette.secondary.main}`
-  },
-  dispatchCard: {
-    borderTop: `5px solid ${theme.palette.success.main}`
-  },
-  iconContainer: {
-    backgroundColor: theme.palette.background.default,
-    padding: theme.spacing(2),
-    borderRadius: '50%',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: theme.spacing(2)
-  },
-  orderCount: {
-    fontSize: '2rem',
-    fontWeight: 600,
-    marginBottom: theme.spacing(1)
-  },
-  statusLabel: {
-    fontSize: '1.25rem',
-    fontWeight: 500
-  },
-  formControl: {
-    marginBottom: theme.spacing(2),
-    minWidth: 200
-  },
-  orderDetailsDialog: {
-    minWidth: 600
-  },
-  chipOpen: {
-    backgroundColor: theme.palette.warning.light,
-    color: theme.palette.warning.dark
-  },
-  chipPicking: {
-    backgroundColor: theme.palette.primary.light,
-    color: theme.palette.primary.dark
-  },
-  chipPacking: {
-    backgroundColor: theme.palette.secondary.light,
-    color: theme.palette.secondary.dark
-  },
-  chipDispatch: {
-    backgroundColor: theme.palette.success.light,
-    color: theme.palette.success.dark
-  },
-  tableContainer: {
-    maxHeight: 440,
-    overflowX: 'auto'
-  },
-  loadingContainer: {
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    height: '100px'
-  },
-  statsSummary: {
-    marginBottom: theme.spacing(3),
-    padding: theme.spacing(2),
-    backgroundColor: theme.palette.background.default,
-    borderRadius: theme.shape.borderRadius
-  },
-  summaryItem: {
-    display: 'flex',
-    alignItems: 'center',
-    marginRight: theme.spacing(3)
-  },
-  detailsHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    marginBottom: theme.spacing(2)
-  },
-  orderIcon: {
-    marginRight: theme.spacing(1)
-  },
-  infoSection: {
-    marginTop: theme.spacing(2),
-    marginBottom: theme.spacing(2)
-  },
-  infoGrid: {
-    marginBottom: theme.spacing(1)
-  },
-  infoLabel: {
-    fontWeight: 500,
-    color: theme.palette.grey[700]
-  },
-  infoValue: {
-    fontWeight: 400
-  },
-  timelineItem: {
-    padding: theme.spacing(2),
-    borderLeft: `2px solid ${theme.palette.primary.main}`,
-    marginLeft: theme.spacing(2),
-    position: 'relative',
-    '&:before': {
-      content: '""',
-      position: 'absolute',
-      left: -8,
-      top: 24,
-      width: 14,
-      height: 14,
-      borderRadius: '50%',
-      backgroundColor: theme.palette.primary.main
-    }
-  },
-  // New style for clickable table rows
-  tableRow: {
-    cursor: 'pointer',
-    '&:hover': {
-      backgroundColor: theme.palette.action.hover
-    }
-  }
-}));
-
-// Define order status data
-const orderStatusData = {
-  open: {
-    icon: <IconClipboardList size={42} color="#ed6c02" />,
-    label: 'Open Orders',
-    chipClass: 'chipOpen'
-  },
-  picking: {
-    icon: <IconPackage size={42} color="#1976d2" />,
-    label: 'Picking',
-    chipClass: 'chipPicking'
-  },
-  packing: {
-    icon: <IconBoxSeam size={42} color="#9c27b0" />,
-    label: 'Packing',
-    chipClass: 'chipPacking'
-  },
-  dispatch: {
-    icon: <IconTruckDelivery size={42} color="#2e7d32" />,
-    label: 'Dispatch Ready',
-    chipClass: 'chipDispatch'
-  }
-};
+// Import separated modules
+import { useWarehouseDashboardStyles } from './styles/warehouseDashboard.styles';
+import { ORDER_STATUS_DATA } from './constants/warehouseDashboard.constants';
+import { filterOrdersByStatus } from './utils/warehouseDashboard.utils';
+import {
+  FilterControls,
+  StatusCard,
+  OrdersTable,
+  OrderDetailsDialog
+} from './components/warehouseDashboard.components';
 
 const WarehouseDashboard = () => {
-  const classes = useStyles();
+  const classes = useWarehouseDashboardStyles();
+
+  // State management
   const [warehouse, setWarehouse] = useState('');
   const [company, setCompany] = useState('');
   const [warehouses, setWarehouses] = useState([]);
@@ -269,29 +99,22 @@ const WarehouseDashboard = () => {
 
   // Filter orders based on status filter
   useEffect(() => {
-    if (statusFilter === 'all') {
-      setFilteredOrders(recentOrders);
-    } else {
-      setFilteredOrders(recentOrders.filter(order => order.status === statusFilter));
-    }
+    setFilteredOrders(filterOrdersByStatus(recentOrders, statusFilter));
   }, [recentOrders, statusFilter]);
 
-  // Handle warehouse selection change
+  // Event handlers
   const handleWarehouseChange = (event) => {
     setWarehouse(event.target.value);
   };
 
-  // Handle company selection change
   const handleCompanyChange = (event) => {
     setCompany(event.target.value);
   };
 
-  // Handle status filter change
   const handleStatusFilterChange = (event) => {
     setStatusFilter(event.target.value);
   };
 
-  // Handle opening order details - now called when clicking table row
   const handleOrderClick = async (order) => {
     try {
       const response = await dashboardService.getOrderDetails(order.order_request_id);
@@ -304,407 +127,80 @@ const WarehouseDashboard = () => {
     }
   };
 
-  // Handle closing order details
   const handleOrderDetailsClose = () => {
     setOrderDetailsOpen(false);
   };
 
-  // Format date for display
-  const formatDate = (dateString) => {
-    const options = { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
-    return new Date(dateString).toLocaleString(undefined, options);
-  };
-
-  // Calculate time in state
-  const getTimeInState = (dateString) => {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffMs = now - date;
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-    const diffHours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-
-    if (diffDays > 0) {
-      return `${diffDays}d ${diffHours}h`;
-    }
-    return `${diffHours}h`;
-  };
-
-  // Get status chip
-  const getStatusChip = (status) => {
-    let className;
-    switch (status) {
-      case 'open':
-        className = classes.chipOpen;
-        break;
-      case 'picking':
-        className = classes.chipPicking;
-        break;
-      case 'packing':
-        className = classes.chipPacking;
-        break;
-      case 'dispatch':
-        className = classes.chipDispatch;
-        break;
-      default:
-        className = '';
-    }
-
-    return (
-      <Chip
-        label={status.charAt(0).toUpperCase() + status.slice(1)}
-        className={className}
-        size="small"
-      />
-    );
-  };
-
   return (
     <Grid container spacing={gridSpacing}>
+      {/* Page Title */}
       <Grid item xs={12}>
         <Typography variant="h3">Warehouse Dashboard</Typography>
       </Grid>
 
-      {/* Filter selections */}
-      <Grid item xs={12}>
-        <Card>
-          <CardContent>
-            <Grid container spacing={2}>
-              <Grid item xs={12} md={6} lg={3}>
-                <FormControl variant="outlined" className={classes.formControl} fullWidth>
-                  <InputLabel id="warehouse-select-label">Warehouse</InputLabel>
-                  <Select
-                    labelId="warehouse-select-label"
-                    id="warehouse-select"
-                    value={warehouse}
-                    onChange={handleWarehouseChange}
-                    label="Warehouse"
-                  >
-                    {warehouses.map((wh) => (
-                      <MenuItem key={wh.id} value={wh.id}>
-                        {wh.name}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-              </Grid>
-              <Grid item xs={12} md={6} lg={3}>
-                <FormControl variant="outlined" className={classes.formControl} fullWidth>
-                  <InputLabel id="company-select-label">Company</InputLabel>
-                  <Select
-                    labelId="company-select-label"
-                    id="company-select"
-                    value={company}
-                    onChange={handleCompanyChange}
-                    label="Company"
-                  >
-                    {companies.map((comp) => (
-                      <MenuItem key={comp.id} value={comp.id}>
-                        {comp.name}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-              </Grid>
-              <Grid item xs={12} md={6} lg={3}>
-                <FormControl variant="outlined" className={classes.formControl} fullWidth>
-                  <InputLabel id="status-filter-label">Filter by Status</InputLabel>
-                  <Select
-                    labelId="status-filter-label"
-                    id="status-filter"
-                    value={statusFilter}
-                    onChange={handleStatusFilterChange}
-                    label="Filter by Status"
-                  >
-                    <MenuItem value="all">All Orders</MenuItem>
-                    <MenuItem value="open">Open Orders</MenuItem>
-                    <MenuItem value="picking">Picking</MenuItem>
-                    <MenuItem value="packing">Packing</MenuItem>
-                    <MenuItem value="dispatch">Dispatch Ready</MenuItem>
-                  </Select>
-                </FormControl>
-              </Grid>
-            </Grid>
-          </CardContent>
-        </Card>
-      </Grid>
+      {/* Filter Controls */}
+      <FilterControls
+        warehouses={warehouses}
+        companies={companies}
+        warehouse={warehouse}
+        company={company}
+        statusFilter={statusFilter}
+        onWarehouseChange={handleWarehouseChange}
+        onCompanyChange={handleCompanyChange}
+        onStatusFilterChange={handleStatusFilterChange}
+        classes={classes}
+      />
 
-      {/* Order status cards - Now non-clickable */}
+      {/* Order Status Cards */}
       <Grid item xs={12}>
         <Grid container spacing={gridSpacing}>
-          {/* Open Orders Card */}
-          <Grid item xs={12} sm={6} md={6} lg={3}>
-            <Card className={`${classes.statusCard} ${classes.openCard}`}>
-              <CardContent>
-                <Box display="flex" alignItems="center">
-                  <Box className={classes.iconContainer}>
-                    {orderStatusData.open.icon}
-                  </Box>
-                  <Box>
-                    <Typography variant="h3" className={classes.orderCount}>
-                      {loading ? <CircularProgress size={30} /> : (statusCounts.open?.count || 0)}
-                    </Typography>
-                    <Typography variant="subtitle1" className={classes.statusLabel}>
-                      {orderStatusData.open.label}
-                    </Typography>
-                  </Box>
-                </Box>
-              </CardContent>
-            </Card>
-          </Grid>
-
-          {/* Picking Card */}
-          <Grid item xs={12} sm={6} md={6} lg={3}>
-            <Card className={`${classes.statusCard} ${classes.pickingCard}`}>
-              <CardContent>
-                <Box display="flex" alignItems="center">
-                  <Box className={classes.iconContainer}>
-                    {orderStatusData.picking.icon}
-                  </Box>
-                  <Box>
-                    <Typography variant="h3" className={classes.orderCount}>
-                      {loading ? <CircularProgress size={30} /> : (statusCounts.picking?.count || 0)}
-                    </Typography>
-                    <Typography variant="subtitle1" className={classes.statusLabel}>
-                      {orderStatusData.picking.label}
-                    </Typography>
-                  </Box>
-                </Box>
-              </CardContent>
-            </Card>
-          </Grid>
-
-          {/* Packing Card */}
-          <Grid item xs={12} sm={6} md={6} lg={3}>
-            <Card className={`${classes.statusCard} ${classes.packingCard}`}>
-              <CardContent>
-                <Box display="flex" alignItems="center">
-                  <Box className={classes.iconContainer}>
-                    {orderStatusData.packing.icon}
-                  </Box>
-                  <Box>
-                    <Typography variant="h3" className={classes.orderCount}>
-                      {loading ? <CircularProgress size={30} /> : (statusCounts.packing?.count || 0)}
-                    </Typography>
-                    <Typography variant="subtitle1" className={classes.statusLabel}>
-                      {orderStatusData.packing.label}
-                    </Typography>
-                  </Box>
-                </Box>
-              </CardContent>
-            </Card>
-          </Grid>
-
-          {/* Dispatch Card */}
-          <Grid item xs={12} sm={6} md={6} lg={3}>
-            <Card className={`${classes.statusCard} ${classes.dispatchCard}`}>
-              <CardContent>
-                <Box display="flex" alignItems="center">
-                  <Box className={classes.iconContainer}>
-                    {orderStatusData.dispatch.icon}
-                  </Box>
-                  <Box>
-                    <Typography variant="h3" className={classes.orderCount}>
-                      {loading ? <CircularProgress size={30} /> : (statusCounts.dispatch?.count || 0)}
-                    </Typography>
-                    <Typography variant="subtitle1" className={classes.statusLabel}>
-                      {orderStatusData.dispatch.label}
-                    </Typography>
-                  </Box>
-                </Box>
-              </CardContent>
-            </Card>
-          </Grid>
+          {Object.keys(ORDER_STATUS_DATA).map((status) => (
+            <StatusCard
+              key={status}
+              status={status}
+              count={statusCounts[status]?.count}
+              loading={loading}
+              classes={classes}
+            />
+          ))}
         </Grid>
       </Grid>
 
-      {/* Recent activity - Updated table structure */}
+      {/* Recent Activity Table */}
       <Grid item xs={12}>
         <Card>
           <CardContent>
             <Typography variant="h4" gutterBottom>
               Recent Activity
               {statusFilter !== 'all' && (
-                <Typography variant="subtitle1" component="span" style={{ marginLeft: 16, color: '#666' }}>
-                  - Showing {orderStatusData[statusFilter]?.label || statusFilter} ({filteredOrders.length} orders)
+                <Typography
+                  variant="subtitle1"
+                  component="span"
+                  className={classes.filterTitle}
+                >
+                  - Showing {ORDER_STATUS_DATA[statusFilter]?.label || statusFilter} ({filteredOrders.length} orders)
                 </Typography>
               )}
             </Typography>
-            <TableContainer className={classes.tableContainer}>
-              <Table stickyHeader aria-label="recent activity table">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Order ID</TableCell>
-                    <TableCell>Dealer</TableCell>
-                    <TableCell>Status</TableCell>
-                    <TableCell>Order Date</TableCell>
-                    <TableCell>Time in Current Status</TableCell>
-                    <TableCell>Assigned To</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {loading ? (
-                    <TableRow>
-                      <TableCell colSpan={6}>
-                        <Box className={classes.loadingContainer}>
-                          <CircularProgress />
-                        </Box>
-                      </TableCell>
-                    </TableRow>
-                  ) : filteredOrders.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={6} align="center">
-                        {statusFilter === 'all' ? 'No recent orders found' : `No orders found with status: ${statusFilter}`}
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    filteredOrders.map((order) => (
-                      <TableRow
-                        key={order.order_request_id}
-                        hover
-                        onClick={() => handleOrderClick(order)}
-                        className={classes.tableRow}
-                      >
-                        <TableCell>{order.order_request_id}</TableCell>
-                        <TableCell>{order.dealer_name}</TableCell>
-                        <TableCell>{getStatusChip(order.status)}</TableCell>
-                        <TableCell>{formatDate(order.order_date)}</TableCell>
-                        <TableCell>{getTimeInState(order.current_state_time)}</TableCell>
-                        <TableCell>{order.assigned_to || 'Unassigned'}</TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
-            </TableContainer>
+
+            <OrdersTable
+              filteredOrders={filteredOrders}
+              loading={loading}
+              statusFilter={statusFilter}
+              onOrderClick={handleOrderClick}
+              classes={classes}
+            />
           </CardContent>
         </Card>
       </Grid>
 
-      {/* Order details dialog - Same as before */}
-      <Dialog
+      {/* Order Details Dialog */}
+      <OrderDetailsDialog
         open={orderDetailsOpen}
+        order={selectedOrder}
         onClose={handleOrderDetailsClose}
-        maxWidth="md"
-        fullWidth
-        className={classes.orderDetailsDialog}
-      >
-        {selectedOrder && (
-          <>
-            <DialogTitle>
-              <div className={classes.detailsHeader}>
-                <IconPackage className={classes.orderIcon} size={24} />
-                <Typography variant="h4">
-                  Order Details: {selectedOrder.order_request_id}
-                </Typography>
-              </div>
-            </DialogTitle>
-            <DialogContent>
-              <Box className={classes.statsSummary}>
-                <Grid container>
-                  <Grid item className={classes.summaryItem}>
-                    <IconCalendar size={20} style={{ marginRight: 8 }} />
-                    <Typography variant="body1">
-                      {formatDate(selectedOrder.order_date)}
-                    </Typography>
-                  </Grid>
-                  <Grid item className={classes.summaryItem}>
-                    <IconClock size={20} style={{ marginRight: 8 }} />
-                    <Typography variant="body1">
-                      {getTimeInState(selectedOrder.current_state_time)} in {getStatusChip(selectedOrder.status)}
-                    </Typography>
-                  </Grid>
-                  <Grid item className={classes.summaryItem}>
-                    <IconUser size={20} style={{ marginRight: 8 }} />
-                    <Typography variant="body1">
-                      {selectedOrder.assigned_to || 'Unassigned'}
-                    </Typography>
-                  </Grid>
-                </Grid>
-              </Box>
-
-              <Grid container spacing={2} className={classes.infoSection}>
-                <Grid item xs={12} md={6} className={classes.infoGrid}>
-                  <Typography variant="subtitle2" className={classes.infoLabel}>
-                    Order ID:
-                  </Typography>
-                  <Typography variant="body1" className={classes.infoValue}>
-                    {selectedOrder.order_request_id}
-                  </Typography>
-                </Grid>
-                <Grid item xs={12} md={6} className={classes.infoGrid}>
-                  <Typography variant="subtitle2" className={classes.infoLabel}>
-                    Original Order ID:
-                  </Typography>
-                  <Typography variant="body1" className={classes.infoValue}>
-                    {selectedOrder.original_order_id}
-                  </Typography>
-                </Grid>
-                <Grid item xs={12} md={6} className={classes.infoGrid}>
-                  <Typography variant="subtitle2" className={classes.infoLabel}>
-                    Dealer:
-                  </Typography>
-                  <Typography variant="body1" className={classes.infoValue}>
-                    {selectedOrder.dealer_name}
-                  </Typography>
-                </Grid>
-                <Grid item xs={12} md={6} className={classes.infoGrid}>
-                  <Typography variant="subtitle2" className={classes.infoLabel}>
-                    Total Products:
-                  </Typography>
-                  <Typography variant="body1" className={classes.infoValue}>
-                    {selectedOrder.products}
-                  </Typography>
-                </Grid>
-                <Grid item xs={12} md={6} className={classes.infoGrid}>
-                  <Typography variant="subtitle2" className={classes.infoLabel}>
-                    Current Status:
-                  </Typography>
-                  <Typography variant="body1" className={classes.infoValue}>
-                    {getStatusChip(selectedOrder.status)}
-                  </Typography>
-                </Grid>
-                <Grid item xs={12} md={6} className={classes.infoGrid}>
-                  <Typography variant="subtitle2" className={classes.infoLabel}>
-                    Time in Current State:
-                  </Typography>
-                  <Typography variant="body1" className={classes.infoValue}>
-                    {getTimeInState(selectedOrder.current_state_time)}
-                  </Typography>
-                </Grid>
-              </Grid>
-
-              <Divider />
-
-              <Box mt={3}>
-                <Typography variant="h5" gutterBottom>
-                  Order Timeline
-                </Typography>
-
-                <Box mt={2}>
-                  {selectedOrder.state_history && selectedOrder.state_history.map((state, index) => (
-                    <Box key={index} className={classes.timelineItem} mb={2}>
-                      <Typography variant="subtitle1">
-                        {state.state_name}
-                      </Typography>
-                      <Typography variant="body2" color="textSecondary">
-                        {formatDate(state.timestamp)}
-                      </Typography>
-                      <Typography variant="body2">
-                        Handled by: {state.user}
-                      </Typography>
-                    </Box>
-                  ))}
-                </Box>
-              </Box>
-            </DialogContent>
-            <DialogActions>
-              <Button onClick={handleOrderDetailsClose} color="primary">
-                Close
-              </Button>
-            </DialogActions>
-          </>
-        )}
-      </Dialog>
+        classes={classes}
+      />
     </Grid>
   );
 };

@@ -30,6 +30,15 @@ status_response = rest_api.model('StatusResponse', {
     'status_counts': fields.Nested(status_counts_model, description='Order status counts')
 })
 
+update_status_model = rest_api.model('UpdateStatusModel', {
+    'new_status': fields.String(required=True, description='New status (open, picking, packing, dispatch)')
+})
+
+update_status_response = rest_api.model('UpdateStatusResponse', {
+    'success': fields.Boolean(description='Success status'),
+    'msg': fields.String(description='Result message')
+})
+
 error_response = rest_api.model('ErrorResponse', {
     'success': fields.Boolean(description='Success status'),
     'msg': fields.String(description='Error message')
@@ -547,6 +556,83 @@ class OrderDetail(Resource):
                     'order_request_id': f"PO{potential_order.potential_order_id}",
                     'status': new_status
                 }
+            }, 200
+
+        except Exception as e:
+            db.session.rollback()
+            return {
+                'success': False,
+                'msg': f'Error updating order status: {str(e)}'
+            }, 400
+
+# Add this route to handle status updates - add to existing OrderDetail class or create new route
+@rest_api.route('/api/orders/<string:order_id>/status')
+class OrderStatusUpdate(Resource):
+    """
+    Endpoint for updating order status
+    """
+
+    @rest_api.expect(update_status_model)
+    @rest_api.response(200, 'Success', update_status_response)
+    @rest_api.response(400, 'Error', error_response)
+    @rest_api.response(404, 'Order not found', error_response)
+    def post(self, order_id):
+        """Update the status of an order"""
+        try:
+            # Extract the numeric part from the order_id (e.g., "PO123" -> 123)
+            numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
+
+            # Get the order
+            potential_order = PotentialOrder.query.get_or_404(numeric_id)
+
+            # Get request data
+            req_data = request.get_json()
+            new_status = req_data.get('new_status')
+
+            # Map frontend status names to database status names
+            status_map = {
+                'open': 'Open',
+                'picking': 'Picking',
+                'packing': 'Packing',
+                'dispatch': 'Dispatch Ready'
+            }
+
+            # Validate the new status
+            if new_status not in status_map:
+                return {
+                    'success': False,
+                    'msg': f'Invalid status: {new_status}'
+                }, 400
+
+            # Get the corresponding state
+            db_status = status_map[new_status]
+            new_state = OrderState.query.filter_by(state_name=db_status).first()
+
+            if not new_state:
+                # Create the state if it doesn't exist
+                new_state = OrderState(state_name=db_status, description=f'{db_status} state')
+                db.session.add(new_state)
+                db.session.flush()
+
+            # Update the order status
+            potential_order.status = db_status
+            potential_order.updated_at = datetime.utcnow()
+
+            # Create a state history entry
+            state_history = OrderStateHistory(
+                potential_order_id=potential_order.potential_order_id,
+                state_id=new_state.state_id,
+                changed_by=1,  # In a real app, use the authenticated user's ID
+                changed_at=datetime.utcnow()
+            )
+            db.session.add(state_history)
+
+            # Commit the changes
+            db.session.commit()
+
+            return {
+                'success': True,
+                'msg': f'Order status updated to {new_status}'
             }, 200
 
         except Exception as e:
