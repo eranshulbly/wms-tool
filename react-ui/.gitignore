@@ -24,3 +24,14 @@ yarn-error.log*
 /.idea/
 
 .env
+.idea/codeStyles/
+.idea/dataSources.xml
+.idea/inspectionProfiles/
+.idea/misc.xml
+.idea/modules.xml
+.idea/vcs.xml
+.idea/wms-tool.iml
+api-server-flask/.DS_Store
+api-server-flask/api/db.sqlite3
+api-server-flask/api/services/tmp/
+

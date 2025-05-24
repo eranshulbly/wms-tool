@@ -138,9 +138,24 @@ const OrderManagement = () => {
     setStatusFilter(event.target.value);
   };
 
-  const handleOrderClick = (order) => {
-    setSelectedOrder(order);
-    setOrderDetailsOpen(true);
+  const handleOrderClick = async (order) => {
+    setLoading(true);
+    try {
+      // Fetch detailed order information with products
+      const response = await orderManagementService.getOrderDetailsWithProducts(order.order_request_id);
+
+      if (response.success) {
+        setSelectedOrder(response.order);
+        setOrderDetailsOpen(true);
+      } else {
+        showSnackbar('Error fetching order details: ' + response.msg, 'error');
+      }
+    } catch (error) {
+      console.error('Error fetching order details:', error);
+      showSnackbar('Error fetching order details', 'error');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleOrderDetailsClose = () => {
@@ -148,11 +163,35 @@ const OrderManagement = () => {
     setSelectedOrder(null);
   };
 
-  const handleStatusUpdate = async (order, newStatus) => {
+  const handleStatusUpdate = async (order, newStatus, additionalData = null) => {
     setLoading(true);
 
     try {
-      const response = await orderManagementService.updateOrderStatus(order.order_request_id, newStatus);
+      let response;
+
+      // Handle different status transitions
+      if (newStatus === 'dispatch' && additionalData) {
+        // For dispatch, use the specialized endpoint
+        response = await orderManagementService.finalizeDispatch(
+          order.order_request_id,
+          additionalData.products,
+          additionalData.boxes
+        );
+      } else if (newStatus === 'packing' && additionalData) {
+        // For packing updates, use the packing endpoint
+        response = await orderManagementService.updatePackingInfo(
+          order.order_request_id,
+          additionalData.products,
+          additionalData.boxes
+        );
+      } else {
+        // For regular status updates
+        response = await orderManagementService.updateOrderStatus(
+          order.order_request_id,
+          newStatus,
+          additionalData
+        );
+      }
 
       if (response.success) {
         // Refresh orders list
@@ -170,7 +209,24 @@ const OrderManagement = () => {
           setOrders(processedOrders);
         }
 
-        showSnackbar(`Order ${order.order_request_id} status updated to ${newStatus}`, 'success');
+        // Show success message with additional info if available
+        let message = `Order ${order.order_request_id} status updated to ${newStatus}`;
+        if (response.final_order_id) {
+          message += `\nFinal Order ID: ${response.final_order_id}`;
+        }
+        if (response.products_dispatched !== undefined) {
+          message += `\nProducts Dispatched: ${response.products_dispatched}`;
+        }
+        if (response.remaining_products !== undefined && response.remaining_products > 0) {
+          message += `\nRemaining Products: ${response.remaining_products}`;
+        }
+
+        showSnackbar(message, 'success');
+
+        // Close dialog if it was a successful dispatch
+        if (newStatus === 'dispatch' && response.final_order_id) {
+          handleOrderDetailsClose();
+        }
       } else {
         throw new Error(response.msg || 'Unknown error occurred');
       }
@@ -219,11 +275,13 @@ const OrderManagement = () => {
         classes={classes}
       />
 
-      {/* Order Details Dialog (Empty for now) */}
+      {/* Enhanced Order Details Dialog */}
       <OrderDetailsDialog
         open={orderDetailsOpen}
         order={selectedOrder}
         onClose={handleOrderDetailsClose}
+        onStatusUpdate={handleStatusUpdate}
+        classes={classes}
       />
 
       {/* Snackbar for notifications */}

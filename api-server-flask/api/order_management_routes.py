@@ -1,6 +1,6 @@
 # -*- encoding: utf-8 -*-
 """
-Order Management API routes
+Order Management API routes - Updated with product details and box packing
 """
 
 from flask import request
@@ -13,35 +13,21 @@ from .models import db, Warehouse, Company, PotentialOrder, PotentialOrderProduc
 from .routes import token_required, rest_api
 
 # Response models for order management
-status_count_model = rest_api.model('StatusCount', {
-    'count': fields.Integer(description='Number of orders with this status'),
-    'label': fields.String(description='Label for the status')
+product_detail_model = rest_api.model('ProductDetail', {
+    'product_id': fields.String(description='Product ID'),
+    'product_string': fields.String(description='Product string identifier'),
+    'name': fields.String(description='Product name'),
+    'description': fields.String(description='Product description'),
+    'quantity_ordered': fields.Integer(description='Originally ordered quantity'),
+    'quantity_available': fields.Integer(description='Available quantity for packing'),
+    'quantity_packed': fields.Integer(description='Quantity already packed'),
+    'price': fields.String(description='Product price')
 })
 
-status_counts_model = rest_api.model('StatusCounts', {
-    'open': fields.Nested(status_count_model),
-    'picking': fields.Nested(status_count_model),
-    'packing': fields.Nested(status_count_model),
-    'dispatch': fields.Nested(status_count_model)
-})
-
-status_response = rest_api.model('StatusResponse', {
-    'success': fields.Boolean(description='Success status'),
-    'status_counts': fields.Nested(status_counts_model, description='Order status counts')
-})
-
-update_status_model = rest_api.model('UpdateStatusModel', {
-    'new_status': fields.String(required=True, description='New status (open, picking, packing, dispatch)')
-})
-
-update_status_response = rest_api.model('UpdateStatusResponse', {
-    'success': fields.Boolean(description='Success status'),
-    'msg': fields.String(description='Result message')
-})
-
-error_response = rest_api.model('ErrorResponse', {
-    'success': fields.Boolean(description='Success status'),
-    'msg': fields.String(description='Error message')
+box_assignment_model = rest_api.model('BoxAssignment', {
+    'box_id': fields.String(description='Box ID'),
+    'box_name': fields.String(description='Box name'),
+    'products': fields.List(fields.Raw, description='Products with quantities in this box')
 })
 
 state_history_model = rest_api.model('StateHistory', {
@@ -50,21 +36,7 @@ state_history_model = rest_api.model('StateHistory', {
     'user': fields.String(description='User who changed the state')
 })
 
-product_model = rest_api.model('Product', {
-    'product_id': fields.String(description='Product ID'),
-    'name': fields.String(description='Product name'),
-    'description': fields.String(description='Product description'),
-    'quantity': fields.Integer(description='Quantity'),
-    'assigned_to_box': fields.String(description='Box assignment, if any')
-})
-
-box_model = rest_api.model('Box', {
-    'box_id': fields.String(description='Box ID'),
-    'name': fields.String(description='Box name'),
-    'products': fields.List(fields.String, description='List of product IDs in this box')
-})
-
-order_model = rest_api.model('Order', {
+order_detail_model = rest_api.model('OrderDetail', {
     'order_request_id': fields.String(description='Order request ID'),
     'original_order_id': fields.String(description='Original order ID'),
     'dealer_name': fields.String(description='Dealer name'),
@@ -72,263 +44,51 @@ order_model = rest_api.model('Order', {
     'status': fields.String(description='Current status'),
     'current_state_time': fields.String(description='Time of current state'),
     'assigned_to': fields.String(description='User assigned to this order'),
-    'products': fields.List(fields.Nested(product_model), description='Products in this order'),
-    'boxes': fields.List(fields.Nested(box_model), description='Boxes for this order'),
+    'products': fields.List(fields.Nested(product_detail_model), description='Products in this order'),
+    'boxes': fields.List(fields.Nested(box_assignment_model), description='Box assignments'),
     'state_history': fields.List(fields.Nested(state_history_model), description='State history')
 })
 
-orders_response = rest_api.model('OrdersResponse', {
-    'success': fields.Boolean(description='Success status'),
-    'orders': fields.List(fields.Nested(order_model), description='List of orders')
+packing_update_model = rest_api.model('PackingUpdate', {
+    'products': fields.List(fields.Raw, description='Products with packed quantities and box assignments'),
+    'boxes': fields.List(fields.Nested(box_assignment_model), description='Box assignments')
 })
 
-update_status_model = rest_api.model('UpdateStatusModel', {
-    'new_status': fields.String(required=True, description='New status'),
-    'boxes': fields.List(fields.Nested(box_model), description='Box assignments (required for packing to dispatch)')
+dispatch_update_model = rest_api.model('DispatchUpdate', {
+    'products': fields.List(fields.Raw, description='Final products with quantities for dispatch'),
+    'boxes': fields.List(fields.Nested(box_assignment_model), description='Final box assignments')
+})
+
+order_detail_response = rest_api.model('OrderDetailResponse', {
+    'success': fields.Boolean(description='Success status'),
+    'order': fields.Nested(order_detail_model, description='Order details')
+})
+
+error_response = rest_api.model('ErrorResponse', {
+    'success': fields.Boolean(description='Success status'),
+    'msg': fields.String(description='Error message')
 })
 
 update_status_response = rest_api.model('UpdateStatusResponse', {
     'success': fields.Boolean(description='Success status'),
     'msg': fields.String(description='Result message'),
-    'order': fields.Nested(order_model, description='Updated order')
+    'order': fields.Nested(order_detail_model, description='Updated order')
 })
 
 
-@rest_api.route('/api/orders/status-counts')
-class OrderStatusCount(Resource):
+@rest_api.route('/api/orders/<string:order_id>/details')
+class OrderDetailWithProducts(Resource):
     """
-    Endpoint for retrieving order status counts for dashboard
-    """
-
-    @rest_api.doc(params={'warehouse_id': 'Warehouse ID', 'company_id': 'Company ID'})
-    @rest_api.response(200, 'Success', status_response)
-    @rest_api.response(400, 'Error', error_response)
-    def get(self):
-        """Get counts of orders by status"""
-        try:
-            warehouse_id = request.args.get('warehouse_id', type=int)
-            company_id = request.args.get('company_id', type=int)
-
-            # Base query for potential orders
-            query = PotentialOrder.query
-
-            # Apply filters if provided
-            if warehouse_id:
-                query = query.filter(PotentialOrder.warehouse_id == warehouse_id)
-            if company_id:
-                query = query.filter(PotentialOrder.company_id == company_id)
-
-            # Map frontend status names to database status names
-            status_map = {
-                'open': 'Open',
-                'picking': 'Picking',
-                'packing': 'Packing',
-                'dispatch': 'Dispatch Ready'
-            }
-
-            # Get counts for each status
-            open_count = query.filter(PotentialOrder.status == status_map['open']).count()
-            picking_count = query.filter(PotentialOrder.status == status_map['picking']).count()
-            packing_count = query.filter(PotentialOrder.status == status_map['packing']).count()
-            dispatch_count = query.filter(PotentialOrder.status == status_map['dispatch']).count()
-
-            return {
-                'success': True,
-                'status_counts': {
-                    'open': {
-                        'count': open_count,
-                        'label': 'Open Orders'
-                    },
-                    'picking': {
-                        'count': picking_count,
-                        'label': 'Picking'
-                    },
-                    'packing': {
-                        'count': packing_count,
-                        'label': 'Packing'
-                    },
-                    'dispatch': {
-                        'count': dispatch_count,
-                        'label': 'Dispatch Ready'
-                    }
-                }
-            }, 200
-
-        except Exception as e:
-            return {
-                'success': False,
-                'msg': f'Error retrieving order status counts: {str(e)}'
-            }, 400
-
-
-@rest_api.route('/api/orders')
-class OrdersList(Resource):
-    """
-    Endpoint for retrieving orders with optional filtering
+    Endpoint for retrieving detailed order information including products
     """
 
-    @rest_api.doc(params={
-        'status': 'Order status (open, picking, packing, dispatch, all)',
-        'warehouse_id': 'Warehouse ID',
-        'company_id': 'Company ID'
-    })
-    @rest_api.response(200, 'Success', orders_response)
-    @rest_api.response(400, 'Error', error_response)
-    def get(self):
-        """Get orders with optional filtering"""
-        try:
-            status = request.args.get('status', 'all')
-            warehouse_id = request.args.get('warehouse_id', type=int)
-            company_id = request.args.get('company_id', type=int)
-
-            # Map frontend status names to database status names
-            status_map = {
-                'open': 'Open',
-                'picking': 'Picking',
-                'packing': 'Packing',
-                'dispatch': 'Dispatch Ready'
-            }
-
-            # Base query for potential orders
-            query = db.session.query(
-                PotentialOrder,
-                Dealer.name.label('dealer_name')
-            ).join(
-                Dealer, PotentialOrder.dealer_id == Dealer.dealer_id, isouter=True
-            )
-
-            # Apply filters
-            if status != 'all':
-                query = query.filter(PotentialOrder.status == status_map.get(status))
-            if warehouse_id:
-                query = query.filter(PotentialOrder.warehouse_id == warehouse_id)
-            if company_id:
-                query = query.filter(PotentialOrder.company_id == company_id)
-
-            # Get results
-            results = query.all()
-
-            orders = []
-            for potential_order, dealer_name in results:
-                # Get products for this order
-                products = []
-                order_products = PotentialOrderProduct.query.filter(
-                    PotentialOrderProduct.potential_order_id == potential_order.potential_order_id
-                ).all()
-
-                for order_product in order_products:
-                    product = Product.query.get(order_product.product_id)
-                    if product:
-                        products.append({
-                            'product_id': product.product_string or f'P{product.product_id}',
-                            'name': product.name,
-                            'description': product.description or '',
-                            'quantity': order_product.quantity,
-                            'assigned_to_box': None  # Will be populated if boxes exist
-                        })
-
-                # Get boxes and assignments (if status is packing or dispatch)
-                boxes = []
-                if potential_order.status in ['Packing', 'Dispatch Ready']:
-                    # In a real implementation, you would get boxes from your database
-                    # For now, we'll create a default box if none exists
-                    box = Box.query.filter_by(name=f'Box-{potential_order.potential_order_id}').first()
-
-                    if not box:
-                        box = Box(
-                            name=f'Box-{potential_order.potential_order_id}',
-                            created_at=datetime.utcnow(),
-                            updated_at=datetime.utcnow()
-                        )
-                        db.session.add(box)
-                        db.session.commit()
-
-                    boxes.append({
-                        'box_id': f'B{box.box_id}',
-                        'name': box.name,
-                        'products': [p['product_id'] for p in products]  # Assign all products to this box
-                    })
-
-                    # Update product assignments
-                    for product in products:
-                        product['assigned_to_box'] = f'B{box.box_id}'
-
-                # Get state history
-                state_history = db.session.query(
-                    OrderStateHistory, OrderState
-                ).join(
-                    OrderState, OrderStateHistory.state_id == OrderState.state_id
-                ).filter(
-                    OrderStateHistory.potential_order_id == potential_order.potential_order_id
-                ).order_by(
-                    OrderStateHistory.changed_at
-                ).all()
-
-                formatted_history = []
-                for history, state in state_history:
-                    username = f"User {history.changed_by}"  # In a real app, get actual username
-                    formatted_history.append({
-                        'state_name': state.state_name,
-                        'timestamp': history.changed_at.isoformat(),
-                        'user': username
-                    })
-
-                # Get current state time
-                current_state_time = potential_order.updated_at
-                if formatted_history:
-                    # Use the time of the most recent state change
-                    current_state_time = datetime.fromisoformat(
-                        formatted_history[-1]['timestamp'].replace('Z', '+00:00'))
-
-                # Map database status to frontend status
-                status_map = {
-                    'Open': 'open',
-                    'Picking': 'picking',
-                    'Packing': 'packing',
-                    'Dispatch Ready': 'dispatch'
-                }
-                frontend_status = status_map.get(potential_order.status, 'open')
-
-                # Format order data
-                order_data = {
-                    'order_request_id': f"PO{potential_order.potential_order_id}",
-                    'original_order_id': potential_order.original_order_id,
-                    'dealer_name': dealer_name or 'Unknown Dealer',
-                    'order_date': potential_order.order_date.isoformat(),
-                    'status': frontend_status,
-                    'current_state_time': current_state_time.isoformat(),
-                    'assigned_to': f"User {potential_order.requested_by}",  # In a real app, get actual username
-                    'products': products,
-                    'boxes': boxes,
-                    'state_history': formatted_history
-                }
-                orders.append(order_data)
-
-            return {
-                'success': True,
-                'orders': orders
-            }, 200
-
-        except Exception as e:
-            return {
-                'success': False,
-                'msg': f'Error retrieving orders: {str(e)}'
-            }, 400
-
-
-@rest_api.route('/api/orders/<string:order_id>')
-class OrderDetail(Resource):
-    """
-    Endpoint for retrieving details of a specific order and updating its status
-    """
-
-    @rest_api.response(200, 'Success', orders_response)
+    @rest_api.response(200, 'Success', order_detail_response)
     @rest_api.response(400, 'Error', error_response)
     @rest_api.response(404, 'Order not found', error_response)
     def get(self, order_id):
-        """Get detailed information for a specific order"""
+        """Get detailed information for a specific order including all products"""
         try:
-            # Extract the numeric part from the order_id (e.g., "PO123" -> 123)
+            # Extract the numeric part from the order_id
             numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
 
             # Get the order
@@ -338,48 +98,39 @@ class OrderDetail(Resource):
             dealer = Dealer.query.get(potential_order.dealer_id)
             dealer_name = dealer.name if dealer else 'Unknown Dealer'
 
-            # Get products for this order
+            # Get products for this order with detailed information
             products = []
-            order_products = PotentialOrderProduct.query.filter(
+            order_products = db.session.query(PotentialOrderProduct, Product).join(
+                Product, PotentialOrderProduct.product_id == Product.product_id
+            ).filter(
                 PotentialOrderProduct.potential_order_id == potential_order.potential_order_id
             ).all()
 
-            for order_product in order_products:
-                product = Product.query.get(order_product.product_id)
-                if product:
-                    products.append({
-                        'product_id': product.product_string or f'P{product.product_id}',
-                        'name': product.name,
-                        'description': product.description or '',
-                        'quantity': order_product.quantity,
-                        'assigned_to_box': None  # Will be populated if boxes exist
-                    })
-
-            # Get boxes and assignments (if status is packing or dispatch)
-            boxes = []
-            if potential_order.status in ['Packing', 'Dispatch Ready']:
-                # In a real implementation, you would get boxes from your database
-                # For now, we'll create a default box if none exists
-                box = Box.query.filter_by(name=f'Box-{potential_order.potential_order_id}').first()
-
-                if not box:
-                    box = Box(
-                        name=f'Box-{potential_order.potential_order_id}',
-                        created_at=datetime.utcnow(),
-                        updated_at=datetime.utcnow()
-                    )
-                    db.session.add(box)
-                    db.session.commit()
-
-                boxes.append({
-                    'box_id': f'B{box.box_id}',
-                    'name': box.name,
-                    'products': [p['product_id'] for p in products]  # Assign all products to this box
+            for order_product, product in order_products:
+                products.append({
+                    'product_id': product.product_id,
+                    'product_string': product.product_string or f'P{product.product_id}',
+                    'name': product.name,
+                    'description': product.description or '',
+                    'quantity_ordered': order_product.quantity,
+                    'quantity_available': order_product.quantity,  # In real scenario, check inventory
+                    'quantity_packed': 0,  # Will be updated during packing
+                    'price': str(product.price) if product.price else '0.00'
                 })
 
-                # Update product assignments
-                for product in products:
-                    product['assigned_to_box'] = f'B{box.box_id}'
+            # Get existing box assignments if any
+            boxes = []
+            existing_boxes = db.session.query(OrderBox).filter(
+                OrderBox.order_id == potential_order.potential_order_id
+            ).all()
+
+            for box in existing_boxes:
+                # Get products in this box (this would need a proper junction table in real implementation)
+                boxes.append({
+                    'box_id': f'B{box.box_id}',
+                    'box_name': box.name,
+                    'products': []  # Would be populated from box-product junction table
+                })
 
             # Get state history
             state_history = db.session.query(
@@ -394,7 +145,7 @@ class OrderDetail(Resource):
 
             formatted_history = []
             for history, state in state_history:
-                username = f"User {history.changed_by}"  # In a real app, get actual username
+                username = f"User {history.changed_by}"
                 formatted_history.append({
                     'state_name': state.state_name,
                     'timestamp': history.changed_at.isoformat(),
@@ -404,7 +155,6 @@ class OrderDetail(Resource):
             # Get current state time
             current_state_time = potential_order.updated_at
             if formatted_history:
-                # Use the time of the most recent state change
                 current_state_time = datetime.fromisoformat(formatted_history[-1]['timestamp'].replace('Z', '+00:00'))
 
             # Map database status to frontend status
@@ -424,7 +174,7 @@ class OrderDetail(Resource):
                 'order_date': potential_order.order_date.isoformat(),
                 'status': frontend_status,
                 'current_state_time': current_state_time.isoformat(),
-                'assigned_to': f"User {potential_order.requested_by}",  # In a real app, get actual username
+                'assigned_to': f"User {potential_order.requested_by}",
                 'products': products,
                 'boxes': boxes,
                 'state_history': formatted_history
@@ -432,7 +182,7 @@ class OrderDetail(Resource):
 
             return {
                 'success': True,
-                'orders': [order_data]  # Return as a list for consistency with other endpoints
+                'order': order_data
             }, 200
 
         except Exception as e:
@@ -441,203 +191,212 @@ class OrderDetail(Resource):
                 'msg': f'Error retrieving order details: {str(e)}'
             }, 400
 
-    @rest_api.expect(update_status_model)
+
+@rest_api.route('/api/orders/<string:order_id>/packing')
+class OrderPackingUpdate(Resource):
+    """
+    Endpoint for updating packing information
+    """
+
+    @rest_api.expect(packing_update_model)
     @rest_api.response(200, 'Success', update_status_response)
     @rest_api.response(400, 'Error', error_response)
-    @rest_api.response(404, 'Order not found', error_response)
     def post(self, order_id):
-        """Update the status of an order"""
+        """Update packing information for an order"""
         try:
-            # Extract the numeric part from the order_id (e.g., "PO123" -> 123)
             numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
-
-            # Get the order
             potential_order = PotentialOrder.query.get_or_404(numeric_id)
 
-            # Get request data
             req_data = request.get_json()
-            new_status = req_data.get('new_status')
+            products_data = req_data.get('products', [])
             boxes_data = req_data.get('boxes', [])
 
-            # Map frontend status names to database status names
-            status_map = {
-                'open': 'Open',
-                'picking': 'Picking',
-                'packing': 'Packing',
-                'dispatch': 'Dispatch Ready'
-            }
-
-            # Validate the new status
-            if new_status not in status_map:
+            # Validate that order is in packing status
+            if potential_order.status != 'Packing':
                 return {
                     'success': False,
-                    'msg': f'Invalid status: {new_status}'
+                    'msg': 'Order must be in Packing status to update packing information'
                 }, 400
 
-            # Get the corresponding state
-            db_status = status_map[new_status]
-            new_state = OrderState.query.filter_by(state_name=db_status).first()
+            # Process box assignments and update quantities
+            for box_data in boxes_data:
+                box_name = box_data.get('box_name')
+                box_products = box_data.get('products', [])
 
-            if not new_state:
-                # Create the state if it doesn't exist
-                new_state = OrderState(state_name=db_status, description=f'{db_status} state')
-                db.session.add(new_state)
+                # Create or get box
+                box = Box(
+                    name=box_name,
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow()
+                )
+                db.session.add(box)
                 db.session.flush()
 
-            # Special handling for packing to dispatch transition
-            if potential_order.status == 'Packing' and db_status == 'Dispatch Ready':
-                if not boxes_data:
-                    return {
-                        'success': False,
-                        'msg': 'Box assignments required for transition to Dispatch Ready'
-                    }, 400
+                # Create OrderBox association
+                order_box = OrderBox(
+                    order_id=potential_order.potential_order_id,
+                    box_id=box.box_id,
+                    name=box_name,
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow()
+                )
+                db.session.add(order_box)
 
-                # Process the box assignments
-                for box_data in boxes_data:
-                    box_id = box_data.get('box_id')
-                    box_name = box_data.get('name')
-                    product_ids = box_data.get('products', [])
+                # In a real implementation, you'd create a junction table for box-product relationships
+                # For now, we'll store this information in the box name or a separate field
 
-                    # Validate that all products are assigned
-                    products_in_order = PotentialOrderProduct.query.filter(
-                        PotentialOrderProduct.potential_order_id == potential_order.potential_order_id
-                    ).all()
-
-                    product_id_strings = []
-                    for op in products_in_order:
-                        product = Product.query.get(op.product_id)
-                        if product:
-                            product_id_strings.append(product.product_string or f'P{product.product_id}')
-
-                    # Check if all products are assigned to a box
-                    if not all(p_id in product_ids for p_id in product_id_strings):
-                        return {
-                            'success': False,
-                            'msg': 'All products must be assigned to a box'
-                        }, 400
-
-                    # Create or update the box
-                    numeric_box_id = int(box_id.replace('B', '')) if box_id.startswith('B') else None
-                    box = None
-
-                    if numeric_box_id:
-                        box = Box.query.get(numeric_box_id)
-
-                    if not box:
-                        box = Box(
-                            name=box_name,
-                            created_at=datetime.utcnow(),
-                            updated_at=datetime.utcnow()
-                        )
-                        db.session.add(box)
-                        db.session.flush()
-
-            # Update the order status
-            potential_order.status = db_status
+            # Update the order status to indicate packing is in progress
             potential_order.updated_at = datetime.utcnow()
-
-            # Create a state history entry
-            state_history = OrderStateHistory(
-                potential_order_id=potential_order.potential_order_id,
-                state_id=new_state.state_id,
-                changed_by=1,  # In a real app, use the authenticated user's ID
-                changed_at=datetime.utcnow()
-            )
-            db.session.add(state_history)
-
-            # Commit the changes
             db.session.commit()
 
-            # Return the updated order details
             return {
                 'success': True,
-                'msg': f'Order status updated to {new_status}',
-                'order': {
-                    'order_request_id': f"PO{potential_order.potential_order_id}",
-                    'status': new_status
-                }
+                'msg': 'Packing information updated successfully'
             }, 200
 
         except Exception as e:
             db.session.rollback()
             return {
                 'success': False,
-                'msg': f'Error updating order status: {str(e)}'
+                'msg': f'Error updating packing information: {str(e)}'
             }, 400
 
-# Add this route to handle status updates - add to existing OrderDetail class or create new route
-@rest_api.route('/api/orders/<string:order_id>/status')
-class OrderStatusUpdate(Resource):
+
+@rest_api.route('/api/orders/<string:order_id>/dispatch')
+class OrderDispatchFinal(Resource):
     """
-    Endpoint for updating order status
+    Endpoint for finalizing order and moving to dispatch
     """
 
-    @rest_api.expect(update_status_model)
+    @rest_api.expect(dispatch_update_model)
     @rest_api.response(200, 'Success', update_status_response)
     @rest_api.response(400, 'Error', error_response)
-    @rest_api.response(404, 'Order not found', error_response)
     def post(self, order_id):
-        """Update the status of an order"""
+        """Finalize order and create final order record"""
         try:
-            # Extract the numeric part from the order_id (e.g., "PO123" -> 123)
             numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
-
-            # Get the order
             potential_order = PotentialOrder.query.get_or_404(numeric_id)
 
-            # Get request data
             req_data = request.get_json()
-            new_status = req_data.get('new_status')
+            products_data = req_data.get('products', [])
+            boxes_data = req_data.get('boxes', [])
 
-            # Map frontend status names to database status names
-            status_map = {
-                'open': 'Open',
-                'picking': 'Picking',
-                'packing': 'Packing',
-                'dispatch': 'Dispatch Ready'
-            }
-
-            # Validate the new status
-            if new_status not in status_map:
+            # Validate that order is in packing status
+            if potential_order.status != 'Packing':
                 return {
                     'success': False,
-                    'msg': f'Invalid status: {new_status}'
+                    'msg': 'Order must be in Packing status to dispatch'
                 }, 400
 
-            # Get the corresponding state
-            db_status = status_map[new_status]
-            new_state = OrderState.query.filter_by(state_name=db_status).first()
-
-            if not new_state:
-                # Create the state if it doesn't exist
-                new_state = OrderState(state_name=db_status, description=f'{db_status} state')
-                db.session.add(new_state)
+            # Start transaction
+            try:
+                # Create final order
+                final_order = Order(
+                    potential_order_id=potential_order.potential_order_id,
+                    order_number=f"ORD-{potential_order.potential_order_id}-{datetime.now().strftime('%Y%m%d')}",
+                    status='In Transit',
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow()
+                )
+                db.session.add(final_order)
                 db.session.flush()
 
-            # Update the order status
-            potential_order.status = db_status
-            potential_order.updated_at = datetime.utcnow()
+                # Process products and create final order products
+                total_dispatched_products = 0
+                for product_data in products_data:
+                    product_id = product_data.get('product_id')
+                    quantity_packed = product_data.get('quantity_packed', 0)
 
-            # Create a state history entry
-            state_history = OrderStateHistory(
-                potential_order_id=potential_order.potential_order_id,
-                state_id=new_state.state_id,
-                changed_by=1,  # In a real app, use the authenticated user's ID
-                changed_at=datetime.utcnow()
-            )
-            db.session.add(state_history)
+                    if quantity_packed > 0:
+                        # Get the original potential order product
+                        potential_product = PotentialOrderProduct.query.filter(
+                            PotentialOrderProduct.potential_order_id == potential_order.potential_order_id,
+                            PotentialOrderProduct.product_id == product_id
+                        ).first()
 
-            # Commit the changes
-            db.session.commit()
+                        if potential_product:
+                            # Create final order product
+                            order_product = OrderProduct(
+                                order_id=final_order.order_id,
+                                product_id=product_id,
+                                quantity=quantity_packed,
+                                mrp=potential_product.mrp,
+                                total_price=potential_product.mrp * quantity_packed if potential_product.mrp else None,
+                                created_at=datetime.utcnow(),
+                                updated_at=datetime.utcnow()
+                            )
+                            db.session.add(order_product)
+                            total_dispatched_products += 1
 
-            return {
-                'success': True,
-                'msg': f'Order status updated to {new_status}'
-            }, 200
+                            # Update potential order product quantity (reduce by packed amount)
+                            remaining_quantity = potential_product.quantity - quantity_packed
+                            if remaining_quantity <= 0:
+                                # Remove the potential order product if fully packed
+                                db.session.delete(potential_product)
+                            else:
+                                # Update with remaining quantity
+                                potential_product.quantity = remaining_quantity
+                                potential_product.updated_at = datetime.utcnow()
+
+                # Process boxes for final order
+                for box_data in boxes_data:
+                    box_name = box_data.get('box_name')
+
+                    # Create final order box
+                    order_box = OrderBox(
+                        order_id=final_order.order_id,
+                        name=box_name,
+                        created_at=datetime.utcnow(),
+                        updated_at=datetime.utcnow()
+                    )
+                    db.session.add(order_box)
+
+                # Check if any products remain in potential order
+                remaining_products = PotentialOrderProduct.query.filter(
+                    PotentialOrderProduct.potential_order_id == potential_order.potential_order_id
+                ).count()
+
+                if remaining_products == 0:
+                    # All products were dispatched, mark potential order as completed
+                    potential_order.status = 'Completed'
+                else:
+                    # Some products remain, mark as partially completed
+                    potential_order.status = 'Partially Completed'
+
+                # Update potential order
+                potential_order.updated_at = datetime.utcnow()
+
+                # Create state history for the transition
+                dispatch_state = OrderState.query.filter_by(state_name='Dispatch Ready').first()
+                if not dispatch_state:
+                    dispatch_state = OrderState(state_name='Dispatch Ready', description='Ready for dispatch')
+                    db.session.add(dispatch_state)
+                    db.session.flush()
+
+                state_history = OrderStateHistory(
+                    potential_order_id=potential_order.potential_order_id,
+                    state_id=dispatch_state.state_id,
+                    changed_by=1,  # In real app, use authenticated user ID
+                    changed_at=datetime.utcnow()
+                )
+                db.session.add(state_history)
+
+                db.session.commit()
+
+                return {
+                    'success': True,
+                    'msg': f'Order dispatched successfully. Order number: {final_order.order_number}',
+                    'final_order_id': final_order.order_id,
+                    'products_dispatched': total_dispatched_products,
+                    'remaining_products': remaining_products
+                }, 200
+
+            except Exception as e:
+                db.session.rollback()
+                raise e
 
         except Exception as e:
-            db.session.rollback()
             return {
                 'success': False,
-                'msg': f'Error updating order status: {str(e)}'
+                'msg': f'Error dispatching order: {str(e)}'
             }, 400

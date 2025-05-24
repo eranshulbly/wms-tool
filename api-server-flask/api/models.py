@@ -272,8 +272,10 @@ class PotentialOrderProduct(db.Model):
     potential_order_id = db.Column(db.Integer(), db.ForeignKey('potential_order.potential_order_id'))
     product_id = db.Column(db.Integer(), db.ForeignKey('product.product_id'))
     quantity = db.Column(db.Integer(), nullable=False)
-    mrp = db.Column(db.Numeric(10, 2))  # Maximum Retail Price of the product
-    total_price = db.Column(db.Numeric(10, 2))  # Total price = quantity * mrp
+    quantity_packed = db.Column(db.Integer(), default=0)  # NEW FIELD
+    quantity_remaining = db.Column(db.Integer())  # NEW FIELD - calculated field
+    mrp = db.Column(db.Numeric(10, 2))
+    total_price = db.Column(db.Numeric(10, 2))
     created_at = db.Column(db.DateTime(), default=datetime.now())
     updated_at = db.Column(db.DateTime(), default=datetime.now(), onupdate=datetime.now())
 
@@ -291,14 +293,21 @@ class PotentialOrderProduct(db.Model):
     def get_by_id(cls, potential_order_product_id):
         return cls.query.get_or_404(potential_order_product_id)
 
+    @property
+    def calculated_quantity_remaining(self):
+        """Calculate remaining quantity"""
+        return self.quantity - (self.quantity_packed or 0)
+
     def to_dict(self):
         return {
             'potential_order_product_id': self.potential_order_product_id,
             'potential_order_id': self.potential_order_id,
             'product_id': self.product_id,
             'quantity': self.quantity,
-            'mrp': str(self.mrp),
-            'total_price': str(self.total_price)
+            'quantity_packed': self.quantity_packed or 0,
+            'quantity_remaining': self.calculated_quantity_remaining,
+            'mrp': str(self.mrp) if self.mrp else None,
+            'total_price': str(self.total_price) if self.total_price else None
         }
 
 
@@ -456,4 +465,40 @@ class OrderStateHistory(db.Model):
             'changed_by': self.changed_by,
             'changed_at': self.changed_at
         }
+
+class BoxProduct(db.Model):
+    __tablename__ = 'box_product'
+
+    box_product_id = db.Column(db.Integer(), primary_key=True)
+    box_id = db.Column(db.Integer(), db.ForeignKey('box.box_id'))
+    product_id = db.Column(db.Integer(), db.ForeignKey('product.product_id'))
+    quantity = db.Column(db.Integer(), nullable=False)
+    potential_order_id = db.Column(db.Integer(), db.ForeignKey('potential_order.potential_order_id'))
+    created_at = db.Column(db.DateTime(), default=datetime.now())
+    updated_at = db.Column(db.DateTime(), default=datetime.now(), onupdate=datetime.now())
+
+    box = db.relationship('Box', backref=db.backref('box_products', lazy=True))
+    product = db.relationship('Product', backref=db.backref('box_assignments', lazy=True))
+    potential_order = db.relationship('PotentialOrder', backref=db.backref('box_assignments', lazy=True))
+
+    def __repr__(self):
+        return f"BoxProduct {self.box_product_id} - Box {self.box_id} Product {self.product_id}"
+
+    def save(self):
+        db.session.add(self)
+        db.session.commit()
+
+    @classmethod
+    def get_by_id(cls, box_product_id):
+        return cls.query.get_or_404(box_product_id)
+
+    def to_dict(self):
+        return {
+            'box_product_id': self.box_product_id,
+            'box_id': self.box_id,
+            'product_id': self.product_id,
+            'quantity': self.quantity,
+            'potential_order_id': self.potential_order_id
+        }
+
 
