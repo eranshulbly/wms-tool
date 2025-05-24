@@ -14,7 +14,7 @@ export const useWarehouseDashboardStyles = makeStyles((theme) => ({
   packingCard: {
     borderTop: `5px solid ${theme.palette.secondary.main}`
   },
-  dispatchCard: {
+  dispatchReadyCard: { // Changed from dispatchCard
     borderTop: `5px solid ${theme.palette.success.main}`
   },
   completedCard: {
@@ -60,7 +60,7 @@ export const useWarehouseDashboardStyles = makeStyles((theme) => ({
     backgroundColor: theme.palette.secondary.light,
     color: theme.palette.secondary.dark
   },
-  chipDispatch: {
+  chipDispatchReady: { // Changed from chipDispatch
     backgroundColor: theme.palette.success.light,
     color: theme.palette.success.dark
   },

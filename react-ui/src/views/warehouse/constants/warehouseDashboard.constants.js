@@ -24,10 +24,10 @@ export const ORDER_STATUS_DATA = {
     label: 'Packing',
     chipClass: 'chipPacking'
   },
-  dispatch: {
+  'dispatch-ready': { // Changed from 'dispatch'
     icon: <IconTruckDelivery size={42} color="#2e7d32" />,
     label: 'Dispatch Ready',
-    chipClass: 'chipDispatch'
+    chipClass: 'chipDispatchReady' // Changed class name
   },
   completed: {
     icon: <IconUxCircle size={42} color="#4caf50" />,
@@ -47,7 +47,7 @@ export const STATUS_FILTER_OPTIONS = [
   { value: 'open', label: 'Open Orders' },
   { value: 'picking', label: 'Picking' },
   { value: 'packing', label: 'Packing' },
-  { value: 'dispatch', label: 'Dispatch Ready' },
+  { value: 'dispatch-ready', label: 'Dispatch Ready' }, // Changed from 'dispatch'
   { value: 'completed', label: 'Completed' },
   { value: 'partially-completed', label: 'Partially Completed' }
 ];

@@ -69,14 +69,14 @@ export const getStatusChipClass = (status) => {
     'open': 'chipOpen',
     'picking': 'chipPicking',
     'packing': 'chipPacking',
-    'dispatch': 'chipDispatch',
-    'dispatch-ready': 'chipDispatch', // Handle both formats
+    'dispatch-ready': 'chipDispatchReady', // Changed from 'chipDispatch'
     'completed': 'chipCompleted',
     'partially-completed': 'chipPartiallyCompleted'
   };
 
   return statusClassMap[normalizedStatus] || 'chipOpen';
 };
+
 
 /**
  * FIXED: Filter orders based on status with proper status mapping
@@ -94,11 +94,6 @@ export const filterOrdersByStatus = (orders, statusFilter) => {
   return orders.filter(order => {
     const orderStatus = String(order.status || '').toLowerCase().replace(/\s+/g, '-');
     const filterStatus = statusFilter.toLowerCase().replace(/\s+/g, '-');
-    
-    // Handle special case for dispatch/dispatch-ready mapping
-    if (filterStatus === 'dispatch' && (orderStatus === 'dispatch' || orderStatus === 'dispatch-ready')) {
-      return true;
-    }
     
     return orderStatus === filterStatus;
   });

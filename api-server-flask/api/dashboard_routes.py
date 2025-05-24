@@ -163,10 +163,12 @@ class CompanyList(Resource):
 @rest_api.route('/api/orders/status')
 class OrderStatusCount(Resource):
     """
-    FIXED: Endpoint for retrieving order status counts - Fixed status mapping
+    FIXED: Endpoint for retrieving order status counts including new states
     """
 
     @rest_api.doc(params={'warehouse_id': 'Warehouse ID', 'company_id': 'Company ID'})
+    @rest_api.marshal_with(status_response)
+    @rest_api.response(400, 'Error', error_response)
     def get(self):
         """Get counts of orders by status including completed and partially completed"""
         try:
@@ -182,13 +184,11 @@ class OrderStatusCount(Resource):
             if company_id:
                 query = query.filter(PotentialOrder.company_id == company_id)
 
-            # FIXED: Get counts for each status including Dispatch Ready
+            # Get counts for each status
             open_count = query.filter(PotentialOrder.status == 'Open').count()
             picking_count = query.filter(PotentialOrder.status == 'Picking').count()
             packing_count = query.filter(PotentialOrder.status == 'Packing').count()
-
-            # FIX 3: Properly count "Dispatch Ready" status
-            dispatch_count = query.filter(PotentialOrder.status == 'Dispatch Ready').count()
+            dispatch_ready_count = query.filter(PotentialOrder.status == 'Dispatch Ready').count()
             completed_count = query.filter(PotentialOrder.status == 'Completed').count()
             partially_completed_count = query.filter(PotentialOrder.status == 'Partially Completed').count()
 
@@ -207,8 +207,8 @@ class OrderStatusCount(Resource):
                         'count': packing_count,
                         'label': 'Packing'
                     },
-                    'dispatch': {
-                        'count': dispatch_count,
+                    'dispatch-ready': {  # Changed from 'dispatch'
+                        'count': dispatch_ready_count,
                         'label': 'Dispatch Ready'
                     },
                     'completed': {
@@ -229,10 +229,11 @@ class OrderStatusCount(Resource):
             }, 400
 
 
+# Also update the OrdersList get method to handle new statuses
 @rest_api.route('/api/orders')
 class OrdersList(Resource):
     """
-    FIXED: Endpoint for retrieving orders filtered by status - Fixed status mapping
+    FIXED: Endpoint for retrieving orders filtered by status including new states
     """
 
     @rest_api.doc(params={
@@ -240,6 +241,8 @@ class OrdersList(Resource):
         'warehouse_id': 'Warehouse ID',
         'company_id': 'Company ID'
     })
+    @rest_api.marshal_with(orders_response)
+    @rest_api.response(400, 'Error', error_response)
     def get(self):
         """Get orders filtered by status including completed and partially completed"""
         try:
@@ -252,7 +255,7 @@ class OrdersList(Resource):
                 'open': 'Open',
                 'picking': 'Picking',
                 'packing': 'Packing',
-                'dispatch': 'Dispatch Ready',  # This is the key fix - 'dispatch' maps to 'Dispatch Ready'
+                'dispatch-ready': 'Dispatch Ready',  # Changed from 'dispatch'
                 'completed': 'Completed',
                 'partially-completed': 'Partially Completed'
             }
@@ -321,7 +324,7 @@ class OrdersList(Resource):
                     'Open': 'open',
                     'Picking': 'picking',
                     'Packing': 'packing',
-                    'Dispatch Ready': 'dispatch',  # This is the key mapping
+                    'Dispatch Ready': 'dispatch-ready',  # Changed from 'dispatch'
                     'Completed': 'completed',
                     'Partially Completed': 'partially-completed'
                 }
@@ -411,7 +414,9 @@ class OrderDetail(Resource):
                 'Open': 'open',
                 'Picking': 'picking',
                 'Packing': 'packing',
-                'Dispatch Ready': 'dispatch'
+                'Dispatch Ready': 'dispatch-ready',
+                'Completed': 'completed',
+                'Partially Completed': 'partially-completed'
             }
             status = status_map.get(potential_order.status, 'open')
 
@@ -510,7 +515,9 @@ class RecentOrders(Resource):
                     'Open': 'open',
                     'Picking': 'picking',
                     'Packing': 'packing',
-                    'Dispatch Ready': 'dispatch'
+                    'Dispatch Ready': 'dispatch-ready',
+                    'Completed': 'completed',
+                    'Partially Completed': 'partially-completed'
                 }
                 status = status_map.get(potential_order.status, 'open')
 
@@ -534,200 +541,4 @@ class RecentOrders(Resource):
             return {
                 'success': False,
                 'msg': f'Error retrieving recent orders: {str(e)}'
-            }, 400
-
-
-@rest_api.route('/api/orders/status')
-class OrderStatusCount(Resource):
-    """
-    FIXED: Endpoint for retrieving order status counts including new states
-    """
-
-    @rest_api.doc(params={'warehouse_id': 'Warehouse ID', 'company_id': 'Company ID'})
-    @rest_api.marshal_with(status_response)
-    @rest_api.response(400, 'Error', error_response)
-    def get(self):
-        """Get counts of orders by status including completed and partially completed"""
-        try:
-            warehouse_id = request.args.get('warehouse_id', type=int)
-            company_id = request.args.get('company_id', type=int)
-
-            # Base query for potential orders
-            query = PotentialOrder.query
-
-            # Apply filters if provided
-            if warehouse_id:
-                query = query.filter(PotentialOrder.warehouse_id == warehouse_id)
-            if company_id:
-                query = query.filter(PotentialOrder.company_id == company_id)
-
-            # Get counts for each status
-            open_count = query.filter(PotentialOrder.status == 'Open').count()
-            picking_count = query.filter(PotentialOrder.status == 'Picking').count()
-            packing_count = query.filter(PotentialOrder.status == 'Packing').count()
-            dispatch_count = query.filter(PotentialOrder.status == 'Dispatch Ready').count()
-            completed_count = query.filter(PotentialOrder.status == 'Completed').count()
-            partially_completed_count = query.filter(PotentialOrder.status == 'Partially Completed').count()
-
-            return {
-                'success': True,
-                'status_counts': {
-                    'open': {
-                        'count': open_count,
-                        'label': 'Open Orders'
-                    },
-                    'picking': {
-                        'count': picking_count,
-                        'label': 'Picking'
-                    },
-                    'packing': {
-                        'count': packing_count,
-                        'label': 'Packing'
-                    },
-                    'dispatch': {
-                        'count': dispatch_count,
-                        'label': 'Dispatch Ready'
-                    },
-                    'completed': {
-                        'count': completed_count,
-                        'label': 'Completed'
-                    },
-                    'partially-completed': {
-                        'count': partially_completed_count,
-                        'label': 'Partially Completed'
-                    }
-                }
-            }, 200
-
-        except Exception as e:
-            return {
-                'success': False,
-                'msg': f'Error retrieving order status counts: {str(e)}'
-            }, 400
-
-
-# Also update the OrdersList get method to handle new statuses
-@rest_api.route('/api/orders')
-class OrdersList(Resource):
-    """
-    FIXED: Endpoint for retrieving orders filtered by status including new states
-    """
-
-    @rest_api.doc(params={
-        'status': 'Order status (open, picking, packing, dispatch, completed, partially-completed)',
-        'warehouse_id': 'Warehouse ID',
-        'company_id': 'Company ID'
-    })
-    @rest_api.marshal_with(orders_response)
-    @rest_api.response(400, 'Error', error_response)
-    def get(self):
-        """Get orders filtered by status including completed and partially completed"""
-        try:
-            status = request.args.get('status', '')
-            warehouse_id = request.args.get('warehouse_id', type=int)
-            company_id = request.args.get('company_id', type=int)
-
-            # FIXED: Map frontend status names to database status names including new states
-            status_map = {
-                'open': 'Open',
-                'picking': 'Picking',
-                'packing': 'Packing',
-                'dispatch': 'Dispatch Ready',
-                'completed': 'Completed',
-                'partially-completed': 'Partially Completed'
-            }
-
-            db_status = status_map.get(status.lower(), '') if status else ''
-
-            # Base query for potential orders
-            query = db.session.query(
-                PotentialOrder,
-                Dealer.name.label('dealer_name'),
-                db.func.count(PotentialOrderProduct.potential_order_product_id).label('product_count')
-            ).join(
-                Dealer, PotentialOrder.dealer_id == Dealer.dealer_id, isouter=True
-            ).join(
-                PotentialOrderProduct, PotentialOrder.potential_order_id == PotentialOrderProduct.potential_order_id,
-                isouter=True
-            )
-
-            # Apply filters
-            if db_status:
-                query = query.filter(PotentialOrder.status == db_status)
-            if warehouse_id:
-                query = query.filter(PotentialOrder.warehouse_id == warehouse_id)
-            if company_id:
-                query = query.filter(PotentialOrder.company_id == company_id)
-
-            # Group by order and dealer
-            query = query.group_by(PotentialOrder.potential_order_id, Dealer.name)
-
-            # Order by most recent first
-            query = query.order_by(PotentialOrder.created_at.desc())
-
-            # Get the results
-            results = query.all()
-
-            orders = []
-            for potential_order, dealer_name, product_count in results:
-                # Get state history for the order
-                state_history = db.session.query(
-                    OrderStateHistory, OrderState.state_name
-                ).join(
-                    OrderState, OrderStateHistory.state_id == OrderState.state_id
-                ).filter(
-                    OrderStateHistory.potential_order_id == potential_order.potential_order_id
-                ).order_by(
-                    OrderStateHistory.changed_at
-                ).all()
-
-                # Format state history
-                formatted_history = []
-                for history, state_name in state_history:
-                    user = f"User {history.changed_by}"
-                    formatted_history.append({
-                        'state_name': state_name,
-                        'timestamp': history.changed_at.isoformat(),
-                        'user': user
-                    })
-
-                # Get the time of the most recent state change
-                current_state_time = potential_order.updated_at
-                if state_history:
-                    current_state_time = state_history[-1][0].changed_at
-
-                # FIXED: Map database status to frontend status including new states
-                frontend_status_map = {
-                    'Open': 'open',
-                    'Picking': 'picking',
-                    'Packing': 'packing',
-                    'Dispatch Ready': 'dispatch',
-                    'Completed': 'completed',
-                    'Partially Completed': 'partially-completed'
-                }
-                frontend_status = frontend_status_map.get(potential_order.status, 'open')
-
-                # Format the order
-                order_data = {
-                    'order_request_id': f"PO{potential_order.potential_order_id}",
-                    'original_order_id': potential_order.original_order_id,
-                    'dealer_name': dealer_name or 'Unknown Dealer',
-                    'order_date': potential_order.order_date.isoformat(),
-                    'status': frontend_status,
-                    'current_state_time': current_state_time.isoformat(),
-                    'assigned_to': f"User {potential_order.requested_by}",
-                    'products': product_count,
-                    'state_history': formatted_history
-                }
-                orders.append(order_data)
-
-            return {
-                'success': True,
-                'orders': orders
-            }, 200
-
-        except Exception as e:
-            return {
-                'success': False,
-                'msg': f'Error retrieving orders: {str(e)}'
             }, 400

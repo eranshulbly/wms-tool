@@ -6,7 +6,7 @@ export const STATUS_FILTER_OPTIONS = [
   { value: 'open', label: 'Open Orders' },
   { value: 'picking', label: 'Picking' },
   { value: 'packing', label: 'Packing' },
-  { value: 'dispatch', label: 'Dispatch Ready' }, // FIX 3: Ensure 'dispatch' is properly mapped
+  { value: 'dispatch-ready', label: 'Dispatch Ready' }, // Changed from 'dispatch'
   { value: 'completed', label: 'Completed' },
   { value: 'partially-completed', label: 'Partially Completed' }
 ];
@@ -15,10 +15,10 @@ export const STATUS_FILTER_OPTIONS = [
 export const STATUS_PROGRESSION = {
   'open': 'picking',
   'picking': 'packing',
-  'packing': 'dispatch', // This will map to 'Dispatch Ready' in the backend
-  'dispatch': null, // Final status - will be handled in dispatch process
-  'completed': null, // Final status
-  'partially-completed': null // Final status
+  'packing': 'dispatch-ready', // Changed from 'dispatch'
+  'dispatch-ready': null,
+  'completed': null,
+  'partially-completed': null
 };
 
 // FIXED Status display names - consistent naming
@@ -26,7 +26,7 @@ export const STATUS_LABELS = {
   'open': 'Open',
   'picking': 'Picking',
   'packing': 'Packing',
-  'dispatch': 'Dispatch Ready', // FIX 3: Consistent with backend
+  'dispatch-ready': 'Dispatch Ready', // Changed from 'dispatch'
   'completed': 'Completed',
   'partially-completed': 'Partially Completed'
 };
@@ -36,7 +36,7 @@ export const FRONTEND_TO_BACKEND_STATUS = {
   'open': 'Open',
   'picking': 'Picking',
   'packing': 'Packing',
-  'dispatch': 'Dispatch Ready', // This is the critical mapping
+  'dispatch-ready': 'Dispatch Ready', // Changed from 'dispatch'
   'completed': 'Completed',
   'partially-completed': 'Partially Completed'
 };
@@ -46,7 +46,7 @@ export const BACKEND_TO_FRONTEND_STATUS = {
   'Open': 'open',
   'Picking': 'picking',
   'Packing': 'packing',
-  'Dispatch Ready': 'dispatch', // This is the critical reverse mapping
+  'Dispatch Ready': 'dispatch-ready', // This is the key mapping
   'Completed': 'completed',
   'Partially Completed': 'partially-completed'
 };

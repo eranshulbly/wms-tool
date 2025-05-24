@@ -46,8 +46,10 @@ import {
   IconMinus,
   IconChevronDown
 } from '@tabler/icons';
-import { STATUS_FILTER_OPTIONS, TABLE_COLUMNS } from '../constants/orderManagement.constants';
+import { STATUS_FILTER_OPTIONS, STATUS_LABELS, TABLE_COLUMNS } from '../constants/orderManagement.constants';
 import { formatDate, getTimeInCurrentStatus, getNextStatus, getStatusChipClass } from '../utils/orderManagement.utils';
+// Import orderManagementService at the top of orderManagement.components.js
+import orderManagementService from '../../../services/orderManagementService';
 
 /**
  * Filter Controls Component
@@ -137,12 +139,12 @@ export const FilterControls = ({
  * Status Chip Component
  */
 export const StatusChip = ({ status, classes }) => {
-  const normalizedStatus = String(status).toLowerCase();
-  const className = classes[getStatusChipClass(status)];
+  const normalizedStatus = String(status).toLowerCase().replace(/\s+/g, '-');
+  const className = classes[getStatusChipClass(normalizedStatus)]; // This will now use the updated function
 
   return (
     <Chip
-      label={normalizedStatus.charAt(0).toUpperCase() + normalizedStatus.slice(1)}
+      label={STATUS_LABELS[normalizedStatus] || normalizedStatus}
       className={`${classes.statusChip} ${className}`}
       size="small"
     />
@@ -154,7 +156,7 @@ export const StatusChip = ({ status, classes }) => {
 const CORRECT_STATUS_PROGRESSION = {
   'open': { next: 'picking', label: 'Start Picking' },
   'picking': { next: 'packing', label: 'Start Packing' },
-  'packing': { next: 'dispatch-ready', label: 'Ready for Dispatch' },
+  'packing': { next: 'dispatch-ready', label: 'Ready for Dispatch' }, // Changed
   'dispatch-ready': { next: 'completed', label: 'Complete Dispatch' },
   'completed': null,
   'partially-completed': null
@@ -373,14 +375,39 @@ const ProductPackingForm = ({ products, boxes, onUpdateProducts, onUpdateBoxes, 
 
     // Initialize quantities for all products in the new box
     const newBoxQuantities = { ...boxProductQuantities };
-    products.forEach(product => {
-      if (!newBoxQuantities[product.product_id]) {
-        newBoxQuantities[product.product_id] = {};
-      }
-      newBoxQuantities[product.product_id][newBoxId] = 0;
-    });
-    setBoxProductQuantities(newBoxQuantities);
+    const newQuantities = { ...productQuantities };
+    const newAssignments = { ...productBoxAssignments };
 
+    // If this is the first box, assign all available quantities
+    if (boxList.length === 0) {
+      products.forEach(product => {
+        if (!newBoxQuantities[product.product_id]) {
+          newBoxQuantities[product.product_id] = {};
+        }
+
+        // Set quantity to available quantity for first box
+        const availableQty = product.quantity_available || product.quantity_ordered;
+        newBoxQuantities[product.product_id][newBoxId] = availableQty;
+
+        // Update total quantities and assignments
+        newQuantities[product.product_id] = availableQty;
+        newAssignments[product.product_id] = newBoxId;
+      });
+    } else {
+      // For subsequent boxes, initialize with 0
+      products.forEach(product => {
+        if (!newBoxQuantities[product.product_id]) {
+          newBoxQuantities[product.product_id] = {};
+        }
+        newBoxQuantities[product.product_id][newBoxId] = 0;
+      });
+    }
+
+    setBoxProductQuantities(newBoxQuantities);
+    setProductQuantities(newQuantities);
+    setProductBoxAssignments(newAssignments);
+
+    onUpdateProducts(newQuantities, newAssignments, newBoxQuantities);
     onUpdateBoxes(updatedBoxes);
   };
 
@@ -765,29 +792,23 @@ export const OrderDetailsDialog = ({
         box_id: box.box_id,
         box_name: box.box_name,
         products: order.products
-          .filter(product =>
-            productBoxAssignments[product.product_id] &&
-            productBoxAssignments[product.product_id].includes(box.box_id) &&
-            (boxProductQuantities[product.product_id]?.[box.box_id] || 0) > 0
-          )
-          .map(product => ({
-            product_id: product.product_id,
-            quantity: boxProductQuantities[product.product_id]?.[box.box_id] || 0
-          }))
+            .filter(product =>
+                productBoxAssignments[product.product_id] &&
+                productBoxAssignments[product.product_id].includes(box.box_id) &&
+                (boxProductQuantities[product.product_id]?.[box.box_id] || 0) > 0
+            )
+            .map(product => ({
+              product_id: product.product_id,
+              quantity: boxProductQuantities[product.product_id]?.[box.box_id] || 0
+            }))
       })).filter(box => box.products.length > 0);
 
-      const response = await fetch(`/api/orders/${order.order_request_id}/move-to-dispatch-ready`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          products: productsData,
-          boxes: boxesData
-        })
-      });
-
-      const result = await response.json();
+      // Use the service instead of direct fetch
+      const result = await orderManagementService.moveToDispatchReady(
+          order.order_request_id,
+          productsData,
+          boxesData
+      );
 
       if (result.success) {
         setActiveStep(2); // Move to Dispatch Ready step
@@ -828,14 +849,8 @@ export const OrderDetailsDialog = ({
 
     setLoading(true);
     try {
-      const response = await fetch(`/api/orders/${order.order_request_id}/complete-dispatch`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        }
-      });
-
-      const result = await response.json();
+      // Use the service instead of direct fetch
+      const result = await orderManagementService.completeDispatch(order.order_request_id);
 
       if (result.success) {
         alert([
@@ -860,6 +875,7 @@ export const OrderDetailsDialog = ({
       setLoading(false);
     }
   };
+
 
   const renderStepContent = () => {
     switch (activeStep) {
@@ -1026,14 +1042,82 @@ export const OrderDetailsDialog = ({
           </Box>
         );
 
-      case 3: // Completed
+      case 3: // FIXED: Completed with remaining products display
+        const isPartiallyCompleted = order?.status?.toLowerCase().includes('partially');
+
         return (
           <Box textAlign="center" p={4}>
-            <IconCheck size={64} color="#4caf50" style={{ marginBottom: 16 }} />
-            <Typography variant="h5" gutterBottom>Order Completed</Typography>
-            <Typography variant="body1" color="textSecondary">
-              This order has been successfully dispatched from the warehouse.
+            <IconCheck size={64} color={isPartiallyCompleted ? "#ff9800" : "#4caf50"} style={{ marginBottom: 16 }} />
+            <Typography variant="h5" gutterBottom>
+              Order {isPartiallyCompleted ? 'Partially Completed' : 'Completed'}
             </Typography>
+            <Typography variant="body1" color="textSecondary">
+              {isPartiallyCompleted
+                ? 'This order has been partially completed with some items remaining.'
+                : 'This order has been successfully dispatched from the warehouse.'}
+            </Typography>
+
+            {/* Show remaining products for partially completed orders */}
+            {isPartiallyCompleted && order?.products && (
+              <Box mt={3} textAlign="left">
+                <Typography variant="h6" gutterBottom>
+                  Remaining Products:
+                </Typography>
+                <TableContainer component={Paper}>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Product</TableCell>
+                        <TableCell align="right">Originally Ordered</TableCell>
+                        <TableCell align="right">Packed</TableCell>
+                        <TableCell align="right">Remaining</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {order.products
+                        .filter(product => {
+                          const packed = product.quantity_packed || 0;
+                          const ordered = product.quantity_ordered || 0;
+                          return ordered > packed;
+                        })
+                        .map((product) => {
+                          const packed = product.quantity_packed || 0;
+                          const ordered = product.quantity_ordered || 0;
+                          const remaining = ordered - packed;
+
+                          return (
+                            <TableRow key={product.product_id}>
+                              <TableCell>
+                                <Typography variant="body2" fontWeight="bold">
+                                  {product.name}
+                                </Typography>
+                                <Typography variant="caption" color="textSecondary">
+                                  {product.product_string}
+                                </Typography>
+                              </TableCell>
+                              <TableCell align="right">{ordered}</TableCell>
+                              <TableCell align="right">{packed}</TableCell>
+                              <TableCell align="right">
+                                <Typography color="warning.main" fontWeight="bold">
+                                  {remaining}
+                                </Typography>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+
+                {/* Add summary */}
+                <Box mt={2} p={2} bgcolor="warning.light" borderRadius={1}>
+                  <Typography variant="body2">
+                    <strong>Note:</strong> These remaining items can be processed in a new order.
+                  </Typography>
+                </Box>
+              </Box>
+            )}
+
             {order?.final_order?.dispatched_date && (
               <Typography variant="body2" style={{ marginTop: 16 }}>
                 Dispatched on: {new Date(order.final_order.dispatched_date).toLocaleString()}

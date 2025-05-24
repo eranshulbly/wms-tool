@@ -1,4 +1,4 @@
-// Order Management Service - Updated with product details and packing functionality
+// Order Management Service - Cleaned version with unused functions removed
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
@@ -11,7 +11,7 @@ class OrderManagementService {
    * Get all warehouses
    * @returns {Promise<Object>} API response with warehouses
    */
- async getWarehouses() {
+  async getWarehouses() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/warehouses`);
       const data = await response.json();
@@ -133,6 +133,13 @@ class OrderManagementService {
     }
   }
 
+  /**
+   * Move order to dispatch ready status
+   * @param {string} orderId - Order ID
+   * @param {Array} products - Products with packed quantities
+   * @param {Array} boxes - Box assignments
+   * @returns {Promise<Object>} API response
+   */
   async moveToDispatchReady(orderId, products, boxes) {
     try {
       const requestBody = {
@@ -156,6 +163,11 @@ class OrderManagementService {
     }
   }
 
+  /**
+   * Complete order dispatch
+   * @param {string} orderId - Order ID
+   * @returns {Promise<Object>} API response
+   */
   async completeDispatch(orderId) {
     try {
       const response = await fetch(`${API_BASE_URL}/api/orders/${orderId}/complete-dispatch`, {
@@ -173,6 +185,13 @@ class OrderManagementService {
     }
   }
 
+  /**
+   * Handle status update based on action type
+   * @param {string} orderId - Order ID
+   * @param {string} action - Action type
+   * @param {Object} additionalData - Additional data for the action
+   * @returns {Promise<Object>} API response
+   */
   async handleStatusUpdate(orderId, action, additionalData = null) {
     try {
       switch (action) {
@@ -200,39 +219,6 @@ class OrderManagementService {
       return { success: false, msg: error.message };
     }
   }
-  /**
-   * Update packing information for an order
-   * @param {string} orderId - Order ID (e.g., "PO123")
-   * @param {Array} products - Products with packed quantities
-   * @param {Array} boxes - Box assignments
-   * @returns {Promise<Object>} API response
-   */
-  async updatePackingInfo(orderId, products, boxes) {
-    return this.moveToDispatchReady(orderId, products, boxes);
-  }
-
-  /**
-   * Finalize order and dispatch
-   * @param {string} orderId - Order ID (e.g., "PO123")
-   * @param {Array} products - Final products with quantities
-   * @param {Array} boxes - Final box assignments
-   * @returns {Promise<Object>} API response
-   */
-   /**
-   * Legacy method - kept for backward compatibility
-   */
-  async finalizeDispatch(orderId, products, boxes) {
-    return this.completeDispatch(orderId);
-  }
-
-  /**
-   * Get order details by ID (legacy method - kept for backward compatibility)
-   * @param {string} orderId - Order ID (e.g., "PO123")
-   * @returns {Promise<Object>} API response with order details
-   */
-  async getOrderById(orderId) {
-    return this.getOrderDetailsWithProducts(orderId);
-  }
 
   /**
    * Get order status counts
@@ -259,8 +245,9 @@ class OrderManagementService {
   /**
    * Validate packing data before submission
    * @param {Array} products - Products with quantities
-   * @param {Array} boxes - Box assignments
+   * @param {Object} productQuantities - Product quantities
    * @param {Object} productBoxAssignments - Product to box mappings
+   * @param {Object} boxProductQuantities - Product quantities per box
    * @returns {Object} Validation result
    */
   validatePackingData(products, productQuantities, productBoxAssignments, boxProductQuantities) {
@@ -349,6 +336,14 @@ class OrderManagementService {
     };
   }
 
+  /**
+   * Process box assignments for API submission
+   * @param {Array} boxes - Boxes array
+   * @param {Array} products - Products array
+   * @param {Object} productBoxAssignments - Product box assignments
+   * @param {Object} boxProductQuantities - Box product quantities
+   * @returns {Array} Processed box assignments
+   */
   processBoxAssignments(boxes, products, productBoxAssignments, boxProductQuantities) {
     return boxes.map(box => ({
       box_id: box.box_id,
@@ -366,6 +361,12 @@ class OrderManagementService {
     })).filter(box => box.products.length > 0);
   }
 
+  /**
+   * Process products data for API submission
+   * @param {Array} products - Products array
+   * @param {Object} productQuantities - Product quantities
+   * @returns {Array} Processed products data
+   */
   processProductsData(products, productQuantities) {
     return products.map(product => ({
       product_id: product.product_id,
@@ -373,46 +374,7 @@ class OrderManagementService {
       quantity_remaining: product.quantity_ordered - (productQuantities[product.product_id] || 0)
     })).filter(p => p.quantity_packed > 0 || p.quantity_remaining > 0);
   }
-
-  debugBoxLogic(products, boxes, productQuantities, productBoxAssignments, boxProductQuantities) {
-    console.group('🔍 Debug Box Logic');
-
-    console.log('📦 Products:', products.map(p => ({
-      id: p.product_id,
-      name: p.name,
-      ordered: p.quantity_ordered
-    })));
-
-    console.log('📊 Product Quantities:', productQuantities);
-    console.log('🏷️ Product Box Assignments:', productBoxAssignments);
-    console.log('📋 Box Product Quantities:', boxProductQuantities);
-
-    boxes.forEach(box => {
-      const boxTotal = products.reduce((total, product) => {
-        const qty = boxProductQuantities[product.product_id]?.[box.box_id] || 0;
-        return total + (parseInt(qty) || 0);
-      }, 0);
-
-      const productsInBox = products.filter(product => {
-        const qty = boxProductQuantities[product.product_id]?.[box.box_id] || 0;
-        return parseInt(qty) > 0;
-      });
-
-      console.log(`📦 ${box.box_name}:`, {
-        total: boxTotal,
-        products: productsInBox.length,
-        details: productsInBox.map(p => ({
-          name: p.name,
-          quantity: boxProductQuantities[p.product_id]?.[box.box_id] || 0
-        }))
-      });
-    });
-
-    console.groupEnd();
-  }
 }
-
-
 
 // Export singleton instance
 const orderManagementService = new OrderManagementService();

@@ -24,7 +24,7 @@ export const useOrderManagementStyles = makeStyles((theme) => ({
     backgroundColor: theme.palette.secondary.light,
     color: theme.palette.secondary.dark
   },
-  chipDispatch: {
+  chipDispatchReady: { // Changed from chipDispatch
     backgroundColor: theme.palette.success.light,
     color: theme.palette.success.dark
   },
