@@ -80,30 +80,53 @@ update_status_response = rest_api.model('UpdateStatusResponse', {
     'order': fields.Nested(order_detail_model, description='Updated order')
 })
 
+# Response models
+move_to_dispatch_response = rest_api.model('MoveToDispatchResponse', {
+    'success': fields.Boolean(description='Success status'),
+    'msg': fields.String(description='Result message'),
+    'final_order_id': fields.Integer(description='Final order ID'),
+    'final_order_number': fields.String(description='Final order number'),
+    'total_packed': fields.Integer(description='Total items packed'),
+    'total_remaining': fields.Integer(description='Total items remaining'),
+    'has_remaining_items': fields.Boolean(description='Whether there are remaining items'),
+    'potential_order_status': fields.String(description='Potential order status'),
+    'final_order_status': fields.String(description='Final order status')
+})
+
+complete_dispatch_response = rest_api.model('CompleteDispatchResponse', {
+    'success': fields.Boolean(description='Success status'),
+    'msg': fields.String(description='Result message'),
+    'final_order_number': fields.String(description='Final order number'),
+    'dispatched_date': fields.String(description='Dispatch date')
+})
+
+move_to_dispatch_model = rest_api.model('MoveToDispatchModel', {
+    'products': fields.List(fields.Raw, description='Products with packed quantities'),
+    'boxes': fields.List(fields.Raw, description='Box assignments')
+})
+
+
 
 @rest_api.route('/api/orders/<string:order_id>/details')
 class OrderDetailWithProducts(Resource):
     """
-    Endpoint for retrieving detailed order information including products
+    Get detailed order information with proper timeline and status
     """
 
-    @rest_api.response(200, 'Success', order_detail_response)
+    @rest_api.response(200, 'Success')
     @rest_api.response(400, 'Error', error_response)
     @rest_api.response(404, 'Order not found', error_response)
     def get(self, order_id):
-        """Get detailed information for a specific order including all products"""
+        """Get detailed order information with correct timeline"""
         try:
-            # Extract the numeric part from the order_id
             numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
-
-            # Get the order
             potential_order = PotentialOrder.query.get_or_404(numeric_id)
 
             # Get dealer name
             dealer = Dealer.query.get(potential_order.dealer_id)
             dealer_name = dealer.name if dealer else 'Unknown Dealer'
 
-            # Get products for this order with detailed information
+            # Get products for this order
             products = []
             order_products = db.session.query(PotentialOrderProduct, Product).join(
                 Product, PotentialOrderProduct.product_id == Product.product_id
@@ -141,7 +164,6 @@ class OrderDetailWithProducts(Resource):
                         'products': []
                     }
 
-                # Get product info
                 product = Product.query.get(box_product.product_id)
                 if product:
                     box_dict[box.box_id]['products'].append({
@@ -151,7 +173,7 @@ class OrderDetailWithProducts(Resource):
 
             boxes = list(box_dict.values())
 
-            # Get state history
+            # Get complete state history
             state_history = db.session.query(
                 OrderStateHistory, OrderState
             ).join(
@@ -174,18 +196,29 @@ class OrderDetailWithProducts(Resource):
             # Get current state time
             current_state_time = potential_order.updated_at
             if formatted_history:
-                current_state_time = datetime.fromisoformat(formatted_history[-1]['timestamp'].replace('Z', '+00:00'))
+                current_state_time = formatted_history[-1]['timestamp']
 
-            # Map database status to frontend status
+            # Status mapping for frontend
             status_map = {
                 'Open': 'open',
                 'Picking': 'picking',
                 'Packing': 'packing',
-                'Dispatch Ready': 'dispatch',
+                'Dispatch Ready': 'dispatch-ready',
                 'Completed': 'completed',
                 'Partially Completed': 'partially-completed'
             }
             frontend_status = status_map.get(potential_order.status, 'open')
+
+            # Check for corresponding final order
+            final_order = Order.query.filter_by(potential_order_id=potential_order.potential_order_id).first()
+            final_order_info = None
+            if final_order:
+                final_order_info = {
+                    'order_number': final_order.order_number,
+                    'status': final_order.status,
+                    'created_at': final_order.created_at.isoformat(),
+                    'dispatched_date': final_order.dispatched_date.isoformat() if final_order.dispatched_date else None
+                }
 
             # Format order data
             order_data = {
@@ -194,11 +227,12 @@ class OrderDetailWithProducts(Resource):
                 'dealer_name': dealer_name,
                 'order_date': potential_order.order_date.isoformat(),
                 'status': frontend_status,
-                'current_state_time': current_state_time.isoformat(),
+                'current_state_time': current_state_time,
                 'assigned_to': f"User {potential_order.requested_by}",
                 'products': products,
                 'boxes': boxes,
-                'state_history': formatted_history
+                'state_history': formatted_history,
+                'final_order': final_order_info
             }
 
             return {
@@ -216,68 +250,71 @@ class OrderDetailWithProducts(Resource):
 @rest_api.route('/api/orders/<string:order_id>/status')
 class OrderStatusUpdate(Resource):
     """
-    FIXED: Endpoint for updating order status - this was missing in the original routes
+    Regular Status Updates (Open -> Picking -> Packing only)
     """
 
-    @rest_api.expect(update_status_model)
-    @rest_api.response(200, 'Success', update_status_response)
+    @rest_api.expect(fields.Raw)
+    @rest_api.response(200, 'Success')
     @rest_api.response(400, 'Error', error_response)
-    @rest_api.response(404, 'Order not found', error_response)
     def post(self, order_id):
-        """Update the status of an order"""
+        """Update order status for regular transitions"""
         try:
-            # Extract the numeric part from the order_id
             numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
-
-            # Get the order
             potential_order = PotentialOrder.query.get_or_404(numeric_id)
 
-            # Get request data
             req_data = request.get_json()
             new_status = req_data.get('new_status')
-            boxes_data = req_data.get('boxes', [])
 
-            # Map frontend status names to database status names
+            # Status mapping for regular transitions only
             status_map = {
                 'open': 'Open',
                 'picking': 'Picking',
-                'packing': 'Packing',
-                'dispatch': 'Dispatch Ready',
-                'completed': 'Completed',
-                'partially-completed': 'Partially Completed'
+                'packing': 'Packing'
             }
 
-            # Validate the new status
             if new_status not in status_map:
                 return {
                     'success': False,
-                    'msg': f'Invalid status: {new_status}'
+                    'msg': f'Invalid status: {new_status}. Use specific endpoints for dispatch ready/completed.'
                 }, 400
 
-            # Get the corresponding state
             db_status = status_map[new_status]
-            new_state = OrderState.query.filter_by(state_name=db_status).first()
 
+            # Validate status progression
+            valid_transitions = {
+                'Open': ['Picking'],
+                'Picking': ['Packing'],
+                'Packing': []  # Packing should use dispatch-ready endpoint
+            }
+
+            current_status = potential_order.status
+            if current_status in valid_transitions and db_status not in valid_transitions[current_status]:
+                return {
+                    'success': False,
+                    'msg': f'Invalid status transition from {current_status} to {db_status}'
+                }, 400
+
+            # Get or create the state
+            new_state = OrderState.query.filter_by(state_name=db_status).first()
             if not new_state:
-                # Create the state if it doesn't exist
                 new_state = OrderState(state_name=db_status, description=f'{db_status} state')
                 db.session.add(new_state)
                 db.session.flush()
 
-            # Update the order status
+            # Update order status
+            current_time = datetime.utcnow()
             potential_order.status = db_status
-            potential_order.updated_at = datetime.utcnow()
+            potential_order.updated_at = current_time
 
-            # Create a state history entry
+            # Add state history
             state_history = OrderStateHistory(
                 potential_order_id=potential_order.potential_order_id,
                 state_id=new_state.state_id,
-                changed_by=1,  # In a real app, use the authenticated user's ID
-                changed_at=datetime.utcnow()
+                changed_by=1,
+                changed_at=current_time
             )
             db.session.add(state_history)
 
-            # Commit the changes
             db.session.commit()
 
             return {
@@ -525,4 +562,262 @@ class OrderDispatchFinal(Resource):
             return {
                 'success': False,
                 'msg': f'Error dispatching order: {str(e)}'
+            }, 400
+
+
+@rest_api.route('/api/orders/<string:order_id>/move-to-dispatch-ready')
+class MoveToDispatchReady(Resource):
+    """
+    Move from Packing to Dispatch Ready - Create Final Order Records
+    """
+
+    @rest_api.expect(move_to_dispatch_model)
+    @rest_api.response(200, 'Success', move_to_dispatch_response)
+    @rest_api.response(400, 'Error', error_response)
+    def post(self, order_id):
+        """Move order from packing to dispatch ready and create final order records"""
+        try:
+            # Extract numeric ID
+            numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
+            potential_order = PotentialOrder.query.get_or_404(numeric_id)
+
+            # Validate that order is in packing status
+            if potential_order.status != 'Packing':
+                return {
+                    'success': False,
+                    'msg': 'Order must be in Packing status to move to Dispatch Ready'
+                }, 400
+
+            req_data = request.get_json()
+            products_data = req_data.get('products', [])
+            boxes_data = req_data.get('boxes', [])
+
+            # Validate that we have some packed products
+            total_packed_check = sum(p.get('quantity_packed', 0) for p in products_data)
+            if total_packed_check == 0:
+                return {
+                    'success': False,
+                    'msg': 'No products have been packed. Please pack at least one product.'
+                }, 400
+
+            # Start transaction
+            try:
+                current_time = datetime.utcnow()
+
+                # STEP 1: CREATE FINAL ORDER RECORD
+                final_order = Order(
+                    potential_order_id=potential_order.potential_order_id,
+                    order_number=f"ORD-{potential_order.potential_order_id}-{current_time.strftime('%Y%m%d%H%M')}",
+                    status='Dispatch Ready',
+                    created_at=current_time,
+                    updated_at=current_time
+                )
+                db.session.add(final_order)
+                db.session.flush()
+
+                # STEP 2: PROCESS EACH PRODUCT
+                total_packed = 0
+                total_remaining = 0
+                has_remaining_items = False
+
+                for product_data in products_data:
+                    product_id = product_data.get('product_id')
+                    quantity_packed = int(product_data.get('quantity_packed', 0))
+
+                    if quantity_packed > 0:
+                        # Get the original potential order product
+                        potential_product = PotentialOrderProduct.query.filter(
+                            PotentialOrderProduct.potential_order_id == potential_order.potential_order_id,
+                            PotentialOrderProduct.product_id == product_id
+                        ).first()
+
+                        if potential_product:
+                            original_quantity = potential_product.quantity
+                            quantity_remaining = original_quantity - quantity_packed
+
+                            # CREATE FINAL ORDER PRODUCT RECORD
+                            order_product = OrderProduct(
+                                order_id=final_order.order_id,
+                                product_id=product_id,
+                                quantity=quantity_packed,
+                                mrp=potential_product.mrp,
+                                total_price=potential_product.mrp * quantity_packed if potential_product.mrp else None,
+                                created_at=current_time,
+                                updated_at=current_time
+                            )
+                            db.session.add(order_product)
+                            total_packed += quantity_packed
+
+                            # HANDLE REMAINING QUANTITY
+                            if quantity_remaining > 0:
+                                # Update potential order product with remaining quantity
+                                potential_product.quantity = quantity_remaining
+                                potential_product.quantity_packed = 0
+                                potential_product.updated_at = current_time
+                                has_remaining_items = True
+                                total_remaining += quantity_remaining
+                            else:
+                                # Remove the potential order product if fully packed
+                                db.session.delete(potential_product)
+
+                # STEP 3: CREATE ORDER BOXES
+                for box_data in boxes_data:
+                    if box_data.get('products') and len(box_data.get('products', [])) > 0:
+                        order_box = OrderBox(
+                            order_id=final_order.order_id,
+                            name=box_data.get('box_name', 'Box'),
+                            created_at=current_time,
+                            updated_at=current_time
+                        )
+                        db.session.add(order_box)
+
+                # STEP 4: UPDATE POTENTIAL ORDER STATUS
+                if has_remaining_items:
+                    potential_order.status = 'Partially Completed'
+                    final_status_name = 'Partially Completed'
+                else:
+                    potential_order.status = 'Dispatch Ready'
+                    final_status_name = 'Dispatch Ready'
+
+                potential_order.updated_at = current_time
+
+                # STEP 5: CREATE STATE HISTORY
+                # Ensure states exist
+                dispatch_ready_state = OrderState.query.filter_by(state_name='Dispatch Ready').first()
+                if not dispatch_ready_state:
+                    dispatch_ready_state = OrderState(
+                        state_name='Dispatch Ready',
+                        description='Order ready for dispatch'
+                    )
+                    db.session.add(dispatch_ready_state)
+                    db.session.flush()
+
+                # Add dispatch ready state history
+                dispatch_history = OrderStateHistory(
+                    potential_order_id=potential_order.potential_order_id,
+                    state_id=dispatch_ready_state.state_id,
+                    changed_by=1,
+                    changed_at=current_time
+                )
+                db.session.add(dispatch_history)
+
+                # If partial completion, add that state too
+                if has_remaining_items:
+                    partial_state = OrderState.query.filter_by(state_name='Partially Completed').first()
+                    if not partial_state:
+                        partial_state = OrderState(
+                            state_name='Partially Completed',
+                            description='Order partially completed with remaining items'
+                        )
+                        db.session.add(partial_state)
+                        db.session.flush()
+
+                    partial_history = OrderStateHistory(
+                        potential_order_id=potential_order.potential_order_id,
+                        state_id=partial_state.state_id,
+                        changed_by=1,
+                        changed_at=current_time
+                    )
+                    db.session.add(partial_history)
+
+                # Commit all changes
+                db.session.commit()
+
+                return {
+                    'success': True,
+                    'msg': 'Order moved to dispatch ready successfully',
+                    'final_order_id': final_order.order_id,
+                    'final_order_number': final_order.order_number,
+                    'total_packed': total_packed,
+                    'total_remaining': total_remaining,
+                    'has_remaining_items': has_remaining_items,
+                    'potential_order_status': potential_order.status,
+                    'final_order_status': final_order.status
+                }, 200
+
+            except Exception as e:
+                db.session.rollback()
+                raise e
+
+        except Exception as e:
+            return {
+                'success': False,
+                'msg': f'Error moving to dispatch ready: {str(e)}'
+            }, 400
+
+
+@rest_api.route('/api/orders/<string:order_id>/complete-dispatch')
+class CompleteDispatch(Resource):
+    """
+    Complete Dispatch - Mark final order as completed (dispatched from warehouse)
+    """
+
+    @rest_api.response(200, 'Success', complete_dispatch_response)
+    @rest_api.response(400, 'Error', error_response)
+    def post(self, order_id):
+        """Mark order as completed (dispatched from warehouse)"""
+        try:
+            numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
+            potential_order = PotentialOrder.query.get_or_404(numeric_id)
+
+            # Find the corresponding final order
+            final_order = Order.query.filter_by(potential_order_id=potential_order.potential_order_id).first()
+
+            if not final_order:
+                return {
+                    'success': False,
+                    'msg': 'No final order found. Order must be in Dispatch Ready status first.'
+                }, 400
+
+            if final_order.status != 'Dispatch Ready':
+                return {
+                    'success': False,
+                    'msg': 'Order must be in Dispatch Ready status to complete dispatch'
+                }, 400
+
+            current_time = datetime.utcnow()
+
+            # Update final order status
+            final_order.status = 'Completed'
+            final_order.dispatched_date = current_time
+            final_order.updated_at = current_time
+
+            # Create completed state if it doesn't exist
+            completed_state = OrderState.query.filter_by(state_name='Completed').first()
+            if not completed_state:
+                completed_state = OrderState(
+                    state_name='Completed',
+                    description='Order completed and dispatched'
+                )
+                db.session.add(completed_state)
+                db.session.flush()
+
+            # Add completion state history
+            completion_history = OrderStateHistory(
+                potential_order_id=potential_order.potential_order_id,
+                state_id=completed_state.state_id,
+                changed_by=1,
+                changed_at=current_time
+            )
+            db.session.add(completion_history)
+
+            # Update potential order if it's still in "Dispatch Ready"
+            if potential_order.status == 'Dispatch Ready':
+                potential_order.status = 'Completed'
+                potential_order.updated_at = current_time
+
+            db.session.commit()
+
+            return {
+                'success': True,
+                'msg': 'Order dispatched successfully',
+                'final_order_number': final_order.order_number,
+                'dispatched_date': final_order.dispatched_date.isoformat()
+            }, 200
+
+        except Exception as e:
+            db.session.rollback()
+            return {
+                'success': False,
+                'msg': f'Error completing dispatch: {str(e)}'
             }, 400

@@ -11,7 +11,7 @@ class OrderManagementService {
    * Get all warehouses
    * @returns {Promise<Object>} API response with warehouses
    */
-  async getWarehouses() {
+ async getWarehouses() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/warehouses`);
       const data = await response.json();
@@ -55,11 +55,9 @@ class OrderManagementService {
       const response = await fetch(`${API_BASE_URL}/api/orders?${params.toString()}`);
       const data = await response.json();
 
-      // Transform the data to ensure current_state_time is available
       if (data.success && data.orders) {
         data.orders = data.orders.map(order => ({
           ...order,
-          // Use current_state_time if available, otherwise use updated_at or current time
           current_state_time: order.current_state_time || order.updated_at || new Date().toISOString()
         }));
       }
@@ -81,7 +79,6 @@ class OrderManagementService {
       const response = await fetch(`${API_BASE_URL}/api/orders/${orderId}/details`);
       const data = await response.json();
 
-      // Transform the data to ensure current_state_time is available
       if (data.success && data.order) {
         data.order = {
           ...data.order,
@@ -105,6 +102,13 @@ class OrderManagementService {
    */
   async updateOrderStatus(orderId, newStatus, additionalData = null) {
     try {
+      // Only allow regular status transitions
+      const allowedStatuses = ['open', 'picking', 'packing'];
+
+      if (!allowedStatuses.includes(newStatus.toLowerCase())) {
+        throw new Error(`Use specific methods for ${newStatus} transitions`);
+      }
+
       const requestBody = {
         new_status: newStatus
       };
@@ -113,7 +117,6 @@ class OrderManagementService {
         Object.assign(requestBody, additionalData);
       }
 
-      // Use the correct endpoint
       const response = await fetch(`${API_BASE_URL}/api/orders/${orderId}/status`, {
         method: 'POST',
         headers: {
@@ -130,21 +133,14 @@ class OrderManagementService {
     }
   }
 
-  /**
-   * Update packing information for an order
-   * @param {string} orderId - Order ID (e.g., "PO123")
-   * @param {Array} products - Products with packed quantities
-   * @param {Array} boxes - Box assignments
-   * @returns {Promise<Object>} API response
-   */
-  async updatePackingInfo(orderId, products, boxes) {
+  async moveToDispatchReady(orderId, products, boxes) {
     try {
       const requestBody = {
         products: products,
         boxes: boxes
       };
 
-      const response = await fetch(`${API_BASE_URL}/api/orders/${orderId}/packing`, {
+      const response = await fetch(`${API_BASE_URL}/api/orders/${orderId}/move-to-dispatch-ready`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -155,9 +151,64 @@ class OrderManagementService {
       const data = await response.json();
       return data;
     } catch (error) {
-      console.error('Error updating packing info:', error);
+      console.error('Error moving to dispatch ready:', error);
       return { success: false, msg: error.message };
     }
+  }
+
+  async completeDispatch(orderId) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/orders/${orderId}/complete-dispatch`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
+
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('Error completing dispatch:', error);
+      return { success: false, msg: error.message };
+    }
+  }
+
+  async handleStatusUpdate(orderId, action, additionalData = null) {
+    try {
+      switch (action) {
+        case 'open':
+        case 'picking':
+        case 'packing':
+          return await this.updateOrderStatus(orderId, action, additionalData);
+
+        case 'packing-to-dispatch':
+        case 'dispatch-ready':
+          if (!additionalData || !additionalData.products || !additionalData.boxes) {
+            throw new Error('Products and boxes data required for dispatch ready');
+          }
+          return await this.moveToDispatchReady(orderId, additionalData.products, additionalData.boxes);
+
+        case 'complete-dispatch':
+        case 'completed':
+          return await this.completeDispatch(orderId);
+
+        default:
+          throw new Error(`Unknown action: ${action}`);
+      }
+    } catch (error) {
+      console.error('Error handling status update:', error);
+      return { success: false, msg: error.message };
+    }
+  }
+  /**
+   * Update packing information for an order
+   * @param {string} orderId - Order ID (e.g., "PO123")
+   * @param {Array} products - Products with packed quantities
+   * @param {Array} boxes - Box assignments
+   * @returns {Promise<Object>} API response
+   */
+  async updatePackingInfo(orderId, products, boxes) {
+    return this.moveToDispatchReady(orderId, products, boxes);
   }
 
   /**
@@ -167,27 +218,11 @@ class OrderManagementService {
    * @param {Array} boxes - Final box assignments
    * @returns {Promise<Object>} API response
    */
+   /**
+   * Legacy method - kept for backward compatibility
+   */
   async finalizeDispatch(orderId, products, boxes) {
-    try {
-      const requestBody = {
-        products: products,
-        boxes: boxes
-      };
-
-      const response = await fetch(`${API_BASE_URL}/api/orders/${orderId}/dispatch`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestBody)
-      });
-
-      const data = await response.json();
-      return data;
-    } catch (error) {
-      console.error('Error finalizing dispatch:', error);
-      return { success: false, msg: error.message };
-    }
+    return this.completeDispatch(orderId);
   }
 
   /**
@@ -196,23 +231,7 @@ class OrderManagementService {
    * @returns {Promise<Object>} API response with order details
    */
   async getOrderById(orderId) {
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/orders/${orderId}`);
-      const data = await response.json();
-
-      // Transform the data to ensure current_state_time is available
-      if (data.success && data.orders && data.orders.length > 0) {
-        data.orders = data.orders.map(order => ({
-          ...order,
-          current_state_time: order.current_state_time || order.updated_at || new Date().toISOString()
-        }));
-      }
-
-      return data;
-    } catch (error) {
-      console.error('Error fetching order details:', error);
-      return { success: false, msg: error.message };
-    }
+    return this.getOrderDetailsWithProducts(orderId);
   }
 
   /**
@@ -228,7 +247,7 @@ class OrderManagementService {
       if (warehouseId) params.append('warehouse_id', warehouseId);
       if (companyId) params.append('company_id', companyId);
 
-      const response = await fetch(`${API_BASE_URL}/api/orders/status-counts?${params.toString()}`);
+      const response = await fetch(`${API_BASE_URL}/api/orders/status?${params.toString()}`);
       const data = await response.json();
       return data;
     } catch (error) {
@@ -244,44 +263,58 @@ class OrderManagementService {
    * @param {Object} productBoxAssignments - Product to box mappings
    * @returns {Object} Validation result
    */
-  validatePackingData(products, boxes, productBoxAssignments) {
+  validatePackingData(products, productQuantities, productBoxAssignments, boxProductQuantities) {
     const errors = [];
     const warnings = [];
+    let hasRemainingItems = false;
 
-    // Check that all products with quantities have box assignments
     products.forEach(product => {
-      const packedQty = product.quantity_packed || 0;
+      const packedQty = productQuantities[product.product_id] || 0;
+      const orderedQty = product.quantity_ordered;
+      const availableQty = product.quantity_available;
       const boxAssignment = productBoxAssignments[product.product_id];
 
+      // Check box assignment for packed items
       if (packedQty > 0 && !boxAssignment) {
         errors.push(`${product.name} has packed quantity but no box assignment`);
       }
 
-      if (packedQty > product.quantity_available) {
-        errors.push(`${product.name} packed quantity (${packedQty}) exceeds available quantity (${product.quantity_available})`);
+      // Check quantity limits
+      if (packedQty > availableQty) {
+        errors.push(`${product.name} packed quantity (${packedQty}) exceeds available (${availableQty})`);
       }
 
-      if (packedQty < product.quantity_ordered) {
-        warnings.push(`${product.name} packed quantity (${packedQty}) is less than ordered quantity (${product.quantity_ordered})`);
+      // Check for remaining items
+      if (packedQty < orderedQty) {
+        hasRemainingItems = true;
+        if (packedQty > 0) {
+          warnings.push(`${product.name} partially packed (${packedQty}/${orderedQty})`);
+        }
+      }
+
+      // Validate box quantities sum up correctly
+      if (boxProductQuantities[product.product_id]) {
+        const boxTotal = Object.values(boxProductQuantities[product.product_id])
+          .reduce((sum, qty) => sum + (parseInt(qty) || 0), 0);
+
+        if (boxTotal !== packedQty) {
+          errors.push(`${product.name} box quantities (${boxTotal}) don't match total packed (${packedQty})`);
+        }
       }
     });
 
-    // Check that all boxes have at least one product
-    boxes.forEach(box => {
-      const productsInBox = products.filter(product =>
-        productBoxAssignments[product.product_id] === box.box_id &&
-        (product.quantity_packed || 0) > 0
-      );
-
-      if (productsInBox.length === 0) {
-        warnings.push(`${box.box_name} has no products assigned`);
-      }
-    });
+    // Check that at least one product is packed
+    const totalPacked = Object.values(productQuantities).reduce((sum, qty) => sum + (qty || 0), 0);
+    if (totalPacked === 0) {
+      errors.push('No products have been packed. Please pack at least one product.');
+    }
 
     return {
       isValid: errors.length === 0,
       errors,
-      warnings
+      warnings,
+      hasRemainingItems,
+      totalPacked
     };
   }
 
@@ -296,11 +329,14 @@ class OrderManagementService {
     const totalPacked = Object.values(productQuantities).reduce((sum, qty) => sum + (qty || 0), 0);
     const totalRemaining = totalOrdered - totalPacked;
 
-    const productsSummary = products.map(product => ({
-      ...product,
-      quantity_packed: productQuantities[product.product_id] || 0,
-      quantity_remaining: product.quantity_ordered - (productQuantities[product.product_id] || 0)
-    }));
+    const productsSummary = products.map(product => {
+      const packedQty = productQuantities[product.product_id] || 0;
+      return {
+        ...product,
+        quantity_packed: packedQty,
+        quantity_remaining: product.quantity_ordered - packedQty
+      };
+    });
 
     return {
       totalOrdered,
@@ -308,10 +344,75 @@ class OrderManagementService {
       totalRemaining,
       products: productsSummary,
       packingComplete: totalRemaining === 0,
-      partialPacking: totalPacked > 0 && totalRemaining > 0
+      partialPacking: totalPacked > 0 && totalRemaining > 0,
+      hasRemainingItems: totalRemaining > 0
     };
   }
+
+  processBoxAssignments(boxes, products, productBoxAssignments, boxProductQuantities) {
+    return boxes.map(box => ({
+      box_id: box.box_id,
+      box_name: box.box_name,
+      products: products
+        .filter(product => {
+          const assignments = productBoxAssignments[product.product_id] || '';
+          return assignments.includes(box.box_id);
+        })
+        .map(product => ({
+          product_id: product.product_id,
+          quantity: boxProductQuantities[product.product_id]?.[box.box_id] || 0
+        }))
+        .filter(p => p.quantity > 0)
+    })).filter(box => box.products.length > 0);
+  }
+
+  processProductsData(products, productQuantities) {
+    return products.map(product => ({
+      product_id: product.product_id,
+      quantity_packed: productQuantities[product.product_id] || 0,
+      quantity_remaining: product.quantity_ordered - (productQuantities[product.product_id] || 0)
+    })).filter(p => p.quantity_packed > 0 || p.quantity_remaining > 0);
+  }
+
+  debugBoxLogic(products, boxes, productQuantities, productBoxAssignments, boxProductQuantities) {
+    console.group('🔍 Debug Box Logic');
+
+    console.log('📦 Products:', products.map(p => ({
+      id: p.product_id,
+      name: p.name,
+      ordered: p.quantity_ordered
+    })));
+
+    console.log('📊 Product Quantities:', productQuantities);
+    console.log('🏷️ Product Box Assignments:', productBoxAssignments);
+    console.log('📋 Box Product Quantities:', boxProductQuantities);
+
+    boxes.forEach(box => {
+      const boxTotal = products.reduce((total, product) => {
+        const qty = boxProductQuantities[product.product_id]?.[box.box_id] || 0;
+        return total + (parseInt(qty) || 0);
+      }, 0);
+
+      const productsInBox = products.filter(product => {
+        const qty = boxProductQuantities[product.product_id]?.[box.box_id] || 0;
+        return parseInt(qty) > 0;
+      });
+
+      console.log(`📦 ${box.box_name}:`, {
+        total: boxTotal,
+        products: productsInBox.length,
+        details: productsInBox.map(p => ({
+          name: p.name,
+          quantity: boxProductQuantities[p.product_id]?.[box.box_id] || 0
+        }))
+      });
+    });
+
+    console.groupEnd();
+  }
 }
+
+
 
 // Export singleton instance
 const orderManagementService = new OrderManagementService();

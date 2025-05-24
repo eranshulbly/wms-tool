@@ -163,14 +163,12 @@ class CompanyList(Resource):
 @rest_api.route('/api/orders/status')
 class OrderStatusCount(Resource):
     """
-    Endpoint for retrieving order status counts for dashboard
+    FIXED: Endpoint for retrieving order status counts - Fixed status mapping
     """
 
     @rest_api.doc(params={'warehouse_id': 'Warehouse ID', 'company_id': 'Company ID'})
-    @rest_api.marshal_with(status_response)
-    @rest_api.response(400, 'Error', error_response)
     def get(self):
-        """Get counts of orders by status"""
+        """Get counts of orders by status including completed and partially completed"""
         try:
             warehouse_id = request.args.get('warehouse_id', type=int)
             company_id = request.args.get('company_id', type=int)
@@ -184,11 +182,15 @@ class OrderStatusCount(Resource):
             if company_id:
                 query = query.filter(PotentialOrder.company_id == company_id)
 
-            # Get counts for each status
+            # FIXED: Get counts for each status including Dispatch Ready
             open_count = query.filter(PotentialOrder.status == 'Open').count()
             picking_count = query.filter(PotentialOrder.status == 'Picking').count()
             packing_count = query.filter(PotentialOrder.status == 'Packing').count()
+
+            # FIX 3: Properly count "Dispatch Ready" status
             dispatch_count = query.filter(PotentialOrder.status == 'Dispatch Ready').count()
+            completed_count = query.filter(PotentialOrder.status == 'Completed').count()
+            partially_completed_count = query.filter(PotentialOrder.status == 'Partially Completed').count()
 
             return {
                 'success': True,
@@ -208,6 +210,14 @@ class OrderStatusCount(Resource):
                     'dispatch': {
                         'count': dispatch_count,
                         'label': 'Dispatch Ready'
+                    },
+                    'completed': {
+                        'count': completed_count,
+                        'label': 'Completed'
+                    },
+                    'partially-completed': {
+                        'count': partially_completed_count,
+                        'label': 'Partially Completed'
                     }
                 }
             }, 200
@@ -222,29 +232,29 @@ class OrderStatusCount(Resource):
 @rest_api.route('/api/orders')
 class OrdersList(Resource):
     """
-    Endpoint for retrieving orders filtered by status
+    FIXED: Endpoint for retrieving orders filtered by status - Fixed status mapping
     """
 
     @rest_api.doc(params={
-        'status': 'Order status (open, picking, packing, dispatch)',
+        'status': 'Order status (open, picking, packing, dispatch, completed, partially-completed)',
         'warehouse_id': 'Warehouse ID',
         'company_id': 'Company ID'
     })
-    @rest_api.marshal_with(orders_response)
-    @rest_api.response(400, 'Error', error_response)
     def get(self):
-        """Get orders filtered by status"""
+        """Get orders filtered by status including completed and partially completed"""
         try:
             status = request.args.get('status', '')
             warehouse_id = request.args.get('warehouse_id', type=int)
             company_id = request.args.get('company_id', type=int)
 
-            # Map frontend status names to database status names
+            # FIXED: Map frontend status names to database status names including new states
             status_map = {
                 'open': 'Open',
                 'picking': 'Picking',
                 'packing': 'Packing',
-                'dispatch': 'Dispatch Ready'
+                'dispatch': 'Dispatch Ready',  # This is the key fix - 'dispatch' maps to 'Dispatch Ready'
+                'completed': 'Completed',
+                'partially-completed': 'Partially Completed'
             }
 
             db_status = status_map.get(status.lower(), '') if status else ''
@@ -294,7 +304,7 @@ class OrdersList(Resource):
                 # Format state history
                 formatted_history = []
                 for history, state_name in state_history:
-                    user = f"User {history.changed_by}"  # In a real app, you would get the actual username
+                    user = f"User {history.changed_by}"
                     formatted_history.append({
                         'state_name': state_name,
                         'timestamp': history.changed_at.isoformat(),
@@ -306,12 +316,14 @@ class OrdersList(Resource):
                 if state_history:
                     current_state_time = state_history[-1][0].changed_at
 
-                # Map database status to frontend status
+                # FIXED: Map database status to frontend status including new states
                 frontend_status_map = {
                     'Open': 'open',
                     'Picking': 'picking',
                     'Packing': 'packing',
-                    'Dispatch Ready': 'dispatch'
+                    'Dispatch Ready': 'dispatch',  # This is the key mapping
+                    'Completed': 'completed',
+                    'Partially Completed': 'partially-completed'
                 }
                 frontend_status = frontend_status_map.get(potential_order.status, 'open')
 
@@ -323,7 +335,7 @@ class OrdersList(Resource):
                     'order_date': potential_order.order_date.isoformat(),
                     'status': frontend_status,
                     'current_state_time': current_state_time.isoformat(),
-                    'assigned_to': f"User {potential_order.requested_by}",  # In a real app, get the actual username
+                    'assigned_to': f"User {potential_order.requested_by}",
                     'products': product_count,
                     'state_history': formatted_history
                 }
