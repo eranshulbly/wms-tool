@@ -259,39 +259,76 @@ export const OrdersTable = ({
 /**
  * Product Packing Component
  */
+/**
+ * FIXED: Product Packing Component with proper box assignment tracking
+ */
 const ProductPackingForm = ({ products, boxes, onUpdateProducts, onUpdateBoxes, classes }) => {
   const [productQuantities, setProductQuantities] = useState({});
   const [productBoxAssignments, setProductBoxAssignments] = useState({});
   const [boxList, setBoxList] = useState(boxes || []);
+  const [boxProductQuantities, setBoxProductQuantities] = useState({});
 
   useEffect(() => {
     // Initialize quantities and box assignments
     const initialQuantities = {};
     const initialAssignments = {};
+    const initialBoxQuantities = {};
 
     products.forEach(product => {
       initialQuantities[product.product_id] = product.quantity_packed || 0;
       initialAssignments[product.product_id] = product.assigned_to_box || '';
+
+      // Initialize box quantities for this product
+      initialBoxQuantities[product.product_id] = {};
+      boxList.forEach(box => {
+        initialBoxQuantities[product.product_id][box.box_id] = 0;
+      });
     });
 
     setProductQuantities(initialQuantities);
     setProductBoxAssignments(initialAssignments);
-  }, [products]);
+    setBoxProductQuantities(initialBoxQuantities);
+  }, [products, boxList]);
 
-  const handleQuantityChange = (productId, quantity) => {
-    const newQuantities = { ...productQuantities, [productId]: parseInt(quantity) || 0 };
+  const handleBoxQuantityChange = (productId, boxId, quantity) => {
+    const newQuantity = parseInt(quantity) || 0;
+
+    const newBoxQuantities = {
+      ...boxProductQuantities,
+      [productId]: {
+        ...boxProductQuantities[productId],
+        [boxId]: newQuantity
+      }
+    };
+    setBoxProductQuantities(newBoxQuantities);
+
+    // Calculate total packed quantity for this product
+    const totalPacked = Object.values(newBoxQuantities[productId] || {}).reduce((sum, qty) => sum + qty, 0);
+    const newQuantities = { ...productQuantities, [productId]: totalPacked };
     setProductQuantities(newQuantities);
-    onUpdateProducts(newQuantities, productBoxAssignments);
-  };
 
-  const handleBoxAssignment = (productId, boxId) => {
-    const newAssignments = { ...productBoxAssignments, [productId]: boxId };
+    // FIXED: Update box assignments - if product has quantity in any box, it's assigned
+    const newAssignments = { ...productBoxAssignments };
+    const hasQuantityInAnyBox = Object.values(newBoxQuantities[productId] || {}).some(qty => qty > 0);
+
+    if (hasQuantityInAnyBox) {
+      // Find the first box that has this product
+      const assignedBoxId = Object.keys(newBoxQuantities[productId] || {}).find(
+        boxId => (newBoxQuantities[productId][boxId] || 0) > 0
+      );
+      newAssignments[productId] = assignedBoxId || '';
+    } else {
+      newAssignments[productId] = '';
+    }
+
     setProductBoxAssignments(newAssignments);
-    onUpdateProducts(productQuantities, newAssignments);
+
+    // Update parent component with all the data
+    onUpdateProducts(newQuantities, newAssignments, newBoxQuantities);
   };
 
   const addNewBox = () => {
-    const newBoxId = `B${boxList.length + 1}`;
+    const newBoxId = `B${Date.now()}`; // Use timestamp to ensure uniqueness
     const newBox = {
       box_id: newBoxId,
       box_name: `Box-${boxList.length + 1}`,
@@ -299,6 +336,17 @@ const ProductPackingForm = ({ products, boxes, onUpdateProducts, onUpdateBoxes, 
     };
     const updatedBoxes = [...boxList, newBox];
     setBoxList(updatedBoxes);
+
+    // Initialize quantities for all products in the new box
+    const newBoxQuantities = { ...boxProductQuantities };
+    products.forEach(product => {
+      if (!newBoxQuantities[product.product_id]) {
+        newBoxQuantities[product.product_id] = {};
+      }
+      newBoxQuantities[product.product_id][newBoxId] = 0;
+    });
+    setBoxProductQuantities(newBoxQuantities);
+
     onUpdateBoxes(updatedBoxes);
   };
 
@@ -306,17 +354,76 @@ const ProductPackingForm = ({ products, boxes, onUpdateProducts, onUpdateBoxes, 
     const updatedBoxes = boxList.filter(box => box.box_id !== boxId);
     setBoxList(updatedBoxes);
 
-    // Remove assignments to this box
-    const updatedAssignments = { ...productBoxAssignments };
-    Object.keys(updatedAssignments).forEach(productId => {
-      if (updatedAssignments[productId] === boxId) {
-        updatedAssignments[productId] = '';
+    // Remove quantities for this box and recalculate
+    const newBoxQuantities = { ...boxProductQuantities };
+    const newQuantities = { ...productQuantities };
+    const newAssignments = { ...productBoxAssignments };
+
+    products.forEach(product => {
+      if (newBoxQuantities[product.product_id]) {
+        delete newBoxQuantities[product.product_id][boxId];
+
+        // Recalculate total for this product
+        const totalPacked = Object.values(newBoxQuantities[product.product_id] || {}).reduce((sum, qty) => sum + qty, 0);
+        newQuantities[product.product_id] = totalPacked;
+
+        // Update assignment
+        const hasQuantityInAnyBox = Object.values(newBoxQuantities[product.product_id] || {}).some(qty => qty > 0);
+        if (hasQuantityInAnyBox) {
+          const assignedBoxId = Object.keys(newBoxQuantities[product.product_id] || {}).find(
+            boxId => (newBoxQuantities[product.product_id][boxId] || 0) > 0
+          );
+          newAssignments[product.product_id] = assignedBoxId || '';
+        } else {
+          newAssignments[product.product_id] = '';
+        }
       }
     });
-    setProductBoxAssignments(updatedAssignments);
-    onUpdateProducts(productQuantities, updatedAssignments);
+
+    setBoxProductQuantities(newBoxQuantities);
+    setProductQuantities(newQuantities);
+    setProductBoxAssignments(newAssignments);
+
+    onUpdateProducts(newQuantities, newAssignments, newBoxQuantities);
     onUpdateBoxes(updatedBoxes);
   };
+
+  const getProductTotalInBoxes = (productId) => {
+    return Object.values(boxProductQuantities[productId] || {}).reduce((sum, qty) => sum + qty, 0);
+  };
+
+  const getBoxTotalQuantity = (boxId) => {
+    return products.reduce((total, product) => {
+      return total + (boxProductQuantities[product.product_id]?.[boxId] || 0);
+    }, 0);
+  };
+
+  // FIXED: Better validation function
+  const getValidationStatus = () => {
+    const errors = [];
+    const warnings = [];
+
+    products.forEach(product => {
+      const totalInBoxes = getProductTotalInBoxes(product.product_id);
+      const hasAssignment = productBoxAssignments[product.product_id];
+
+      if (totalInBoxes > 0 && !hasAssignment) {
+        errors.push(`${product.name} has quantity but no box assignment`);
+      }
+
+      if (totalInBoxes > product.quantity_available) {
+        errors.push(`${product.name} exceeds available quantity`);
+      }
+
+      if (totalInBoxes < product.quantity_ordered && totalInBoxes > 0) {
+        warnings.push(`${product.name} is partially packed`);
+      }
+    });
+
+    return { errors, warnings, isValid: errors.length === 0 };
+  };
+
+  const validationStatus = getValidationStatus();
 
   return (
     <Box>
@@ -324,7 +431,7 @@ const ProductPackingForm = ({ products, boxes, onUpdateProducts, onUpdateBoxes, 
         Product Packing Details
       </Typography>
 
-      {/* Products List */}
+      {/* Products Summary Table */}
       <TableContainer component={Paper} style={{ marginBottom: 16 }}>
         <Table size="small">
           <TableHead>
@@ -332,59 +439,88 @@ const ProductPackingForm = ({ products, boxes, onUpdateProducts, onUpdateBoxes, 
               <TableCell>Product</TableCell>
               <TableCell>Ordered Qty</TableCell>
               <TableCell>Available Qty</TableCell>
-              <TableCell>Pack Qty</TableCell>
-              <TableCell>Assign to Box</TableCell>
+              <TableCell>Total Packed</TableCell>
+              <TableCell>Box Assignment</TableCell>
+              <TableCell>Status</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {products.map((product) => (
-              <TableRow key={product.product_id}>
-                <TableCell>
-                  <Typography variant="body2" fontWeight="bold">
-                    {product.name}
-                  </Typography>
-                  <Typography variant="caption" color="textSecondary">
-                    {product.product_string}
-                  </Typography>
-                </TableCell>
-                <TableCell>{product.quantity_ordered}</TableCell>
-                <TableCell>{product.quantity_available}</TableCell>
-                <TableCell>
-                  <TextField
-                    type="number"
-                    size="small"
-                    value={productQuantities[product.product_id] || 0}
-                    onChange={(e) => handleQuantityChange(product.product_id, e.target.value)}
-                    inputProps={{
-                      min: 0,
-                      max: product.quantity_available,
-                      style: { width: '80px' }
-                    }}
-                  />
-                </TableCell>
-                <TableCell>
-                  <FormControl size="small" style={{ minWidth: 120 }}>
-                    <Select
-                      value={productBoxAssignments[product.product_id] || ''}
-                      onChange={(e) => handleBoxAssignment(product.product_id, e.target.value)}
-                      displayEmpty
+            {products.map((product) => {
+              const totalInBoxes = getProductTotalInBoxes(product.product_id);
+              const remaining = product.quantity_available - totalInBoxes;
+              const hasAssignment = productBoxAssignments[product.product_id];
+              const isValid = totalInBoxes <= product.quantity_available && (totalInBoxes === 0 || hasAssignment);
+
+              return (
+                <TableRow key={product.product_id}>
+                  <TableCell>
+                    <Typography variant="body2" fontWeight="bold">
+                      {product.name}
+                    </Typography>
+                    <Typography variant="caption" color="textSecondary">
+                      {product.product_string}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>{product.quantity_ordered}</TableCell>
+                  <TableCell>{product.quantity_available}</TableCell>
+                  <TableCell>
+                    <Typography
+                      variant="body2"
+                      color={totalInBoxes > product.quantity_available ? "error" : "textPrimary"}
+                      fontWeight="bold"
                     >
-                      <MenuItem value="">
-                        <em>Select Box</em>
-                      </MenuItem>
-                      {boxList.map((box) => (
-                        <MenuItem key={box.box_id} value={box.box_id}>
-                          {box.box_name}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                </TableCell>
-              </TableRow>
-            ))}
+                      {totalInBoxes}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>
+                    <Typography variant="body2" color="textSecondary">
+                      {hasAssignment ? `Box assigned` : 'No assignment'}
+                    </Typography>
+                  </TableCell>
+                  <TableCell>
+                    {isValid ? (
+                      <Chip size="small" label="Valid" style={{ backgroundColor: '#4caf50', color: 'white' }} />
+                    ) : (
+                      <Chip size="small" label="Invalid" style={{ backgroundColor: '#f44336', color: 'white' }} />
+                    )}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       </TableContainer>
+
+      {/* Validation Messages */}
+      {(validationStatus.errors.length > 0 || validationStatus.warnings.length > 0) && (
+        <Box mb={2} p={2} border="1px solid #e0e0e0" borderRadius={1}>
+          {validationStatus.errors.length > 0 && (
+            <Box mb={1}>
+              <Typography variant="subtitle2" color="error" gutterBottom>
+                Errors:
+              </Typography>
+              {validationStatus.errors.map((error, index) => (
+                <Typography key={index} variant="body2" color="error">
+                  • {error}
+                </Typography>
+              ))}
+            </Box>
+          )}
+
+          {validationStatus.warnings.length > 0 && (
+            <Box>
+              <Typography variant="subtitle2" style={{ color: '#ff9800' }} gutterBottom>
+                Warnings:
+              </Typography>
+              {validationStatus.warnings.map((warning, index) => (
+                <Typography key={index} variant="body2" style={{ color: '#ff9800' }}>
+                  • {warning}
+                </Typography>
+              ))}
+            </Box>
+          )}
+        </Box>
+      )}
 
       {/* Box Management */}
       <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
@@ -400,10 +536,11 @@ const ProductPackingForm = ({ products, boxes, onUpdateProducts, onUpdateBoxes, 
         </Button>
       </Box>
 
-      {/* Boxes List */}
+      {/* Enhanced Boxes List with Quantity Division */}
       {boxList.map((box) => {
+        const boxTotal = getBoxTotalQuantity(box.box_id);
         const productsInBox = products.filter(product =>
-          productBoxAssignments[product.product_id] === box.box_id
+          (boxProductQuantities[product.product_id]?.[box.box_id] || 0) > 0
         );
 
         return (
@@ -413,7 +550,7 @@ const ProductPackingForm = ({ products, boxes, onUpdateProducts, onUpdateBoxes, 
                 <Box display="flex" alignItems="center">
                   <IconBox size={20} style={{ marginRight: 8 }} />
                   <Typography variant="subtitle1">
-                    {box.box_name} ({productsInBox.length} products)
+                    {box.box_name} ({boxTotal} total items, {productsInBox.length} products)
                   </Typography>
                 </Box>
                 <IconButton
@@ -428,30 +565,90 @@ const ProductPackingForm = ({ products, boxes, onUpdateProducts, onUpdateBoxes, 
               </Box>
             </AccordionSummary>
             <AccordionDetails>
-              {productsInBox.length === 0 ? (
-                <Typography color="textSecondary">No products assigned to this box</Typography>
-              ) : (
-                <List dense>
-                  {productsInBox.map((product) => (
-                    <ListItem key={product.product_id}>
-                      <ListItemText
-                        primary={product.name}
-                        secondary={`Quantity: ${productQuantities[product.product_id] || 0}`}
-                      />
-                    </ListItem>
-                  ))}
-                </List>
-              )}
+              <Box width="100%">
+                <Typography variant="subtitle2" gutterBottom>
+                  Product Quantities in {box.box_name}:
+                </Typography>
+
+                {products.map((product) => {
+                  const currentQuantity = boxProductQuantities[product.product_id]?.[box.box_id] || 0;
+                  const totalInAllBoxes = getProductTotalInBoxes(product.product_id);
+                  const remainingForProduct = product.quantity_available - totalInAllBoxes + currentQuantity;
+
+                  return (
+                    <Box key={product.product_id} className={classes.productInBox}>
+                      <Box className={classes.productInBoxName}>
+                        <Typography variant="body2" fontWeight="bold">
+                          {product.name}
+                        </Typography>
+                        <Typography variant="caption" color="textSecondary">
+                          Available: {remainingForProduct} | Total in all boxes: {totalInAllBoxes}
+                        </Typography>
+                      </Box>
+                      <Box className={classes.productInBoxQuantity}>
+                        <TextField
+                          type="number"
+                          size="small"
+                          value={currentQuantity}
+                          onChange={(e) => handleBoxQuantityChange(product.product_id, box.box_id, e.target.value)}
+                          inputProps={{
+                            min: 0,
+                            max: remainingForProduct,
+                            style: { width: '70px', textAlign: 'center' }
+                          }}
+                          error={currentQuantity > remainingForProduct}
+                          helperText={currentQuantity > remainingForProduct ? 'Exceeds available' : ''}
+                        />
+                      </Box>
+                    </Box>
+                  );
+                })}
+
+                {boxTotal === 0 && (
+                  <Typography color="textSecondary" style={{ fontStyle: 'italic', marginTop: 8 }}>
+                    No products assigned to this box yet
+                  </Typography>
+                )}
+              </Box>
             </AccordionDetails>
           </Accordion>
         );
       })}
+
+      {/* Final Validation Summary */}
+      <Box mt={2} p={2} bgcolor={validationStatus.isValid ? '#e8f5e8' : '#ffeaea'} borderRadius={1}>
+        <Typography variant="subtitle2" gutterBottom>
+          Packing Summary: {validationStatus.isValid ? '✅ Ready for Dispatch' : '❌ Issues Found'}
+        </Typography>
+        {products.map((product) => {
+          const totalInBoxes = getProductTotalInBoxes(product.product_id);
+          const hasAssignment = productBoxAssignments[product.product_id];
+          const isValid = totalInBoxes <= product.quantity_available && (totalInBoxes === 0 || hasAssignment);
+
+          return (
+            <Typography
+              key={product.product_id}
+              variant="body2"
+              color={isValid ? "textPrimary" : "error"}
+              style={{ marginBottom: 4 }}
+            >
+              {product.name}: {totalInBoxes}/{product.quantity_available} packed
+              {totalInBoxes > 0 && hasAssignment && ' ✅'}
+              {totalInBoxes > 0 && !hasAssignment && ' ❌ No box assignment'}
+              {totalInBoxes > product.quantity_available && ' ❌ Exceeds available'}
+            </Typography>
+          );
+        })}
+      </Box>
     </Box>
   );
 };
 
 /**
  * Enhanced Order Details Dialog Component
+ */
+/**
+ * FIXED: Enhanced Order Details Dialog Component - No restricted globals
  */
 export const OrderDetailsDialog = ({
   open,
@@ -463,8 +660,11 @@ export const OrderDetailsDialog = ({
   const [activeStep, setActiveStep] = useState(0);
   const [productQuantities, setProductQuantities] = useState({});
   const [productBoxAssignments, setProductBoxAssignments] = useState({});
+  const [boxProductQuantities, setBoxProductQuantities] = useState({});
   const [boxes, setBoxes] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [showWarningDialog, setShowWarningDialog] = useState(false);
+  const [warningMessages, setWarningMessages] = useState([]);
 
   const steps = ['Order Details', 'Packing', 'Dispatch'];
 
@@ -473,14 +673,17 @@ export const OrderDetailsDialog = ({
       // Initialize with existing data
       const quantities = {};
       const assignments = {};
+      const boxQuantities = {};
 
       order.products.forEach(product => {
         quantities[product.product_id] = product.quantity_packed || 0;
         assignments[product.product_id] = product.assigned_to_box || '';
+        boxQuantities[product.product_id] = {};
       });
 
       setProductQuantities(quantities);
       setProductBoxAssignments(assignments);
+      setBoxProductQuantities(boxQuantities);
       setBoxes(order.boxes || []);
 
       // Set active step based on order status
@@ -494,9 +697,12 @@ export const OrderDetailsDialog = ({
     }
   }, [order]);
 
-  const handleUpdateProducts = (quantities, assignments) => {
+  const handleUpdateProducts = (quantities, assignments, boxQuantities = null) => {
     setProductQuantities(quantities);
     setProductBoxAssignments(assignments);
+    if (boxQuantities) {
+      setBoxProductQuantities(boxQuantities);
+    }
   };
 
   const handleUpdateBoxes = (updatedBoxes) => {
@@ -511,41 +717,93 @@ export const OrderDetailsDialog = ({
     setActiveStep((prevStep) => prevStep - 1);
   };
 
-  const handlePackingComplete = async () => {
+  // FIXED: Improved validation logic
+  const validatePackingData = () => {
+    const errors = [];
+    const warnings = [];
+
+    if (!order || !order.products) {
+      errors.push('No products found in order');
+      return { isValid: false, errors, warnings };
+    }
+
+    order.products.forEach(product => {
+      const quantity = productQuantities[product.product_id] || 0;
+      const boxAssignment = productBoxAssignments[product.product_id];
+
+      // Check if product has quantity but no box assignment
+      if (quantity > 0 && !boxAssignment) {
+        errors.push(`${product.name} has packed quantity (${quantity}) but no box assignment`);
+      }
+
+      // Check if quantity exceeds available
+      if (quantity > product.quantity_available) {
+        errors.push(`${product.name} packed quantity (${quantity}) exceeds available quantity (${product.quantity_available})`);
+      }
+
+      // Warning for partial packing
+      if (quantity > 0 && quantity < product.quantity_ordered) {
+        warnings.push(`${product.name} is partially packed (${quantity}/${product.quantity_ordered})`);
+      }
+    });
+
+    // Check that at least one product has quantity
+    const totalPacked = Object.values(productQuantities).reduce((sum, qty) => sum + (qty || 0), 0);
+    if (totalPacked === 0) {
+      errors.push('No products have been packed. Please pack at least one product.');
+    }
+
+    // Check that all boxes have at least one product
+    boxes.forEach(box => {
+      const hasProducts = order.products.some(product =>
+        productBoxAssignments[product.product_id] === box.box_id &&
+        (productQuantities[product.product_id] || 0) > 0
+      );
+
+      if (!hasProducts) {
+        warnings.push(`${box.box_name} has no products assigned`);
+      }
+    });
+
+    return {
+      isValid: errors.length === 0,
+      errors,
+      warnings
+    };
+  };
+
+  const proceedWithPacking = async () => {
+    setShowWarningDialog(false);
+    await continuePacking();
+  };
+
+  const continuePacking = async () => {
     setLoading(true);
     try {
-      // Validate that all products have quantities and box assignments
-      let isValid = true;
-      const errors = [];
+      // Create proper product data with box assignments
+      const productsData = order.products.map(product => ({
+        product_id: product.product_id,
+        quantity_packed: productQuantities[product.product_id] || 0,
+        box_assignment: productBoxAssignments[product.product_id] || null
+      }));
 
-      order.products.forEach(product => {
-        const quantity = productQuantities[product.product_id] || 0;
-        const boxAssignment = productBoxAssignments[product.product_id];
-
-        if (quantity > 0 && !boxAssignment) {
-          errors.push(`${product.name} has quantity but no box assignment`);
-          isValid = false;
-        }
-
-        if (quantity > product.quantity_available) {
-          errors.push(`${product.name} pack quantity exceeds available quantity`);
-          isValid = false;
-        }
-      });
-
-      if (!isValid) {
-        alert('Please fix the following errors:\n' + errors.join('\n'));
-        return;
-      }
+      // Create proper box data with product assignments
+      const boxesData = boxes.map(box => ({
+        box_id: box.box_id,
+        box_name: box.box_name,
+        products: order.products
+          .filter(product => productBoxAssignments[product.product_id] === box.box_id)
+          .map(product => ({
+            product_id: product.product_id,
+            quantity: productQuantities[product.product_id] || 0
+          }))
+          .filter(p => p.quantity > 0)
+      })).filter(box => box.products.length > 0);
 
       // Update order to dispatch status
       await onStatusUpdate(order, 'dispatch', {
-        products: order.products.map(product => ({
-          product_id: product.product_id,
-          quantity_packed: productQuantities[product.product_id] || 0,
-          box_assignment: productBoxAssignments[product.product_id]
-        })),
-        boxes: boxes
+        products: productsData,
+        boxes: boxesData
       });
 
       handleNext();
@@ -557,28 +815,70 @@ export const OrderDetailsDialog = ({
     }
   };
 
+  const handlePackingComplete = async () => {
+    // Validate before proceeding
+    const validation = validatePackingData();
+
+    if (!validation.isValid) {
+      alert('Please fix the following errors before proceeding:\n\n' + validation.errors.join('\n'));
+      return;
+    }
+
+    // Show warnings if any
+    if (validation.warnings.length > 0) {
+      setWarningMessages(validation.warnings);
+      setShowWarningDialog(true);
+      return;
+    }
+
+    await continuePacking();
+  };
+
   const handleFinalDispatch = async () => {
     setLoading(true);
     try {
-      // Create final order
+      // Create final order data
+      const productsData = order.products.map(product => ({
+        product_id: product.product_id,
+        quantity_packed: productQuantities[product.product_id] || 0
+      })).filter(p => p.quantity_packed > 0);
+
+      const boxesData = boxes.map(box => ({
+        box_name: box.box_name,
+        products: order.products
+          .filter(product => productBoxAssignments[product.product_id] === box.box_id)
+          .map(product => ({
+            product_id: product.product_id,
+            quantity: productQuantities[product.product_id] || 0
+          }))
+          .filter(p => p.quantity > 0)
+      })).filter(box => box.products.length > 0);
+
       const response = await fetch(`/api/orders/${order.order_request_id}/dispatch`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          products: order.products.map(product => ({
-            product_id: product.product_id,
-            quantity_packed: productQuantities[product.product_id] || 0
-          })),
-          boxes: boxes
+          products: productsData,
+          boxes: boxesData
         })
       });
 
       const result = await response.json();
 
       if (result.success) {
-        alert(`Order dispatched successfully!\nOrder Number: ${result.final_order_id}\nProducts Dispatched: ${result.products_dispatched}`);
+        const message = [
+          `Order dispatched successfully!`,
+          `Order Number: ${result.final_order_id}`,
+          `Products Dispatched: ${result.products_dispatched}`
+        ];
+
+        if (result.remaining_products > 0) {
+          message.push(`Remaining Products: ${result.remaining_products}`);
+        }
+
+        alert(message.join('\n'));
         onClose();
       } else {
         throw new Error(result.msg);
@@ -684,8 +984,11 @@ export const OrderDetailsDialog = ({
             <Typography variant="subtitle1" gutterBottom>Final Box Contents:</Typography>
             {boxes.map((box) => {
               const productsInBox = order?.products?.filter(product =>
-                productBoxAssignments[product.product_id] === box.box_id
+                productBoxAssignments[product.product_id] === box.box_id &&
+                (productQuantities[product.product_id] || 0) > 0
               ) || [];
+
+              if (productsInBox.length === 0) return null;
 
               return (
                 <Card key={box.box_id} style={{ marginBottom: 8 }}>
@@ -714,79 +1017,109 @@ export const OrderDetailsDialog = ({
   if (!order) return null;
 
   return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      maxWidth="lg"
-      fullWidth
-      className={classes.orderDetailsDialog}
-    >
-      <DialogTitle>
-        <Box display="flex" alignItems="center" justifyContent="space-between">
-          <Box display="flex" alignItems="center">
-            <IconPackage size={24} style={{ marginRight: 8 }} />
-            <Typography variant="h5">Order Management: {order.order_request_id}</Typography>
+    <>
+      <Dialog
+        open={open}
+        onClose={onClose}
+        maxWidth="lg"
+        fullWidth
+        className={classes.orderDetailsDialog}
+      >
+        <DialogTitle>
+          <Box display="flex" alignItems="center" justifyContent="space-between">
+            <Box display="flex" alignItems="center">
+              <IconPackage size={24} style={{ marginRight: 8 }} />
+              <Typography variant="h5">Order Management: {order.order_request_id}</Typography>
+            </Box>
+            <StatusChip status={order.status} classes={classes} />
           </Box>
-          <StatusChip status={order.status} classes={classes} />
-        </Box>
-      </DialogTitle>
+        </DialogTitle>
 
-      <DialogContent style={{ minHeight: '500px' }}>
-        <Stepper activeStep={activeStep} style={{ marginBottom: 24 }}>
-          {steps.map((label) => (
-            <Step key={label}>
-              <StepLabel>{label}</StepLabel>
-            </Step>
-          ))}
-        </Stepper>
+        <DialogContent style={{ minHeight: '500px' }}>
+          <Stepper activeStep={activeStep} style={{ marginBottom: 24 }}>
+            {steps.map((label) => (
+              <Step key={label}>
+                <StepLabel>{label}</StepLabel>
+              </Step>
+            ))}
+          </Stepper>
 
-        {renderStepContent()}
-      </DialogContent>
+          {renderStepContent()}
+        </DialogContent>
 
-      <DialogActions>
-        <Button onClick={onClose} disabled={loading}>
-          Close
-        </Button>
-
-        {activeStep > 0 && (
-          <Button onClick={handleBack} disabled={loading}>
-            Back
+        <DialogActions>
+          <Button onClick={onClose} disabled={loading}>
+            Close
           </Button>
-        )}
 
-        {activeStep === 0 && order.status === 'picking' && (
-          <Button
-            onClick={handleNext}
-            color="primary"
-            variant="contained"
-            disabled={loading}
-          >
-            Start Packing
-          </Button>
-        )}
+          {activeStep > 0 && (
+            <Button onClick={handleBack} disabled={loading}>
+              Back
+            </Button>
+          )}
 
-        {activeStep === 1 && (
-          <Button
-            onClick={handlePackingComplete}
-            color="primary"
-            variant="contained"
-            disabled={loading}
-          >
-            {loading ? <CircularProgress size={20} /> : 'Complete Packing'}
-          </Button>
-        )}
+          {activeStep === 0 && order.status === 'picking' && (
+            <Button
+              onClick={handleNext}
+              color="primary"
+              variant="contained"
+              disabled={loading}
+            >
+              Start Packing
+            </Button>
+          )}
 
-        {activeStep === 2 && (
-          <Button
-            onClick={handleFinalDispatch}
-            color="secondary"
-            variant="contained"
-            disabled={loading}
-          >
-            {loading ? <CircularProgress size={20} /> : 'Final Dispatch'}
+          {activeStep === 1 && (
+            <Button
+              onClick={handlePackingComplete}
+              color="primary"
+              variant="contained"
+              disabled={loading}
+            >
+              {loading ? <CircularProgress size={20} /> : 'Complete Packing'}
+            </Button>
+          )}
+
+          {activeStep === 2 && (
+            <Button
+              onClick={handleFinalDispatch}
+              color="secondary"
+              variant="contained"
+              disabled={loading}
+            >
+              {loading ? <CircularProgress size={20} /> : 'Final Dispatch'}
+            </Button>
+          )}
+        </DialogActions>
+      </Dialog>
+
+      {/* Warning Dialog */}
+      <Dialog open={showWarningDialog} onClose={() => setShowWarningDialog(false)}>
+        <DialogTitle>Warnings Found</DialogTitle>
+        <DialogContent>
+          <Typography variant="body1" gutterBottom>
+            The following warnings were found:
+          </Typography>
+          <ul>
+            {warningMessages.map((warning, index) => (
+              <li key={index}>
+                <Typography variant="body2">{warning}</Typography>
+              </li>
+            ))}
+          </ul>
+          <Typography variant="body1" style={{ marginTop: 16 }}>
+            Do you want to proceed anyway?
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setShowWarningDialog(false)}>
+            Cancel
           </Button>
-        )}
-      </DialogActions>
-    </Dialog>
+          <Button onClick={proceedWithPacking} color="primary" variant="contained">
+            Proceed
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </>
   );
 };

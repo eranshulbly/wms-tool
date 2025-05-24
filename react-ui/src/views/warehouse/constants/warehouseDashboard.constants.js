@@ -2,7 +2,9 @@ import {
   IconPackage,
   IconTruckDelivery,
   IconBoxSeam,
-  IconClipboardList
+  IconClipboardList,
+  IconUxCircle,
+  IconClipboardCheck
 } from '@tabler/icons';
 
 // Order status configuration
@@ -26,6 +28,16 @@ export const ORDER_STATUS_DATA = {
     icon: <IconTruckDelivery size={42} color="#2e7d32" />,
     label: 'Dispatch Ready',
     chipClass: 'chipDispatch'
+  },
+  completed: {
+    icon: <IconUxCircle size={42} color="#4caf50" />,
+    label: 'Completed',
+    chipClass: 'chipCompleted'
+  },
+  'partially-completed': {
+    icon: <IconClipboardCheck size={42} color="#ff9800" />,
+    label: 'Partially Completed',
+    chipClass: 'chipPartiallyCompleted'
   }
 };
 
@@ -35,7 +47,9 @@ export const STATUS_FILTER_OPTIONS = [
   { value: 'open', label: 'Open Orders' },
   { value: 'picking', label: 'Picking' },
   { value: 'packing', label: 'Packing' },
-  { value: 'dispatch', label: 'Dispatch Ready' }
+  { value: 'dispatch', label: 'Dispatch Ready' },
+  { value: 'completed', label: 'Completed' },
+  { value: 'partially-completed', label: 'Partially Completed' }
 ];
 
 // Table column configuration

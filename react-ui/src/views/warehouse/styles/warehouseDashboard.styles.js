@@ -17,6 +17,12 @@ export const useWarehouseDashboardStyles = makeStyles((theme) => ({
   dispatchCard: {
     borderTop: `5px solid ${theme.palette.success.main}`
   },
+  completedCard: {
+    borderTop: `5px solid #4caf50`
+  },
+  partiallyCompletedCard: {
+    borderTop: `5px solid #ff9800`
+  },
   iconContainer: {
     backgroundColor: theme.palette.background.default,
     padding: theme.spacing(2),
@@ -57,6 +63,14 @@ export const useWarehouseDashboardStyles = makeStyles((theme) => ({
   chipDispatch: {
     backgroundColor: theme.palette.success.light,
     color: theme.palette.success.dark
+  },
+  chipCompleted: {
+    backgroundColor: '#4caf50',
+    color: '#ffffff'
+  },
+  chipPartiallyCompleted: {
+    backgroundColor: '#ff9800',
+    color: '#ffffff'
   },
   tableContainer: {
     maxHeight: 440,

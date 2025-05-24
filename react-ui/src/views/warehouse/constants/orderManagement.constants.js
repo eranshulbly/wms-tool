@@ -6,7 +6,9 @@ export const STATUS_FILTER_OPTIONS = [
   { value: 'open', label: 'Open Orders' },
   { value: 'picking', label: 'Picking' },
   { value: 'packing', label: 'Packing' },
-  { value: 'dispatch', label: 'Dispatch Ready' }
+  { value: 'dispatch', label: 'Dispatch Ready' },
+  { value: 'completed', label: 'Completed' },
+  { value: 'partially-completed', label: 'Partially Completed' }
 ];
 
 // Status progression mapping
@@ -14,7 +16,9 @@ export const STATUS_PROGRESSION = {
   'open': 'picking',
   'picking': 'packing',
   'packing': 'dispatch',
-  'dispatch': null // Final status
+  'dispatch': null, // Final status - will be handled in dispatch process
+  'completed': null, // Final status
+  'partially-completed': null // Final status
 };
 
 // Status display names
@@ -22,7 +26,9 @@ export const STATUS_LABELS = {
   'open': 'Open',
   'picking': 'Picking',
   'packing': 'Packing',
-  'dispatch': 'Dispatch Ready'
+  'dispatch': 'Dispatch Ready',
+  'completed': 'Completed',
+  'partially-completed': 'Partially Completed'
 };
 
 // Table column configuration

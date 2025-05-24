@@ -28,6 +28,14 @@ export const useOrderManagementStyles = makeStyles((theme) => ({
     backgroundColor: theme.palette.success.light,
     color: theme.palette.success.dark
   },
+  chipCompleted: {
+    backgroundColor: '#4caf50',
+    color: '#ffffff'
+  },
+  chipPartiallyCompleted: {
+    backgroundColor: '#ff9800',
+    color: '#ffffff'
+  },
   loadingContainer: {
     display: 'flex',
     justifyContent: 'center',
@@ -119,6 +127,29 @@ export const useOrderManagementStyles = makeStyles((theme) => ({
     fontStyle: 'italic'
   },
 
+  // Enhanced box quantity management
+  boxQuantityContainer: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: theme.spacing(1),
+    marginTop: theme.spacing(1)
+  },
+  productInBox: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: theme.spacing(1),
+    backgroundColor: theme.palette.grey[50],
+    borderRadius: theme.shape.borderRadius,
+    marginBottom: theme.spacing(0.5)
+  },
+  productInBoxName: {
+    flex: 1
+  },
+  productInBoxQuantity: {
+    minWidth: '80px'
+  },
+
   // Accordion styles for boxes
   accordionSummary: {
     backgroundColor: theme.palette.background.default,
@@ -164,28 +195,6 @@ export const useOrderManagementStyles = makeStyles((theme) => ({
     color: theme.palette.success.dark
   },
 
-  // Product detail styles
-  productDetailContainer: {
-    marginBottom: theme.spacing(2)
-  },
-  productDetailRow: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: theme.spacing(1),
-    borderBottom: `1px solid ${theme.palette.divider}`,
-    '&:last-child': {
-      borderBottom: 'none'
-    }
-  },
-  productName: {
-    fontWeight: 500
-  },
-  productId: {
-    color: theme.palette.text.secondary,
-    fontSize: '0.875rem'
-  },
-
   // Validation styles
   errorText: {
     color: theme.palette.error.main,
@@ -196,32 +205,6 @@ export const useOrderManagementStyles = makeStyles((theme) => ({
     color: theme.palette.warning.main,
     fontSize: '0.875rem',
     marginTop: theme.spacing(0.5)
-  },
-  validationContainer: {
-    marginTop: theme.spacing(2),
-    padding: theme.spacing(1),
-    borderRadius: theme.shape.borderRadius
-  },
-  validationError: {
-    backgroundColor: theme.palette.error.light,
-    color: theme.palette.error.dark
-  },
-  validationWarning: {
-    backgroundColor: theme.palette.warning.light,
-    color: theme.palette.warning.dark
-  },
-
-  // Dialog action styles
-  dialogActions: {
-    padding: theme.spacing(2),
-    backgroundColor: theme.palette.background.default,
-    borderTop: `1px solid ${theme.palette.divider}`
-  },
-
-  // Progress indicators
-  stepProgress: {
-    width: '100%',
-    marginBottom: theme.spacing(2)
   },
 
   // Mobile responsive adjustments

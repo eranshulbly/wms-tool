@@ -1,6 +1,6 @@
 # -*- encoding: utf-8 -*-
 """
-Order Management API routes - Updated with product details and box packing
+Order Management API routes - Fixed with proper status update endpoint
 """
 
 from flask import request
@@ -9,7 +9,7 @@ from flask_restx import Resource, fields
 from datetime import datetime, timedelta
 
 from .models import db, Warehouse, Company, PotentialOrder, PotentialOrderProduct, OrderStateHistory, OrderState, \
-    Product, Dealer, Box, Order, OrderProduct, OrderBox
+    Product, Dealer, Box, Order, OrderProduct, OrderBox, BoxProduct
 from .routes import token_required, rest_api
 
 # Response models for order management
@@ -47,6 +47,11 @@ order_detail_model = rest_api.model('OrderDetail', {
     'products': fields.List(fields.Nested(product_detail_model), description='Products in this order'),
     'boxes': fields.List(fields.Nested(box_assignment_model), description='Box assignments'),
     'state_history': fields.List(fields.Nested(state_history_model), description='State history')
+})
+
+update_status_model = rest_api.model('UpdateStatusModel', {
+    'new_status': fields.String(required=True, description='New status'),
+    'boxes': fields.List(fields.Nested(box_assignment_model), description='Box assignments (optional)')
 })
 
 packing_update_model = rest_api.model('PackingUpdate', {
@@ -113,24 +118,38 @@ class OrderDetailWithProducts(Resource):
                     'name': product.name,
                     'description': product.description or '',
                     'quantity_ordered': order_product.quantity,
-                    'quantity_available': order_product.quantity,  # In real scenario, check inventory
-                    'quantity_packed': 0,  # Will be updated during packing
+                    'quantity_available': order_product.quantity,
+                    'quantity_packed': order_product.quantity_packed or 0,
                     'price': str(product.price) if product.price else '0.00'
                 })
 
-            # Get existing box assignments if any
+            # Get existing box assignments
             boxes = []
-            existing_boxes = db.session.query(OrderBox).filter(
-                OrderBox.order_id == potential_order.potential_order_id
+            box_products = db.session.query(BoxProduct, Box).join(
+                Box, BoxProduct.box_id == Box.box_id
+            ).filter(
+                BoxProduct.potential_order_id == potential_order.potential_order_id
             ).all()
 
-            for box in existing_boxes:
-                # Get products in this box (this would need a proper junction table in real implementation)
-                boxes.append({
-                    'box_id': f'B{box.box_id}',
-                    'box_name': box.name,
-                    'products': []  # Would be populated from box-product junction table
-                })
+            # Group products by box
+            box_dict = {}
+            for box_product, box in box_products:
+                if box.box_id not in box_dict:
+                    box_dict[box.box_id] = {
+                        'box_id': f'B{box.box_id}',
+                        'box_name': box.name,
+                        'products': []
+                    }
+
+                # Get product info
+                product = Product.query.get(box_product.product_id)
+                if product:
+                    box_dict[box.box_id]['products'].append({
+                        'product_id': product.product_id,
+                        'quantity': box_product.quantity
+                    })
+
+            boxes = list(box_dict.values())
 
             # Get state history
             state_history = db.session.query(
@@ -162,7 +181,9 @@ class OrderDetailWithProducts(Resource):
                 'Open': 'open',
                 'Picking': 'picking',
                 'Packing': 'packing',
-                'Dispatch Ready': 'dispatch'
+                'Dispatch Ready': 'dispatch',
+                'Completed': 'completed',
+                'Partially Completed': 'partially-completed'
             }
             frontend_status = status_map.get(potential_order.status, 'open')
 
@@ -192,17 +213,97 @@ class OrderDetailWithProducts(Resource):
             }, 400
 
 
+@rest_api.route('/api/orders/<string:order_id>/status')
+class OrderStatusUpdate(Resource):
+    """
+    FIXED: Endpoint for updating order status - this was missing in the original routes
+    """
+
+    @rest_api.expect(update_status_model)
+    @rest_api.response(200, 'Success', update_status_response)
+    @rest_api.response(400, 'Error', error_response)
+    @rest_api.response(404, 'Order not found', error_response)
+    def post(self, order_id):
+        """Update the status of an order"""
+        try:
+            # Extract the numeric part from the order_id
+            numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
+
+            # Get the order
+            potential_order = PotentialOrder.query.get_or_404(numeric_id)
+
+            # Get request data
+            req_data = request.get_json()
+            new_status = req_data.get('new_status')
+            boxes_data = req_data.get('boxes', [])
+
+            # Map frontend status names to database status names
+            status_map = {
+                'open': 'Open',
+                'picking': 'Picking',
+                'packing': 'Packing',
+                'dispatch': 'Dispatch Ready',
+                'completed': 'Completed',
+                'partially-completed': 'Partially Completed'
+            }
+
+            # Validate the new status
+            if new_status not in status_map:
+                return {
+                    'success': False,
+                    'msg': f'Invalid status: {new_status}'
+                }, 400
+
+            # Get the corresponding state
+            db_status = status_map[new_status]
+            new_state = OrderState.query.filter_by(state_name=db_status).first()
+
+            if not new_state:
+                # Create the state if it doesn't exist
+                new_state = OrderState(state_name=db_status, description=f'{db_status} state')
+                db.session.add(new_state)
+                db.session.flush()
+
+            # Update the order status
+            potential_order.status = db_status
+            potential_order.updated_at = datetime.utcnow()
+
+            # Create a state history entry
+            state_history = OrderStateHistory(
+                potential_order_id=potential_order.potential_order_id,
+                state_id=new_state.state_id,
+                changed_by=1,  # In a real app, use the authenticated user's ID
+                changed_at=datetime.utcnow()
+            )
+            db.session.add(state_history)
+
+            # Commit the changes
+            db.session.commit()
+
+            return {
+                'success': True,
+                'msg': f'Order status updated to {new_status}'
+            }, 200
+
+        except Exception as e:
+            db.session.rollback()
+            return {
+                'success': False,
+                'msg': f'Error updating order status: {str(e)}'
+            }, 400
+
+
 @rest_api.route('/api/orders/<string:order_id>/packing')
 class OrderPackingUpdate(Resource):
     """
-    Endpoint for updating packing information
+    Endpoint for updating packing information with improved box quantity handling
     """
 
     @rest_api.expect(packing_update_model)
     @rest_api.response(200, 'Success', update_status_response)
     @rest_api.response(400, 'Error', error_response)
     def post(self, order_id):
-        """Update packing information for an order"""
+        """Update packing information for an order with partial quantities"""
         try:
             numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
             potential_order = PotentialOrder.query.get_or_404(numeric_id)
@@ -218,7 +319,10 @@ class OrderPackingUpdate(Resource):
                     'msg': 'Order must be in Packing status to update packing information'
                 }, 400
 
-            # Process box assignments and update quantities
+            # Clear existing box-product assignments for this order
+            BoxProduct.query.filter_by(potential_order_id=potential_order.potential_order_id).delete()
+
+            # Process boxes and their product assignments
             for box_data in boxes_data:
                 box_name = box_data.get('box_name')
                 box_products = box_data.get('products', [])
@@ -232,20 +336,37 @@ class OrderPackingUpdate(Resource):
                 db.session.add(box)
                 db.session.flush()
 
-                # Create OrderBox association
-                order_box = OrderBox(
-                    order_id=potential_order.potential_order_id,
-                    box_id=box.box_id,
-                    name=box_name,
-                    created_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow()
-                )
-                db.session.add(order_box)
+                # Add products to this box with quantities
+                for product_assignment in box_products:
+                    product_id = product_assignment.get('product_id')
+                    quantity = product_assignment.get('quantity', 0)
 
-                # In a real implementation, you'd create a junction table for box-product relationships
-                # For now, we'll store this information in the box name or a separate field
+                    if quantity > 0:
+                        box_product = BoxProduct(
+                            box_id=box.box_id,
+                            product_id=product_id,
+                            quantity=quantity,
+                            potential_order_id=potential_order.potential_order_id,
+                            created_at=datetime.utcnow(),
+                            updated_at=datetime.utcnow()
+                        )
+                        db.session.add(box_product)
 
-            # Update the order status to indicate packing is in progress
+            # Update packed quantities in potential order products
+            for product_data in products_data:
+                product_id = product_data.get('product_id')
+                quantity_packed = product_data.get('quantity_packed', 0)
+
+                potential_product = PotentialOrderProduct.query.filter(
+                    PotentialOrderProduct.potential_order_id == potential_order.potential_order_id,
+                    PotentialOrderProduct.product_id == product_id
+                ).first()
+
+                if potential_product:
+                    potential_product.quantity_packed = quantity_packed
+                    potential_product.updated_at = datetime.utcnow()
+
+            # Update the order timestamp
             potential_order.updated_at = datetime.utcnow()
             db.session.commit()
 
@@ -265,7 +386,7 @@ class OrderPackingUpdate(Resource):
 @rest_api.route('/api/orders/<string:order_id>/dispatch')
 class OrderDispatchFinal(Resource):
     """
-    Endpoint for finalizing order and moving to dispatch
+    FIXED: Endpoint for finalizing order and moving to dispatch - fixed status counting
     """
 
     @rest_api.expect(dispatch_update_model)
@@ -336,6 +457,7 @@ class OrderDispatchFinal(Resource):
                             else:
                                 # Update with remaining quantity
                                 potential_product.quantity = remaining_quantity
+                                potential_product.quantity_packed = 0  # Reset packed quantity
                                 potential_product.updated_at = datetime.utcnow()
 
                 # Process boxes for final order
@@ -356,26 +478,29 @@ class OrderDispatchFinal(Resource):
                     PotentialOrderProduct.potential_order_id == potential_order.potential_order_id
                 ).count()
 
+                # FIXED: Update status correctly for dashboard counting
                 if remaining_products == 0:
                     # All products were dispatched, mark potential order as completed
                     potential_order.status = 'Completed'
+                    final_status = 'Completed'
                 else:
                     # Some products remain, mark as partially completed
                     potential_order.status = 'Partially Completed'
+                    final_status = 'Partially Completed'
 
                 # Update potential order
                 potential_order.updated_at = datetime.utcnow()
 
-                # Create state history for the transition
-                dispatch_state = OrderState.query.filter_by(state_name='Dispatch Ready').first()
-                if not dispatch_state:
-                    dispatch_state = OrderState(state_name='Dispatch Ready', description='Ready for dispatch')
-                    db.session.add(dispatch_state)
+                # Create state history for the final status (not dispatch ready)
+                final_state = OrderState.query.filter_by(state_name=final_status).first()
+                if not final_state:
+                    final_state = OrderState(state_name=final_status, description=f'{final_status} state')
+                    db.session.add(final_state)
                     db.session.flush()
 
                 state_history = OrderStateHistory(
                     potential_order_id=potential_order.potential_order_id,
-                    state_id=dispatch_state.state_id,
+                    state_id=final_state.state_id,
                     changed_by=1,  # In real app, use authenticated user ID
                     changed_at=datetime.utcnow()
                 )
@@ -388,7 +513,8 @@ class OrderDispatchFinal(Resource):
                     'msg': f'Order dispatched successfully. Order number: {final_order.order_number}',
                     'final_order_id': final_order.order_id,
                     'products_dispatched': total_dispatched_products,
-                    'remaining_products': remaining_products
+                    'remaining_products': remaining_products,
+                    'final_status': final_status.lower().replace(' ', '-')
                 }, 200
 
             except Exception as e:
