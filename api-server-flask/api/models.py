@@ -14,12 +14,21 @@ db = SQLAlchemy()
 
 
 class Users(db.Model):
-    id = db.Column(db.Integer(), primary_key=True)
-    username = db.Column(db.String(32), nullable=False)
-    email = db.Column(db.String(64), nullable=True)
+    __tablename__ = 'users'
+
+    id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
+    username = db.Column(db.String(32), nullable=False, index=True)
+    email = db.Column(db.String(64), nullable=True, unique=True, index=True)
     password = db.Column(db.Text())
-    jwt_auth_active = db.Column(db.Boolean())
+    jwt_auth_active = db.Column(db.Boolean(), default=False)
     date_joined = db.Column(db.DateTime(), default=datetime.utcnow)
+
+    # MySQL specific indexes
+    __table_args__ = (
+        db.Index('idx_users_username', 'username'),
+        db.Index('idx_users_email', 'email'),
+        {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'}
+    )
 
     def __repr__(self):
         return f"User {self.username}"
@@ -71,12 +80,19 @@ class Users(db.Model):
 
 
 class JWTTokenBlocklist(db.Model):
-    id = db.Column(db.Integer(), primary_key=True)
-    jwt_token = db.Column(db.String(), nullable=False)
-    created_at = db.Column(db.DateTime(), nullable=False)
+    __tablename__ = 'jwt_token_blocklist'
+
+    id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
+    jwt_token = db.Column(db.Text(), nullable=False)
+    created_at = db.Column(db.DateTime(), nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.Index('idx_jwt_token_created', 'created_at'),
+        {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'}
+    )
 
     def __repr__(self):
-        return f"Expired Token: {self.jwt_token}"
+        return f"Expired Token: {self.jwt_token[:20]}..."
 
     def save(self):
         db.session.add(self)
@@ -86,11 +102,16 @@ class JWTTokenBlocklist(db.Model):
 class Warehouse(db.Model):
     __tablename__ = 'warehouse'
 
-    warehouse_id = db.Column(db.Integer(), primary_key=True)
-    name = db.Column(db.String(255), nullable=False)
-    location = db.Column(db.String(255))
+    warehouse_id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
+    name = db.Column(db.String(255), nullable=False, index=True)
+    location = db.Column(db.String(500))
     created_at = db.Column(db.DateTime(), default=datetime.utcnow)
     updated_at = db.Column(db.DateTime(), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        db.Index('idx_warehouse_name', 'name'),
+        {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'}
+    )
 
     def __repr__(self):
         return f"Warehouse {self.name}"
@@ -134,10 +155,15 @@ class Warehouse(db.Model):
 class Company(db.Model):
     __tablename__ = 'company'
 
-    company_id = db.Column(db.Integer(), primary_key=True)
-    name = db.Column(db.String(255), nullable=False)
-    created_at = db.Column(db.DateTime(), default=datetime.now())
-    updated_at = db.Column(db.DateTime(), default=datetime.now(), onupdate=datetime.now())
+    company_id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
+    name = db.Column(db.String(255), nullable=False, index=True)
+    created_at = db.Column(db.DateTime(), default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime(), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        db.Index('idx_company_name', 'name'),
+        {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'}
+    )
 
     def __repr__(self):
         return f"Company {self.name}"
@@ -157,59 +183,75 @@ class Company(db.Model):
 class Dealer(db.Model):
     __tablename__ = 'dealer'
 
-    dealer_id = db.Column(db.Integer(), primary_key=True)
-    name = db.Column(db.String(255), nullable=False)
-    created_at = db.Column(db.DateTime(), default=datetime.now())
-    updated_at = db.Column(db.DateTime(), default=datetime.now(), onupdate=datetime.now())
+    dealer_id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
+    name = db.Column(db.String(255), nullable=False, index=True)
+    created_at = db.Column(db.DateTime(), default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime(), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        db.Index('idx_dealer_name', 'name'),
+        {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'}
+    )
 
     def __repr__(self):
-        return f"Company {self.name}"
+        return f"Dealer {self.name}"
 
     def save(self):
         db.session.add(self)
         db.session.commit()
 
     @classmethod
-    def get_by_id(cls, company_id):
-        return cls.query.get_or_404(company_id)
+    def get_by_id(cls, dealer_id):
+        return cls.query.get_or_404(dealer_id)
 
     def to_dict(self):
-        return {'company_id': self.dealer_id, 'name': self.name}
+        return {'dealer_id': self.dealer_id, 'name': self.name}
 
 
 class Box(db.Model):
     __tablename__ = 'box'
 
-    box_id = db.Column(db.Integer(), primary_key=True)
-    name = db.Column(db.String(255), nullable=False)
-    created_at = db.Column(db.DateTime(), default=datetime.now())
-    updated_at = db.Column(db.DateTime(), default=datetime.now(), onupdate=datetime.now())
+    box_id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
+    name = db.Column(db.String(255), nullable=False, index=True)
+    created_at = db.Column(db.DateTime(), default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime(), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        db.Index('idx_box_name', 'name'),
+        {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'}
+    )
 
     def __repr__(self):
-        return f"Company {self.name}"
+        return f"Box {self.name}"
 
     def save(self):
         db.session.add(self)
         db.session.commit()
 
     @classmethod
-    def get_by_id(cls, company_id):
-        return cls.query.get_or_404(company_id)
+    def get_by_id(cls, box_id):
+        return cls.query.get_or_404(box_id)
 
     def to_dict(self):
-        return {'company_id': self.box_id, 'name': self.name}
+        return {'box_id': self.box_id, 'name': self.name}
 
 
 class Product(db.Model):
     __tablename__ = 'product'
 
-    product_id = db.Column(db.Integer(), primary_key=True)
-    product_string = db.Column(db.String())
-    name = db.Column(db.String(255), nullable=False)
+    product_id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
+    product_string = db.Column(db.String(100), index=True)
+    name = db.Column(db.String(255), nullable=False, index=True)
     description = db.Column(db.Text())
-    price = db.Column(db.Numeric(10, 2))
-    created_at = db.Column(db.DateTime(), default=datetime.now())
-    updated_at = db.Column(db.DateTime(), default=datetime.now(), onupdate=datetime.now())
+    price = db.Column(db.DECIMAL(10, 2))
+    created_at = db.Column(db.DateTime(), default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime(), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        db.Index('idx_product_string', 'product_string'),
+        db.Index('idx_product_name', 'name'),
+        {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'}
+    )
 
     def __repr__(self):
         return f"Product {self.name}"
@@ -230,19 +272,27 @@ class Product(db.Model):
 class PotentialOrder(db.Model):
     __tablename__ = 'potential_order'
 
-    potential_order_id = db.Column(db.Integer(), primary_key=True)
-    original_order_id = db.Column(db.String(), unique=True, nullable=False)  # original order id coming from upload
-    warehouse_id = db.Column(db.Integer(), db.ForeignKey('warehouse.warehouse_id'))
-    company_id = db.Column(db.Integer(), db.ForeignKey('company.company_id'))
-    dealer_id = db.Column(db.Integer(), db.ForeignKey('dealer.dealer_id'))
-    order_date = db.Column(db.DateTime(), default=datetime.now())
-    requested_by = db.Column(db.Integer())  # User ID who created the order request
-    status = db.Column(db.String(50), default='Open')  # E.g., 'Open', 'Picking', 'Packing'
-    created_at = db.Column(db.DateTime(), default=datetime.now())
-    updated_at = db.Column(db.DateTime(), default=datetime.now(), onupdate=datetime.now())
+    potential_order_id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
+    original_order_id = db.Column(db.String(100), nullable=False, index=True)  # Changed from unique=True for MySQL
+    warehouse_id = db.Column(db.Integer(), db.ForeignKey('warehouse.warehouse_id'), index=True)
+    company_id = db.Column(db.Integer(), db.ForeignKey('company.company_id'), index=True)
+    dealer_id = db.Column(db.Integer(), db.ForeignKey('dealer.dealer_id'), index=True)
+    order_date = db.Column(db.DateTime(), default=datetime.utcnow)
+    requested_by = db.Column(db.Integer(), index=True)  # User ID who created the order request
+    status = db.Column(db.String(50), default='Open', index=True)
+    created_at = db.Column(db.DateTime(), default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime(), default=datetime.utcnow, onupdate=datetime.utcnow)
 
     warehouse = db.relationship('Warehouse', backref=db.backref('orders', lazy=True))
     company = db.relationship('Company', backref=db.backref('orders', lazy=True))
+    dealer = db.relationship('Dealer', backref=db.backref('orders', lazy=True))
+
+    __table_args__ = (
+        db.Index('idx_potential_order_status', 'status'),
+        db.Index('idx_potential_order_date', 'order_date'),
+        db.Index('idx_potential_order_composite', 'warehouse_id', 'company_id', 'status'),
+        {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'}
+    )
 
     def __repr__(self):
         return f"PotentialOrder {self.potential_order_id} - {self.status}"
@@ -268,22 +318,27 @@ class PotentialOrder(db.Model):
 class PotentialOrderProduct(db.Model):
     __tablename__ = 'potential_order_product'
 
-    potential_order_product_id = db.Column(db.Integer(), primary_key=True)
-    potential_order_id = db.Column(db.Integer(), db.ForeignKey('potential_order.potential_order_id'))
-    product_id = db.Column(db.Integer(), db.ForeignKey('product.product_id'))
+    potential_order_product_id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
+    potential_order_id = db.Column(db.Integer(), db.ForeignKey('potential_order.potential_order_id'), index=True)
+    product_id = db.Column(db.Integer(), db.ForeignKey('product.product_id'), index=True)
     quantity = db.Column(db.Integer(), nullable=False)
-    quantity_packed = db.Column(db.Integer(), default=0)  # NEW FIELD
-    quantity_remaining = db.Column(db.Integer())  # NEW FIELD - calculated field
-    mrp = db.Column(db.Numeric(10, 2))
-    total_price = db.Column(db.Numeric(10, 2))
-    created_at = db.Column(db.DateTime(), default=datetime.now())
-    updated_at = db.Column(db.DateTime(), default=datetime.now(), onupdate=datetime.now())
+    quantity_packed = db.Column(db.Integer(), default=0)
+    quantity_remaining = db.Column(db.Integer())
+    mrp = db.Column(db.DECIMAL(10, 2))
+    total_price = db.Column(db.DECIMAL(10, 2))
+    created_at = db.Column(db.DateTime(), default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime(), default=datetime.utcnow, onupdate=datetime.utcnow)
 
     potential_order = db.relationship('PotentialOrder', backref=db.backref('products', lazy=True))
     product = db.relationship('Product', backref=db.backref('potential_orders', lazy=True))
 
+    __table_args__ = (
+        db.Index('idx_pop_order_product', 'potential_order_id', 'product_id'),
+        {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'}
+    )
+
     def __repr__(self):
-        return f"PotentialOrderProduct {self.potential_order_product_id} - {self.product.name}"
+        return f"PotentialOrderProduct {self.potential_order_product_id} - {self.product.name if self.product else 'Unknown'}"
 
     def save(self):
         db.session.add(self)
@@ -314,16 +369,22 @@ class PotentialOrderProduct(db.Model):
 class Order(db.Model):
     __tablename__ = 'order'
 
-    order_id = db.Column(db.Integer(), primary_key=True)
-    potential_order_id = db.Column(db.Integer(), db.ForeignKey('potential_order.potential_order_id'))
-    order_number = db.Column(db.String(255), unique=True, nullable=False)
+    order_id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
+    potential_order_id = db.Column(db.Integer(), db.ForeignKey('potential_order.potential_order_id'), index=True)
+    order_number = db.Column(db.String(255), nullable=False, index=True)
     dispatched_date = db.Column(db.DateTime())
     delivery_date = db.Column(db.DateTime())
-    status = db.Column(db.String(50), default='In Transit')  # E.g., 'In Transit', 'Delivered', 'Returned'
-    created_at = db.Column(db.DateTime(), default=datetime.now())
-    updated_at = db.Column(db.DateTime(), default=datetime.now(), onupdate=datetime.now())
+    status = db.Column(db.String(50), default='In Transit', index=True)
+    created_at = db.Column(db.DateTime(), default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime(), default=datetime.utcnow, onupdate=datetime.utcnow)
 
     potential_order = db.relationship('PotentialOrder', backref=db.backref('final_order', lazy=True))
+
+    __table_args__ = (
+        db.Index('idx_order_number', 'order_number'),
+        db.Index('idx_order_status', 'status'),
+        {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'}
+    )
 
     def __repr__(self):
         return f"Order {self.order_number} - {self.status}"
@@ -350,22 +411,29 @@ class Order(db.Model):
 class OrderBox(db.Model):
     __tablename__ = 'order_box'
 
-    order_id = db.Column(db.Integer(), db.ForeignKey('order.order_id'))
-    box_id = db.Column(db.Integer(), primary_key=True)
+    box_id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
+    order_id = db.Column(db.Integer(), db.ForeignKey('order.order_id'), index=True)
     name = db.Column(db.String(255), nullable=False)
-    created_at = db.Column(db.DateTime(), default=datetime.now())
-    updated_at = db.Column(db.DateTime(), default=datetime.now(), onupdate=datetime.now())
+    created_at = db.Column(db.DateTime(), default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime(), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    order = db.relationship('Order', backref=db.backref('boxes', lazy=True))
+
+    __table_args__ = (
+        db.Index('idx_order_box_order', 'order_id'),
+        {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'}
+    )
 
     def __repr__(self):
-        return f"OrderBox {self.order_product_id} - {self.product.name}"
+        return f"OrderBox {self.box_id} - {self.name}"
 
     def save(self):
         db.session.add(self)
         db.session.commit()
 
     @classmethod
-    def get_by_id(cls, company_id):
-        return cls.query.get_or_404(company_id)
+    def get_by_id(cls, box_id):
+        return cls.query.get_or_404(box_id)
 
     def to_dict(self):
         return {
@@ -378,20 +446,25 @@ class OrderBox(db.Model):
 class OrderProduct(db.Model):
     __tablename__ = 'order_product'
 
-    order_product_id = db.Column(db.Integer(), primary_key=True)
-    order_id = db.Column(db.Integer(), db.ForeignKey('order.order_id'))
-    product_id = db.Column(db.Integer(), db.ForeignKey('product.product_id'))
+    order_product_id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
+    order_id = db.Column(db.Integer(), db.ForeignKey('order.order_id'), index=True)
+    product_id = db.Column(db.Integer(), db.ForeignKey('product.product_id'), index=True)
     quantity = db.Column(db.Integer(), nullable=False)
-    mrp = db.Column(db.Numeric(10, 2))  # Price when the order was placed
-    total_price = db.Column(db.Numeric(10, 2))  # Total price = quantity * mrp
-    created_at = db.Column(db.DateTime(), default=datetime.now())
-    updated_at = db.Column(db.DateTime(), default=datetime.now(), onupdate=datetime.now())
+    mrp = db.Column(db.DECIMAL(10, 2))
+    total_price = db.Column(db.DECIMAL(10, 2))
+    created_at = db.Column(db.DateTime(), default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime(), default=datetime.utcnow, onupdate=datetime.utcnow)
 
     order = db.relationship('Order', backref=db.backref('products', lazy=True))
     product = db.relationship('Product', backref=db.backref('orders', lazy=True))
 
+    __table_args__ = (
+        db.Index('idx_order_product_composite', 'order_id', 'product_id'),
+        {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'}
+    )
+
     def __repr__(self):
-        return f"OrderProduct {self.order_product_id} - {self.product.name}"
+        return f"OrderProduct {self.order_product_id} - {self.product.name if self.product else 'Unknown'}"
 
     def save(self):
         db.session.add(self)
@@ -415,9 +488,13 @@ class OrderProduct(db.Model):
 class OrderState(db.Model):
     __tablename__ = 'order_state'
 
-    state_id = db.Column(db.Integer(), primary_key=True)
-    state_name = db.Column(db.String(50), nullable=False)
+    state_id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
+    state_name = db.Column(db.String(50), nullable=False, unique=True, index=True)
     description = db.Column(db.Text())
+
+    __table_args__ = (
+        {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'}
+    )
 
     def __repr__(self):
         return f"OrderState {self.state_name}"
@@ -437,14 +514,20 @@ class OrderState(db.Model):
 class OrderStateHistory(db.Model):
     __tablename__ = 'order_state_history'
 
-    order_state_history_id = db.Column(db.Integer(), primary_key=True)
-    potential_order_id = db.Column(db.Integer(), db.ForeignKey('potential_order.potential_order_id'))
-    state_id = db.Column(db.Integer(), db.ForeignKey('order_state.state_id'))
-    changed_by = db.Column(db.Integer())  # User who changed the state
-    changed_at = db.Column(db.DateTime(), default=datetime.now())
+    order_state_history_id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
+    potential_order_id = db.Column(db.Integer(), db.ForeignKey('potential_order.potential_order_id'), index=True)
+    state_id = db.Column(db.Integer(), db.ForeignKey('order_state.state_id'), index=True)
+    changed_by = db.Column(db.Integer(), index=True)  # User who changed the state
+    changed_at = db.Column(db.DateTime(), default=datetime.utcnow)
 
     potential_order = db.relationship('PotentialOrder', backref=db.backref('state_history', lazy=True))
     order_state = db.relationship('OrderState', backref=db.backref('state_history', lazy=True))
+
+    __table_args__ = (
+        db.Index('idx_osh_order_state', 'potential_order_id', 'state_id'),
+        db.Index('idx_osh_changed_at', 'changed_at'),
+        {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'}
+    )
 
     def __repr__(self):
         return f"OrderStateHistory {self.order_state_history_id}"
@@ -466,20 +549,27 @@ class OrderStateHistory(db.Model):
             'changed_at': self.changed_at
         }
 
+
 class BoxProduct(db.Model):
     __tablename__ = 'box_product'
 
-    box_product_id = db.Column(db.Integer(), primary_key=True)
-    box_id = db.Column(db.Integer(), db.ForeignKey('box.box_id'))
-    product_id = db.Column(db.Integer(), db.ForeignKey('product.product_id'))
+    box_product_id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
+    box_id = db.Column(db.Integer(), db.ForeignKey('box.box_id'), index=True)
+    product_id = db.Column(db.Integer(), db.ForeignKey('product.product_id'), index=True)
     quantity = db.Column(db.Integer(), nullable=False)
-    potential_order_id = db.Column(db.Integer(), db.ForeignKey('potential_order.potential_order_id'))
-    created_at = db.Column(db.DateTime(), default=datetime.now())
-    updated_at = db.Column(db.DateTime(), default=datetime.now(), onupdate=datetime.now())
+    potential_order_id = db.Column(db.Integer(), db.ForeignKey('potential_order.potential_order_id'), index=True)
+    created_at = db.Column(db.DateTime(), default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime(), default=datetime.utcnow, onupdate=datetime.utcnow)
 
     box = db.relationship('Box', backref=db.backref('box_products', lazy=True))
     product = db.relationship('Product', backref=db.backref('box_assignments', lazy=True))
     potential_order = db.relationship('PotentialOrder', backref=db.backref('box_assignments', lazy=True))
+
+    __table_args__ = (
+        db.Index('idx_box_product_composite', 'box_id', 'product_id'),
+        db.Index('idx_box_product_order', 'potential_order_id'),
+        {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'}
+    )
 
     def __repr__(self):
         return f"BoxProduct {self.box_product_id} - Box {self.box_id} Product {self.product_id}"
@@ -500,5 +590,3 @@ class BoxProduct(db.Model):
             'quantity': self.quantity,
             'potential_order_id': self.potential_order_id
         }
-
-
