@@ -7,9 +7,9 @@ from sqlalchemy import func, and_, or_
 
 from .models import db, Warehouse, Company, PotentialOrder, PotentialOrderProduct, OrderStateHistory, OrderState, \
     Product, Dealer
-from .routes import token_required, rest_api
+from .routes import rest_api
 
-# Response models (same as before, but optimized for MySQL)
+# Response models
 warehouse_model = rest_api.model('Warehouse', {
     'id': fields.Integer(description='Warehouse ID'),
     'name': fields.String(description='Warehouse name'),
@@ -101,7 +101,7 @@ error_response = rest_api.model('ErrorResponse', {
 @rest_api.route('/api/warehouses')
 class WarehouseList(Resource):
     """
-    Endpoint for retrieving all warehouses - MySQL optimized
+    Endpoint for retrieving all warehouses
     """
 
     @rest_api.marshal_with(warehouses_response)
@@ -109,14 +109,9 @@ class WarehouseList(Resource):
     def get(self):
         """Get list of all warehouses"""
         try:
-            # Use MySQL-optimized query with explicit column selection
-            warehouses = db.session.query(
-                Warehouse.warehouse_id,
-                Warehouse.name,
-                Warehouse.location
-            ).all()
-
+            warehouses = Warehouse.query.all()
             warehouse_list = []
+
             for warehouse in warehouses:
                 warehouse_list.append({
                     'id': warehouse.warehouse_id,
@@ -139,7 +134,7 @@ class WarehouseList(Resource):
 @rest_api.route('/api/companies')
 class CompanyList(Resource):
     """
-    Endpoint for retrieving all companies - MySQL optimized
+    Endpoint for retrieving all companies
     """
 
     @rest_api.marshal_with(companies_response)
@@ -147,13 +142,9 @@ class CompanyList(Resource):
     def get(self):
         """Get list of all companies"""
         try:
-            # Use MySQL-optimized query with explicit column selection
-            companies = db.session.query(
-                Company.company_id,
-                Company.name
-            ).all()
-
+            companies = Company.query.all()
             company_list = []
+
             for company in companies:
                 company_list.append({
                     'id': company.company_id,
@@ -172,23 +163,25 @@ class CompanyList(Resource):
             }, 400
 
 
-@rest_api.route('/api`/orders/status`')
+@rest_api.route('/api/orders/status')
 class OrderStatusCount(Resource):
     """
-    MySQL Optimized: Endpoint for retrieving order status counts
+    FIXED: Endpoint for retrieving order status counts - Compatible with both MySQL and SQLite
     """
 
     @rest_api.doc(params={'warehouse_id': 'Warehouse ID', 'company_id': 'Company ID'})
     @rest_api.marshal_with(status_response)
     @rest_api.response(400, 'Error', error_response)
     def get(self):
-        """Get counts of orders by status - MySQL optimized with single query"""
+        """Get counts of orders by status - Fixed version"""
         try:
             warehouse_id = request.args.get('warehouse_id', type=int)
             company_id = request.args.get('company_id', type=int)
 
-            # Build base query with filters
-            base_query = db.session.query(PotentialOrder.status, func.count(PotentialOrder.potential_order_id))
+            print(f"Debug: warehouse_id={warehouse_id}, company_id={company_id}")  # Debug log
+
+            # Build base query
+            base_query = PotentialOrder.query
 
             # Apply filters if provided
             if warehouse_id:
@@ -196,36 +189,40 @@ class OrderStatusCount(Resource):
             if company_id:
                 base_query = base_query.filter(PotentialOrder.company_id == company_id)
 
-            # Group by status and get counts in a single query
-            status_counts = base_query.group_by(PotentialOrder.status).all()
+            # Get counts for each status using individual queries (more reliable across databases)
+            open_count = base_query.filter(PotentialOrder.status == 'Open').count()
+            picking_count = base_query.filter(PotentialOrder.status == 'Picking').count()
+            packing_count = base_query.filter(PotentialOrder.status == 'Packing').count()
+            dispatch_ready_count = base_query.filter(PotentialOrder.status == 'Dispatch Ready').count()
+            completed_count = base_query.filter(PotentialOrder.status == 'Completed').count()
+            partially_completed_count = base_query.filter(PotentialOrder.status == 'Partially Completed').count()
 
-            # Convert to dictionary
-            counts_dict = {status: count for status, count in status_counts}
+            print(f"Debug counts: open={open_count}, picking={picking_count}, packing={packing_count}")  # Debug log
 
-            # Prepare response with all possible statuses
+            # Prepare response
             response_data = {
                 'open': {
-                    'count': counts_dict.get('Open', 0),
+                    'count': open_count,
                     'label': 'Open Orders'
                 },
                 'picking': {
-                    'count': counts_dict.get('Picking', 0),
+                    'count': picking_count,
                     'label': 'Picking'
                 },
                 'packing': {
-                    'count': counts_dict.get('Packing', 0),
+                    'count': packing_count,
                     'label': 'Packing'
                 },
                 'dispatch-ready': {
-                    'count': counts_dict.get('Dispatch Ready', 0),
+                    'count': dispatch_ready_count,
                     'label': 'Dispatch Ready'
                 },
                 'completed': {
-                    'count': counts_dict.get('Completed', 0),
+                    'count': completed_count,
                     'label': 'Completed'
                 },
                 'partially-completed': {
-                    'count': counts_dict.get('Partially Completed', 0),
+                    'count': partially_completed_count,
                     'label': 'Partially Completed'
                 }
             }
@@ -236,6 +233,9 @@ class OrderStatusCount(Resource):
             }, 200
 
         except Exception as e:
+            print(f"Error in /api/orders/status: {str(e)}")  # Debug logging
+            import traceback
+            traceback.print_exc()  # Full traceback for debugging
             return {
                 'success': False,
                 'msg': f'Error retrieving order status counts: {str(e)}'
@@ -245,7 +245,7 @@ class OrderStatusCount(Resource):
 @rest_api.route('/api/orders')
 class OrdersList(Resource):
     """
-    MySQL Optimized: Endpoint for retrieving orders filtered by status
+    FIXED: Endpoint for retrieving orders filtered by status
     """
 
     @rest_api.doc(params={
@@ -257,7 +257,7 @@ class OrdersList(Resource):
     @rest_api.marshal_with(orders_response)
     @rest_api.response(400, 'Error', error_response)
     def get(self):
-        """Get orders filtered by status - MySQL optimized with joins"""
+        """Get orders filtered by status - Fixed version"""
         try:
             status = request.args.get('status', '')
             warehouse_id = request.args.get('warehouse_id', type=int)
@@ -276,22 +276,9 @@ class OrdersList(Resource):
 
             db_status = status_map.get(status.lower(), '') if status else ''
 
-            # MySQL optimized query with proper joins and subquery for product count
-            query = db.session.query(
-                PotentialOrder.potential_order_id,
-                PotentialOrder.original_order_id,
-                PotentialOrder.order_date,
-                PotentialOrder.status,
-                PotentialOrder.requested_by,
-                PotentialOrder.created_at,
-                PotentialOrder.updated_at,
-                Dealer.name.label('dealer_name'),
-                func.count(PotentialOrderProduct.potential_order_product_id).label('product_count')
-            ).outerjoin(
-                Dealer, PotentialOrder.dealer_id == Dealer.dealer_id
-            ).outerjoin(
-                PotentialOrderProduct,
-                PotentialOrder.potential_order_id == PotentialOrderProduct.potential_order_id
+            # Use simple query approach for better compatibility
+            query = db.session.query(PotentialOrder).join(
+                Dealer, PotentialOrder.dealer_id == Dealer.dealer_id, isouter=True
             )
 
             # Apply filters
@@ -302,62 +289,47 @@ class OrdersList(Resource):
             if company_id:
                 query = query.filter(PotentialOrder.company_id == company_id)
 
-            # Group by order fields
-            query = query.group_by(
-                PotentialOrder.potential_order_id,
-                PotentialOrder.original_order_id,
-                PotentialOrder.order_date,
-                PotentialOrder.status,
-                PotentialOrder.requested_by,
-                PotentialOrder.created_at,
-                PotentialOrder.updated_at,
-                Dealer.name
-            )
-
             # Order by most recent first and limit
             query = query.order_by(PotentialOrder.created_at.desc()).limit(limit)
 
             # Execute query
-            results = query.all()
+            potential_orders = query.all()
 
             orders = []
-            for result in results:
-                # Get the most recent state change for this order
-                latest_state = db.session.query(
-                    OrderStateHistory.changed_at,
-                    OrderState.state_name
+            for potential_order in potential_orders:
+                # Get dealer name
+                dealer = Dealer.query.get(potential_order.dealer_id) if potential_order.dealer_id else None
+                dealer_name = dealer.name if dealer else 'Unknown Dealer'
+
+                # Get product count
+                product_count = PotentialOrderProduct.query.filter(
+                    PotentialOrderProduct.potential_order_id == potential_order.potential_order_id
+                ).count()
+
+                # Get state history
+                state_history = db.session.query(
+                    OrderStateHistory, OrderState.state_name
                 ).join(
                     OrderState, OrderStateHistory.state_id == OrderState.state_id
                 ).filter(
-                    OrderStateHistory.potential_order_id == result.potential_order_id
-                ).order_by(
-                    OrderStateHistory.changed_at.desc()
-                ).first()
-
-                current_state_time = result.updated_at
-                if latest_state:
-                    current_state_time = latest_state.changed_at
-
-                # Get complete state history for this order
-                state_history_query = db.session.query(
-                    OrderStateHistory.changed_at,
-                    OrderStateHistory.changed_by,
-                    OrderState.state_name
-                ).join(
-                    OrderState, OrderStateHistory.state_id == OrderState.state_id
-                ).filter(
-                    OrderStateHistory.potential_order_id == result.potential_order_id
+                    OrderStateHistory.potential_order_id == potential_order.potential_order_id
                 ).order_by(
                     OrderStateHistory.changed_at
-                )
+                ).all()
 
+                # Format state history
                 formatted_history = []
-                for history in state_history_query.all():
+                for history, state_name in state_history:
                     formatted_history.append({
-                        'state_name': history.state_name,
+                        'state_name': state_name,
                         'timestamp': history.changed_at.isoformat(),
                         'user': f"User {history.changed_by}"
                     })
+
+                # Get the time of the most recent state change
+                current_state_time = potential_order.updated_at
+                if state_history:
+                    current_state_time = state_history[-1][0].changed_at
 
                 # Map database status to frontend status
                 frontend_status_map = {
@@ -368,18 +340,18 @@ class OrdersList(Resource):
                     'Completed': 'completed',
                     'Partially Completed': 'partially-completed'
                 }
-                frontend_status = frontend_status_map.get(result.status, 'open')
+                frontend_status = frontend_status_map.get(potential_order.status, 'open')
 
                 # Format the order
                 order_data = {
-                    'order_request_id': f"PO{result.potential_order_id}",
-                    'original_order_id': result.original_order_id,
-                    'dealer_name': result.dealer_name or 'Unknown Dealer',
-                    'order_date': result.order_date.isoformat(),
+                    'order_request_id': f"PO{potential_order.potential_order_id}",
+                    'original_order_id': potential_order.original_order_id,
+                    'dealer_name': dealer_name,
+                    'order_date': potential_order.order_date.isoformat(),
                     'status': frontend_status,
                     'current_state_time': current_state_time.isoformat(),
-                    'assigned_to': f"User {result.requested_by}",
-                    'products': result.product_count,
+                    'assigned_to': f"User {potential_order.requested_by}",
+                    'products': product_count,
                     'state_history': formatted_history
                 }
                 orders.append(order_data)
@@ -390,6 +362,9 @@ class OrdersList(Resource):
             }, 200
 
         except Exception as e:
+            print(f"Error in /api/orders: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return {
                 'success': False,
                 'msg': f'Error retrieving orders: {str(e)}'
@@ -399,72 +374,54 @@ class OrdersList(Resource):
 @rest_api.route('/api/orders/<string:order_id>')
 class OrderDetail(Resource):
     """
-    MySQL Optimized: Endpoint for retrieving details of a specific order
+    Endpoint for retrieving details of a specific order
     """
 
     @rest_api.marshal_with(order_detail_response)
     @rest_api.response(400, 'Error', error_response)
     @rest_api.response(404, 'Order not found', error_response)
     def get(self, order_id):
-        """Get order details - MySQL optimized"""
+        """Get order details"""
         try:
             # Extract the numeric part from the order_id
             numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
 
-            # MySQL optimized query with joins
-            order_query = db.session.query(
-                PotentialOrder.potential_order_id,
-                PotentialOrder.original_order_id,
-                PotentialOrder.order_date,
-                PotentialOrder.status,
-                PotentialOrder.requested_by,
-                PotentialOrder.updated_at,
-                Dealer.name.label('dealer_name')
-            ).outerjoin(
-                Dealer, PotentialOrder.dealer_id == Dealer.dealer_id
-            ).filter(
-                PotentialOrder.potential_order_id == numeric_id
-            ).first()
+            # Get the order
+            potential_order = PotentialOrder.query.get_or_404(numeric_id)
 
-            if not order_query:
-                return {
-                    'success': False,
-                    'msg': 'Order not found'
-                }, 404
+            # Get dealer name
+            dealer = Dealer.query.get(potential_order.dealer_id) if potential_order.dealer_id else None
+            dealer_name = dealer.name if dealer else 'Unknown Dealer'
 
             # Get product count
-            product_count = db.session.query(
-                func.count(PotentialOrderProduct.potential_order_product_id)
-            ).filter(
-                PotentialOrderProduct.potential_order_id == numeric_id
-            ).scalar()
+            product_count = PotentialOrderProduct.query.filter(
+                PotentialOrderProduct.potential_order_id == potential_order.potential_order_id
+            ).count()
 
-            # Get state history with a single optimized query
+            # Get state history
             state_history = db.session.query(
-                OrderStateHistory.changed_at,
-                OrderStateHistory.changed_by,
-                OrderState.state_name
+                OrderStateHistory, OrderState.state_name
             ).join(
                 OrderState, OrderStateHistory.state_id == OrderState.state_id
             ).filter(
-                OrderStateHistory.potential_order_id == numeric_id
+                OrderStateHistory.potential_order_id == potential_order.potential_order_id
             ).order_by(
                 OrderStateHistory.changed_at
             ).all()
 
             # Format state history
             formatted_history = []
-            for history in state_history:
+            for history, state_name in state_history:
                 formatted_history.append({
-                    'state_name': history.state_name,
+                    'state_name': state_name,
                     'timestamp': history.changed_at.isoformat(),
                     'user': f"User {history.changed_by}"
                 })
 
             # Get the time of the most recent state change
-            current_state_time = order_query.updated_at
-            if formatted_history:
-                current_state_time = state_history[-1].changed_at
+            current_state_time = potential_order.updated_at
+            if state_history:
+                current_state_time = state_history[-1][0].changed_at
 
             # Map database status to frontend status
             status_map = {
@@ -475,17 +432,17 @@ class OrderDetail(Resource):
                 'Completed': 'completed',
                 'Partially Completed': 'partially-completed'
             }
-            status = status_map.get(order_query.status, 'open')
+            status = status_map.get(potential_order.status, 'open')
 
             # Format the order
             order_data = {
-                'order_request_id': f"PO{order_query.potential_order_id}",
-                'original_order_id': order_query.original_order_id,
-                'dealer_name': order_query.dealer_name or 'Unknown Dealer',
-                'order_date': order_query.order_date.isoformat(),
+                'order_request_id': f"PO{potential_order.potential_order_id}",
+                'original_order_id': potential_order.original_order_id,
+                'dealer_name': dealer_name,
+                'order_date': potential_order.order_date.isoformat(),
                 'status': status,
                 'current_state_time': current_state_time.isoformat(),
-                'assigned_to': f"User {order_query.requested_by}",
+                'assigned_to': f"User {potential_order.requested_by}",
                 'products': product_count,
                 'state_history': formatted_history
             }
@@ -496,6 +453,7 @@ class OrderDetail(Resource):
             }, 200
 
         except Exception as e:
+            print(f"Error in /api/orders/{order_id}: {str(e)}")
             return {
                 'success': False,
                 'msg': f'Error retrieving order details: {str(e)}'
@@ -505,7 +463,7 @@ class OrderDetail(Resource):
 @rest_api.route('/api/orders/recent')
 class RecentOrders(Resource):
     """
-    MySQL Optimized: Endpoint for retrieving recent order activity
+    Endpoint for retrieving recent order activity
     """
 
     @rest_api.doc(params={
@@ -516,24 +474,14 @@ class RecentOrders(Resource):
     @rest_api.marshal_with(recent_orders_response)
     @rest_api.response(400, 'Error', error_response)
     def get(self):
-        """Get recent order activity - MySQL optimized"""
+        """Get recent order activity"""
         try:
             warehouse_id = request.args.get('warehouse_id', type=int)
             company_id = request.args.get('company_id', type=int)
             limit = request.args.get('limit', 10, type=int)
 
-            # MySQL optimized query for recent orders
-            query = db.session.query(
-                PotentialOrder.potential_order_id,
-                PotentialOrder.order_date,
-                PotentialOrder.status,
-                PotentialOrder.requested_by,
-                PotentialOrder.created_at,
-                PotentialOrder.updated_at,
-                Dealer.name.label('dealer_name')
-            ).outerjoin(
-                Dealer, PotentialOrder.dealer_id == Dealer.dealer_id
-            )
+            # Base query
+            query = PotentialOrder.query
 
             # Apply filters if provided
             if warehouse_id:
@@ -545,20 +493,20 @@ class RecentOrders(Resource):
             query = query.order_by(PotentialOrder.created_at.desc()).limit(limit)
 
             # Execute query
-            results = query.all()
+            potential_orders = query.all()
 
             orders = []
-            for result in results:
-                # Get the most recent state change for each order
-                latest_state = db.session.query(
-                    OrderStateHistory.changed_at
-                ).filter(
-                    OrderStateHistory.potential_order_id == result.potential_order_id
-                ).order_by(
-                    OrderStateHistory.changed_at.desc()
-                ).first()
+            for potential_order in potential_orders:
+                # Get dealer name
+                dealer = Dealer.query.get(potential_order.dealer_id) if potential_order.dealer_id else None
+                dealer_name = dealer.name if dealer else 'Unknown Dealer'
 
-                current_state_time = result.updated_at
+                # Get the most recent state change for each order
+                latest_state = db.session.query(OrderStateHistory).filter(
+                    OrderStateHistory.potential_order_id == potential_order.potential_order_id
+                ).order_by(OrderStateHistory.changed_at.desc()).first()
+
+                current_state_time = potential_order.updated_at
                 if latest_state:
                     current_state_time = latest_state.changed_at
 
@@ -571,16 +519,16 @@ class RecentOrders(Resource):
                     'Completed': 'completed',
                     'Partially Completed': 'partially-completed'
                 }
-                status = status_map.get(result.status, 'open')
+                status = status_map.get(potential_order.status, 'open')
 
                 # Format the order
                 order_data = {
-                    'order_request_id': f"PO{result.potential_order_id}",
-                    'dealer_name': result.dealer_name or 'Unknown Dealer',
+                    'order_request_id': f"PO{potential_order.potential_order_id}",
+                    'dealer_name': dealer_name,
                     'status': status,
-                    'order_date': result.order_date.isoformat(),
+                    'order_date': potential_order.order_date.isoformat(),
                     'current_state_time': current_state_time.isoformat(),
-                    'assigned_to': f"User {result.requested_by}",
+                    'assigned_to': f"User {potential_order.requested_by}",
                 }
                 orders.append(order_data)
 
@@ -590,6 +538,7 @@ class RecentOrders(Resource):
             }, 200
 
         except Exception as e:
+            print(f"Error in /api/orders/recent: {str(e)}")
             return {
                 'success': False,
                 'msg': f'Error retrieving recent orders: {str(e)}'

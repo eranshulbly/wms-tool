@@ -1,6 +1,6 @@
 # -*- encoding: utf-8 -*-
 """
-Order Upload Service
+FIXED: Order Upload Service for MySQL
 """
 
 import os
@@ -19,7 +19,7 @@ BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 
 def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
     """
-    Process the uploaded order file within a single database transaction
+    FIXED: Process the uploaded order file within a single database transaction
 
     Args:
         uploaded_file: The uploaded file object
@@ -34,6 +34,8 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
     filename = secure_filename(uploaded_file.filename)
     file_extension = os.path.splitext(filename)[1].lower()
 
+    print(f"Processing upload: {filename}, extension: {file_extension}")
+
     # Initialize tracking variables
     orders_processed = 0
     products_processed = 0
@@ -41,8 +43,22 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
 
     # Verify warehouse and company exist
     try:
-        warehouse = Warehouse.get_by_id(warehouse_id)
-        company = Company.get_by_id(company_id)
+        warehouse = db.session.query(Warehouse).filter(
+            Warehouse.warehouse_id == warehouse_id
+        ).first()
+
+        if not warehouse:
+            raise Exception(f"Warehouse with ID {warehouse_id} not found")
+
+        company = db.session.query(Company).filter(
+            Company.company_id == company_id
+        ).first()
+
+        if not company:
+            raise Exception(f"Company with ID {company_id} not found")
+
+        print(f"Validated warehouse: {warehouse.name}, company: {company.name}")
+
     except Exception as e:
         return {
             'success': False,
@@ -54,8 +70,6 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
 
     # Save and process the file
     temp_path = None
-    # Start a database transaction
-    transaction = db.session.begin_nested()
 
     try:
         # Create tmp directory if it doesn't exist
@@ -66,10 +80,14 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
         # Save the file temporarily
         temp_path = os.path.join(tmp_dir, f"{uuid.uuid4()}{file_extension}")
         uploaded_file.save(temp_path)
+        print(f"Saved file to: {temp_path}")
 
+        # Detect encoding
         with open(temp_path, 'rb') as f:
             result = chardet.detect(f.read())
-            encoding = result['encoding']
+            encoding = result['encoding'] or 'utf-8'
+
+        print(f"Detected encoding: {encoding}")
 
         # Read the file based on its extension with more robust error handling
         if file_extension == '.csv':
@@ -79,38 +97,39 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
                     temp_path,
                     encoding=encoding,
                     sep=",",
-                    quotechar='"',  # Use double quotes for quoting
-                    doublequote=True,  # Handle "" as an escaped "
-                    escapechar='\\',  # Use backslash as escape character
-                    engine='python',  # Use more flexible engine
-                    quoting=csv.QUOTE_MINIMAL,  # Only quote fields when necessary
-                    on_bad_lines='warn',  # Just warn about bad lines (pandas 1.3+)
-                    dtype={
-                        'Part #': str,  # Force these columns to be strings
-                        'Part Description': str,  # to prevent conversion attempts
-                        'Order #': str,
-                        'Account Name': str
-                    }
+                    quotechar='"',
+                    doublequote=True,
+                    escapechar='\\',
+                    engine='python',
+                    quoting=csv.QUOTE_MINIMAL,
+                    on_bad_lines='warn',
+                    dtype=str  # Read everything as strings initially
                 )
+                print("Successfully read CSV file")
             except Exception as e:
+                print(f"First CSV attempt failed: {str(e)}")
                 # Fallback to a different parser if the first approach fails
                 try:
-                    # Try with the C engine but with very permissive settings
                     df = pd.read_csv(
                         temp_path,
                         encoding='cp1252',
-                        sep=None,  # Try to detect the separator
+                        sep=None,
                         engine='python',
                         quoting=csv.QUOTE_NONE,
-                        escapechar='\\'
+                        escapechar='\\',
+                        dtype=str
                     )
+                    print("Successfully read CSV with fallback method")
                 except Exception as inner_e:
                     raise Exception(f"Failed to parse CSV: {str(e)}. Additional info: {str(inner_e)}")
+
         elif file_extension in ['.xls', '.xlsx']:
-            df = pd.read_excel(temp_path)
+            try:
+                df = pd.read_excel(temp_path, dtype=str)
+                print("Successfully read Excel file")
+            except Exception as e:
+                raise Exception(f"Failed to parse Excel file: {str(e)}")
         else:
-            # Rollback the transaction if file format is unsupported
-            transaction.rollback()
             return {
                 'success': False,
                 'msg': 'Unsupported file format. Please upload a CSV or Excel file.',
@@ -126,31 +145,59 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
         # Log the DataFrame structure for debugging
         print(f"DataFrame columns: {df.columns.tolist()}")
         print(f"DataFrame shape: {df.shape}")
+        print(f"First few rows:\n{df.head()}")
 
-        # Process the dataframe using the business logic
-        # The transaction will be used by all database operations
-        result = order_business.process_order_dataframe(
-            df, warehouse_id, company_id, user_id
-        )
+        # Clear caches to ensure fresh data
+        dealer_business.clear_dealer_cache()
+        product_business.clear_product_cache()
 
-        # If we got here without exceptions, commit the transaction
-        db.session.commit()
+        # FIXED: Start a proper transaction
+        try:
+            print("Starting database transaction...")
 
-        # Clean up the temporary file
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
+            # Process the dataframe using the business logic
+            result = order_business.process_order_dataframe(
+                df, warehouse_id, company_id, user_id
+            )
 
-        return {
-            'success': True,
-            'msg': 'Orders uploaded successfully',
-            'orders_processed': result['orders_processed'],
-            'products_processed': result['products_processed'],
-            'errors': result['errors']
-        }, 200
+            print(f"Business logic result: {result}")
+
+            # FIXED: Only commit if we have successful processing
+            if result['orders_processed'] > 0 or result['products_processed'] > 0:
+                db.session.commit()
+                print("Transaction committed successfully")
+            else:
+                db.session.rollback()
+                print("No data processed, rolling back transaction")
+                return {
+                    'success': False,
+                    'msg': 'No valid data found in the uploaded file',
+                    'orders_processed': 0,
+                    'products_processed': 0,
+                    'errors': result['errors']
+                }, 400
+
+            # Clean up the temporary file
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)
+                print("Cleaned up temporary file")
+
+            return {
+                'success': True,
+                'msg': f'Orders uploaded successfully. Processed {result["orders_processed"]} orders and {result["products_processed"]} products.',
+                'orders_processed': result['orders_processed'],
+                'products_processed': result['products_processed'],
+                'errors': result['errors']
+            }, 200
+
+        except Exception as e:
+            print(f"Database transaction error: {str(e)}")
+            # Rollback the transaction in case of any exception
+            db.session.rollback()
+            raise e
 
     except Exception as e:
-        # Rollback the transaction in case of any exception
-        db.session.rollback()
+        print(f"Processing error: {str(e)}")
 
         # Clean up temp file if it exists
         if temp_path and os.path.exists(temp_path):
