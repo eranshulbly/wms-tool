@@ -1,37 +1,280 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# Comprehensive .gitignore for Flask/Python Warehouse Management System
 
-# dependencies
-/node_modules
-/.pnp
-.pnp.js
+# ==========================================
+# Python
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# testing
-/coverage
+# ==========================================
+# Virtual Environments
+# ==========================================
+venv/
+ENV/
+env/
+.venv/
+.ENV/
+env.bak/
+venv.bak/
 
-# production
-/build
+# ==========================================
+# Flask Specific
+# ==========================================
+instance/
+.webassets-cache
+flask/
+*.pyc
+dev
+yarn.lock
+yarn-error.log
+*.psd
 
-# misc
-.DS_Store
+# ==========================================
+# Databases
+# ==========================================
+# SQLite
+*.db
+*.sqlite
+*.sqlite3
+db.sqlite3
+api/db.sqlite3
+apidata.db
+app/db.sqlite3
+
+# MySQL
+mysql/data/
+mysql/logs/
+*.sql.backup
+mysql_backup_*.sql
+
+# ==========================================
+# Environment and Config Files
+# ==========================================
+.env
 .env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.production
+.env.staging
+.env.development
+config.local.py
+settings.local.py
+secrets/
+*.pem
+*.key
+*.crt
 
+# ==========================================
+# IDE and Editor Files
+# ==========================================
+# JetBrains IDEs (IntelliJ, PyCharm, WebStorm, etc.)
+.idea/
+*.iml
+*.ipr
+*.iws
+.idea/*
+**/.idea/
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# ==========================================
+# Operating System Files
+# ==========================================
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ==========================================
+# Logs and Temporary Files
+# ==========================================
+*.log
+logs/
+log/
+tmp/
+temp/
+.tmp/
+services/tmp/
+**/tmp/
+*.backup
+*.bak
+*.temp
+
+# ==========================================
+# Docker
+# ==========================================
+docker-compose.override.yml
+.dockerignore
+
+# ==========================================
+# Testing
+# ==========================================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# ==========================================
+# Jupyter Notebook
+# ==========================================
+.ipynb_checkpoints
+
+# ==========================================
+# Documentation
+# ==========================================
+docs/_build/
+.sphinx/
+
+# ==========================================
+# Package Management
+# ==========================================
+# npm
+node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-/.idea/
 
+# pip
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ==========================================
+# Project Specific
+# ==========================================
+# Uploads directory (if your app has file uploads)
+uploads/
+static/uploads/
+
+# Media files that shouldn't be in version control
+media/
+static/media/
+
+# Compiled static files
+static/dist/
+static/build/
+
+# ==========================================
+# Security and Sensitive Data
+# ==========================================
+# SSH keys
+id_rsa
+id_rsa.pub
+*.ppk
+
+# API keys and secrets
+.env*
+!.env.example
+secrets.json
+credentials.json
+
+# ==========================================
+# Backup Files
+# ==========================================
+*.backup
+*.bak
+*.orig
+*.rej
+
+# ==========================================
+# Miscellaneous
+# ==========================================
+# Archives
+*.7z
+*.dmg
+*.gz
+*.iso
+*.jar
+*.rar
+*.tar
+*.zip
+
+# Temporary system files
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Network drives (Windows)
+.lnk
+.DS_Store
+**/.DS_Store
+.idea/
+**/.idea/
+*.db
+*.sqlite
+*.sqlite3
+tmp/
+**/tmp/
+__pycache__/
+*.pyc
 .env
-.idea/codeStyles/
-.idea/dataSources.xml
-.idea/inspectionProfiles/
-.idea/misc.xml
-.idea/modules.xml
-.idea/vcs.xml
-.idea/wms-tool.iml
-api-server-flask/.DS_Store
-api-server-flask/api/db.sqlite3
-api-server-flask/api/services/tmp/
-
+venv/
+yarn.lock

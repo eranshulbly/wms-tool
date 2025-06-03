@@ -1,5 +1,3 @@
-// MAIN Order Management Component - Complete Fixed Version
-
 import React, { useState, useEffect } from 'react';
 import {
   Grid,
@@ -245,7 +243,7 @@ const OrderManagement = () => {
 
         showSnackbar(successMessage, 'success');
 
-        // Close dialog if it was a successful final action
+        // FIXED: Close dialog and clear selected order for completed actions
         if (action === 'completed' || action === 'complete-dispatch') {
           handleOrderDetailsClose();
         }
@@ -260,21 +258,95 @@ const OrderManagement = () => {
     }
   };
 
-  // FIXED: Handle status updates from the order details dialog
+  // FIXED: Handle status updates from the order details dialog with proper refresh
   const handleDialogStatusUpdate = async (order, action, additionalData = null) => {
-    // This is called from within the dialog for complex operations
-    await handleStatusUpdate(order, action, additionalData);
+    setLoading(true);
 
-    // Refresh the selected order details
-    if (selectedOrder) {
-      try {
-        const response = await orderManagementService.getOrderDetailsWithProducts(selectedOrder.order_request_id);
-        if (response.success) {
-          setSelectedOrder(response.order);
-        }
-      } catch (error) {
-        console.error('Error refreshing order details:', error);
+    try {
+      let response;
+      let successMessage = '';
+
+      // Handle the action
+      switch (action) {
+        case 'dispatch-ready':
+          response = await orderManagementService.moveToDispatchReady(
+            order.order_request_id,
+            additionalData.products,
+            additionalData.boxes
+          );
+
+          if (response.success) {
+            successMessage = [
+              `Order moved to Dispatch Ready!`,
+              `Final Order: ${response.final_order_number}`,
+              `Packed: ${response.total_packed} items`,
+              response.total_remaining > 0 ? `Remaining: ${response.total_remaining} items` : '',
+              response.has_remaining_items ? 'Status: Partially Completed' : 'Status: Dispatch Ready'
+            ].filter(Boolean).join('\n');
+          }
+          break;
+
+        case 'completed':
+        case 'complete-dispatch':
+          response = await orderManagementService.completeDispatch(order.order_request_id);
+
+          if (response.success) {
+            successMessage = [
+              'Order dispatched successfully!',
+              `Order Number: ${response.final_order_number}`,
+              `Dispatched: ${new Date(response.dispatched_date).toLocaleString()}`
+            ].join('\n');
+          }
+          break;
+
+        default:
+          response = await orderManagementService.updateOrderStatus(order.order_request_id, action);
+          successMessage = `Order ${order.order_request_id} moved to ${action}`;
+          break;
       }
+
+      if (response && response.success) {
+        // Show success message
+        showSnackbar(successMessage, 'success');
+
+        // FIXED: Refresh the order details to get updated data
+        try {
+          const updatedOrderResponse = await orderManagementService.getOrderDetailsWithProducts(order.order_request_id);
+          if (updatedOrderResponse.success) {
+            setSelectedOrder(updatedOrderResponse.order);
+          }
+        } catch (refreshError) {
+          console.error('Error refreshing order details:', refreshError);
+          // If refresh fails, close the dialog
+          handleOrderDetailsClose();
+        }
+
+        // Refresh the orders list
+        const updatedOrders = await orderManagementService.getOrders(warehouse, company);
+        if (updatedOrders.success) {
+          const processedOrders = (updatedOrders.orders || []).map(ord => ({
+            ...ord,
+            status: ord.status || 'open',
+            current_state_time: ord.current_state_time || new Date().toISOString(),
+            dealer_name: ord.dealer_name || 'Unknown Dealer',
+            assigned_to: ord.assigned_to || 'Unassigned'
+          }));
+
+          setOrders(processedOrders);
+        }
+
+        // Close dialog for completed actions
+        if (action === 'completed' || action === 'complete-dispatch') {
+          handleOrderDetailsClose();
+        }
+      } else if (response) {
+        throw new Error(response.msg || 'Unknown error occurred');
+      }
+    } catch (error) {
+      console.error('Error updating order status:', error);
+      showSnackbar('Failed to update order status: ' + error.message, 'error');
+    } finally {
+      setLoading(false);
     }
   };
 

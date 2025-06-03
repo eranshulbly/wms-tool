@@ -39,7 +39,9 @@ status_counts_model = rest_api.model('StatusCounts', {
     'open': fields.Nested(status_count_model),
     'picking': fields.Nested(status_count_model),
     'packing': fields.Nested(status_count_model),
-    'dispatch': fields.Nested(status_count_model)
+    'dispatch-ready': fields.Nested(status_count_model),
+    'completed': fields.Nested(status_count_model),
+    'partially-completed': fields.Nested(status_count_model)
 })
 
 status_response = rest_api.model('StatusResponse', {
@@ -207,7 +209,7 @@ class OrderStatusCount(Resource):
                         'count': packing_count,
                         'label': 'Packing'
                     },
-                    'dispatch-ready': {  # Changed from 'dispatch'
+                    'dispatch-ready': {
                         'count': dispatch_ready_count,
                         'label': 'Dispatch Ready'
                     },
@@ -463,7 +465,7 @@ class RecentOrders(Resource):
         try:
             warehouse_id = request.args.get('warehouse_id', type=int)
             company_id = request.args.get('company_id', type=int)
-            limit = request.args.get('limit', 10, type=int)
+            limit = request.args.get('limit', 1000, type=int)
 
             # Base query for potential orders
             query = db.session.query(

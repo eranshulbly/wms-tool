@@ -62,7 +62,7 @@ export const getStatusChipClass = (status) => {
     'open': 'chipOpen',
     'picking': 'chipPicking',
     'packing': 'chipPacking',
-    'dispatch': 'chipDispatch',
+    'dispatch-ready': 'chipDispatch',
     'completed': 'chipCompleted',
     'partially-completed': 'chipPartiallyCompleted'
   };

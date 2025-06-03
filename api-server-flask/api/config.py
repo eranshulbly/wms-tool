@@ -8,7 +8,7 @@ from datetime import timedelta
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 
-class BaseConfig():
+class BaseConfig:
     
     SECRET_KEY = os.getenv('SECRET_KEY', None)
     if not SECRET_KEY:

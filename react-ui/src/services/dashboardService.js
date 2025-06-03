@@ -98,7 +98,7 @@ const dashboardService = {
    * @param {number} limit - Maximum number of records to return
    * @returns {Promise} Promise object that resolves to recent activity data
    */
-  getRecentActivity: async (warehouseId, companyId, limit = 10) => {
+  getRecentActivity: async (warehouseId, companyId, limit = 10000) => {
     try {
       const response = await axios.get(`${config.API_SERVER}orders/recent`, {
         params: {

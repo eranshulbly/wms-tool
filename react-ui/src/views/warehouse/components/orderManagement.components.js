@@ -48,7 +48,6 @@ import {
 } from '@tabler/icons';
 import { STATUS_FILTER_OPTIONS, STATUS_LABELS, TABLE_COLUMNS } from '../constants/orderManagement.constants';
 import { formatDate, getTimeInCurrentStatus, getNextStatus, getStatusChipClass } from '../utils/orderManagement.utils';
-// Import orderManagementService at the top of orderManagement.components.js
 import orderManagementService from '../../../services/orderManagementService';
 
 /**
@@ -140,7 +139,7 @@ export const FilterControls = ({
  */
 export const StatusChip = ({ status, classes }) => {
   const normalizedStatus = String(status).toLowerCase().replace(/\s+/g, '-');
-  const className = classes[getStatusChipClass(normalizedStatus)]; // This will now use the updated function
+  const className = classes[getStatusChipClass(normalizedStatus)];
 
   return (
     <Chip
@@ -151,25 +150,28 @@ export const StatusChip = ({ status, classes }) => {
   );
 };
 
-
 // FIXED: Correct Status Progression
 const CORRECT_STATUS_PROGRESSION = {
   'open': { next: 'picking', label: 'Start Picking' },
   'picking': { next: 'packing', label: 'Start Packing' },
-  'packing': { next: 'dispatch-ready', label: 'Ready for Dispatch' }, // Changed
+  'packing': { next: 'dispatch-ready', label: 'Ready for Dispatch' },
   'dispatch-ready': { next: 'completed', label: 'Complete Dispatch' },
   'completed': null,
   'partially-completed': null
 };
 
 /**
- * FIXED: Status Action Button with Correct Flow
+ * FIXED: Status Action Button with Correct Flow - DISABLE for dispatch-ready to prevent duplicate calls
  */
 export const StatusActionButton = ({ order, onStatusUpdate, classes }) => {
   const currentStatus = order.status?.toLowerCase().replace(/\s+/g, '-');
   const nextAction = CORRECT_STATUS_PROGRESSION[currentStatus];
 
   if (!nextAction) return null;
+
+  // FIXED: Disable the action button for dispatch-ready orders to prevent duplicate API calls
+  // The dialog should handle the complete dispatch action
+  if (currentStatus === 'dispatch-ready') return null;
 
   const handleClick = (e) => {
     e.stopPropagation();
@@ -178,9 +180,6 @@ export const StatusActionButton = ({ order, onStatusUpdate, classes }) => {
     if (currentStatus === 'packing') {
       // This requires the packing dialog to handle dispatch ready
       onStatusUpdate(order, 'packing-to-dispatch');
-    } else if (currentStatus === 'dispatch-ready') {
-      // Complete dispatch
-      onStatusUpdate(order, 'complete-dispatch');
     } else {
       // Regular status update
       onStatusUpdate(order, nextAction.next);
@@ -200,7 +199,6 @@ export const StatusActionButton = ({ order, onStatusUpdate, classes }) => {
     </Button>
   );
 };
-
 
 /**
  * Orders Table Component
@@ -287,7 +285,7 @@ export const OrdersTable = ({
 );
 
 /**
- * FIXED: Product Packing Form with Proper Quantity Handling
+ * Product Packing Form with Proper Quantity Handling
  */
 const ProductPackingForm = ({ products, boxes, onUpdateProducts, onUpdateBoxes, classes }) => {
   const [productQuantities, setProductQuantities] = useState({});
@@ -464,7 +462,6 @@ const ProductPackingForm = ({ products, boxes, onUpdateProducts, onUpdateBoxes, 
     }, 0);
   };
 
-  // Rest of the component remains the same but with proper keyboard input handling
   return (
     <Box>
       <Typography variant="h6" gutterBottom>
@@ -651,8 +648,6 @@ export const OrderDetailsDialog = ({
   const [boxProductQuantities, setBoxProductQuantities] = useState({});
   const [boxes, setBoxes] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [showWarningDialog, setShowWarningDialog] = useState(false);
-  const [warningMessages, setWarningMessages] = useState([]);
 
   // FIXED: Proper steps based on actual flow
   const steps = ['Order Details', 'Packing', 'Dispatch Ready', 'Completed'];
@@ -803,33 +798,12 @@ export const OrderDetailsDialog = ({
             }))
       })).filter(box => box.products.length > 0);
 
-      // Use the service instead of direct fetch
-      const result = await orderManagementService.moveToDispatchReady(
-          order.order_request_id,
-          productsData,
-          boxesData
-      );
+      // Call the status update handler from parent
+      await onStatusUpdate(order, 'dispatch-ready', {
+        products: productsData,
+        boxes: boxesData
+      });
 
-      if (result.success) {
-        setActiveStep(2); // Move to Dispatch Ready step
-
-        const message = [
-          'Order moved to Dispatch Ready!',
-          `Final Order: ${result.final_order_number}`,
-          `Packed Items: ${result.total_packed}`,
-          result.total_remaining > 0 ? `Remaining Items: ${result.total_remaining}` : '',
-          result.has_remaining_items ? 'Status: Partially Completed' : 'Status: Dispatch Ready'
-        ].filter(Boolean).join('\n');
-
-        alert(message);
-
-        // Notify parent to refresh data
-        if (onStatusUpdate) {
-          onStatusUpdate(order, 'dispatch-ready');
-        }
-      } else {
-        throw new Error(result.msg || 'Failed to move to dispatch ready');
-      }
     } catch (error) {
       console.error('Error moving to dispatch ready:', error);
       alert('Error moving to dispatch ready: ' + error.message);
@@ -838,8 +812,16 @@ export const OrderDetailsDialog = ({
     }
   };
 
-  // FIXED: Complete Dispatch (mark as dispatched from warehouse)
+  // FIXED: Complete Dispatch - prevent duplicate calls by using a flag
+  const [isCompletingDispatch, setIsCompletingDispatch] = useState(false);
+
   const handleCompleteDispatch = async () => {
+    // FIXED: Prevent duplicate calls
+    if (isCompletingDispatch) {
+      console.log('Complete dispatch already in progress, ignoring duplicate call');
+      return;
+    }
+
     const proceed = window.confirm(
       'This will mark the order as completed and dispatched from the warehouse.\n\n' +
       'Are you sure you want to proceed?'
@@ -847,35 +829,20 @@ export const OrderDetailsDialog = ({
 
     if (!proceed) return;
 
+    setIsCompletingDispatch(true);
     setLoading(true);
+
     try {
-      // Use the service instead of direct fetch
-      const result = await orderManagementService.completeDispatch(order.order_request_id);
-
-      if (result.success) {
-        alert([
-          'Order dispatched successfully!',
-          `Order Number: ${result.final_order_number}`,
-          `Dispatched: ${new Date(result.dispatched_date).toLocaleString()}`
-        ].join('\n'));
-
-        onClose(); // Close dialog
-
-        // Refresh parent data
-        if (onStatusUpdate) {
-          onStatusUpdate(order, 'completed');
-        }
-      } else {
-        throw new Error(result.msg || 'Failed to complete dispatch');
-      }
+      // Call the status update handler from parent
+      await onStatusUpdate(order, 'completed');
     } catch (error) {
       console.error('Error completing dispatch:', error);
       alert('Error completing dispatch: ' + error.message);
     } finally {
       setLoading(false);
+      setIsCompletingDispatch(false);
     }
   };
-
 
   const renderStepContent = () => {
     switch (activeStep) {
@@ -978,30 +945,37 @@ export const OrderDetailsDialog = ({
         );
 
       case 2: // Dispatch Ready
-        const totalProductsPacked = Object.values(productQuantities).reduce((sum, qty) => sum + qty, 0);
-        const totalProductsOrdered = order?.products?.reduce((sum, product) => sum + product.quantity_ordered, 0) || 0;
+        // FIXED: Use order.products data for calculations
+        const totalProductsPacked = order?.products?.reduce((sum, product) => {
+          return sum + (product.quantity_packed || 0);
+        }, 0) || 0;
+
+        const totalProductsOrdered = order?.products?.reduce((sum, product) => {
+          return sum + (product.quantity_ordered || 0);
+        }, 0) || 0;
+
         const remainingProducts = totalProductsOrdered - totalProductsPacked;
 
         return (
           <Box>
             <Typography variant="h6" gutterBottom>Dispatch Ready Summary</Typography>
 
-            <Box mb={3} p={2} bgcolor="#e8f5e8" borderRadius={1} border="1px solid #4caf50">
-              <Typography variant="body1">
-                <strong>Total Products Ordered:</strong> {totalProductsOrdered}
-              </Typography>
-              <Typography variant="body1">
-                <strong>Products Ready for Dispatch:</strong> {totalProductsPacked}
-              </Typography>
-              {remainingProducts > 0 && (
-                <Typography variant="body1" color="warning.main">
-                  <strong>Remaining Products:</strong> {remainingProducts}
-                </Typography>
-              )}
-              <Typography variant="body1" style={{ marginTop: 8 }}>
-                <strong>Status:</strong> {remainingProducts > 0 ? 'Partially Completed' : 'Dispatch Ready'}
-              </Typography>
-            </Box>
+            {/*<Box mb={3} p={2} bgcolor="#e8f5e8" borderRadius={1} border="1px solid #4caf50">*/}
+            {/*  <Typography variant="body1">*/}
+            {/*    <strong>Total Products Ordered:</strong> {totalProductsOrdered}*/}
+            {/*  </Typography>*/}
+            {/*  <Typography variant="body1">*/}
+            {/*    <strong>Products Ready for Dispatch:</strong> {totalProductsPacked}*/}
+            {/*  </Typography>*/}
+            {/*  {remainingProducts > 0 && (*/}
+            {/*    <Typography variant="body1" color="warning.main">*/}
+            {/*      <strong>Remaining Products:</strong> {remainingProducts}*/}
+            {/*    </Typography>*/}
+            {/*  )}*/}
+            {/*  <Typography variant="body1" style={{ marginTop: 8 }}>*/}
+            {/*    <strong>Status:</strong> {remainingProducts > 0 ? 'Partially Completed' : 'Dispatch Ready'}*/}
+            {/*  </Typography>*/}
+            {/*</Box>*/}
 
             <Typography variant="subtitle1" gutterBottom>Final Box Contents:</Typography>
             {boxes.map((box) => {
@@ -1202,10 +1176,10 @@ export const OrderDetailsDialog = ({
               onClick={handleCompleteDispatch}
               color="secondary"
               variant="contained"
-              disabled={loading}
+              disabled={loading || isCompletingDispatch}
               startIcon={<IconCheck size={16} />}
             >
-              {loading ? <CircularProgress size={20} /> : 'Complete Dispatch'}
+              {(loading || isCompletingDispatch) ? <CircularProgress size={20} /> : 'Complete Dispatch'}
             </Button>
           )}
         </DialogActions>

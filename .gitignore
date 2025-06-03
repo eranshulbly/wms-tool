@@ -1,0 +1,14 @@
+.DS_Store
+**/.DS_Store
+.idea/
+**/.idea/
+*.db
+*.sqlite
+*.sqlite3
+tmp/
+**/tmp/
+__pycache__/
+*.pyc
+.env
+venv/
+yarn.lock

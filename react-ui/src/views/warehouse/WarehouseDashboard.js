@@ -83,7 +83,7 @@ const WarehouseDashboard = () => {
         }
 
         // Fetch recent activity
-        const recentActivityResponse = await dashboardService.getRecentActivity(warehouse, company, 10);
+        const recentActivityResponse = await dashboardService.getRecentActivity(warehouse, company);
         if (recentActivityResponse.success) {
           setRecentOrders(recentActivityResponse.recent_orders);
         }
