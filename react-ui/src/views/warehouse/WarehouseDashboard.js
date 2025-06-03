@@ -14,7 +14,9 @@ import { ORDER_STATUS_DATA } from './constants/warehouseDashboard.constants';
 import { filterOrdersByStatus } from './utils/warehouseDashboard.utils';
 import {
   FilterControls,
-  StatusCard,
+  CompactStatusSummary,        // NEW: Compact design
+  HorizontalStatusBar,         // NEW: Alternative compact design
+  StatusCard,                  // OLD: Keep for backwards compatibility
   OrdersTable,
   OrderDetailsDialog
 } from './components/warehouseDashboard.components';
@@ -34,6 +36,9 @@ const WarehouseDashboard = () => {
   const [recentOrders, setRecentOrders] = useState([]);
   const [statusFilter, setStatusFilter] = useState('all');
   const [filteredOrders, setFilteredOrders] = useState([]);
+
+  // New state for UI preference (you can make this a user setting)
+  const [compactView, setCompactView] = useState(true); // Set to true for compact view
 
   // Fetch warehouses and companies on component mount
   useEffect(() => {
@@ -131,6 +136,48 @@ const WarehouseDashboard = () => {
     setOrderDetailsOpen(false);
   };
 
+  // Render status counts based on preference
+  const renderStatusCounts = () => {
+    if (compactView) {
+      // Option 1: Compact grid layout (recommended)
+      return (
+        <CompactStatusSummary
+          statusCounts={statusCounts}
+          loading={loading}
+          classes={classes}
+        />
+      );
+
+      // Option 2: Horizontal bar layout (uncomment to use this instead)
+      /*
+      return (
+        <HorizontalStatusBar
+          statusCounts={statusCounts}
+          loading={loading}
+          classes={classes}
+        />
+      );
+      */
+    } else {
+      // Original large cards layout
+      return (
+        <Grid item xs={12}>
+          <Grid container spacing={gridSpacing}>
+            {Object.keys(ORDER_STATUS_DATA).map((status) => (
+              <StatusCard
+                key={status}
+                status={status}
+                count={statusCounts[status]?.count}
+                loading={loading}
+                classes={classes}
+              />
+            ))}
+          </Grid>
+        </Grid>
+      );
+    }
+  };
+
   return (
     <Grid container spacing={gridSpacing}>
       {/* Page Title */}
@@ -151,25 +198,13 @@ const WarehouseDashboard = () => {
         classes={classes}
       />
 
-      {/* Order Status Cards */}
-      <Grid item xs={12}>
-        <Grid container spacing={gridSpacing}>
-          {Object.keys(ORDER_STATUS_DATA).map((status) => (
-            <StatusCard
-              key={status}
-              status={status}
-              count={statusCounts[status]?.count}
-              loading={loading}
-              classes={classes}
-            />
-          ))}
-        </Grid>
-      </Grid>
+      {/* Order Status Summary - Now Compact! */}
+      {renderStatusCounts()}
 
-      {/* Recent Activity Table */}
+      {/* Recent Activity Table - Now gets more space! */}
       <Grid item xs={12}>
         <Card>
-          <CardContent>
+          <CardContent style={{ padding: '16px' }}>
             <Typography variant="h4" gutterBottom>
               Recent Activity
               {statusFilter !== 'all' && (

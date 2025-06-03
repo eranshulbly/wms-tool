@@ -22,7 +22,8 @@ import {
   DialogContent,
   DialogActions,
   Button,
-  Divider
+  Divider,
+  Paper
 } from '@material-ui/core';
 import {
   IconPackage,
@@ -112,7 +113,74 @@ export const FilterControls = ({
 );
 
 /**
- * Status Card Component
+ * Compact Status Summary Component - NEW DESIGN
+ */
+export const CompactStatusSummary = ({ statusCounts, loading, classes }) => (
+  <Grid item xs={12}>
+    <Paper className={classes.statusSummaryContainer} elevation={1}>
+      <Typography variant="h6" className={classes.statusSummaryTitle}>
+        Order Status Overview
+      </Typography>
+      <Box className={classes.statusSummaryContent}>
+        {Object.keys(ORDER_STATUS_DATA).map((status) => {
+          const statusData = ORDER_STATUS_DATA[status];
+          const count = statusCounts[status]?.count || 0;
+
+          return (
+            <Box key={status} className={classes.compactStatusItem}>
+              <Box className={classes.statusIconSmall}>
+                {React.cloneElement(statusData.icon, { size: 20 })}
+              </Box>
+              <Box className={classes.statusInfo}>
+                <Typography variant="body2" className={classes.statusLabelCompact}>
+                  {statusData.label}
+                </Typography>
+                <Typography variant="h6" className={classes.statusCountCompact}>
+                  {loading ? <CircularProgress size={16} /> : count}
+                </Typography>
+              </Box>
+            </Box>
+          );
+        })}
+      </Box>
+    </Paper>
+  </Grid>
+);
+
+/**
+ * Alternative Horizontal Status Bar Component
+ */
+export const HorizontalStatusBar = ({ statusCounts, loading, classes }) => (
+  <Grid item xs={12}>
+    <Card className={classes.horizontalStatusCard}>
+      <CardContent className={classes.horizontalStatusContent}>
+        <Typography variant="subtitle1" className={classes.statusBarTitle}>
+          Order Status Summary
+        </Typography>
+        <Box className={classes.horizontalStatusContainer}>
+          {Object.keys(ORDER_STATUS_DATA).map((status) => {
+            const statusData = ORDER_STATUS_DATA[status];
+            const count = statusCounts[status]?.count || 0;
+
+            return (
+              <Box key={status} className={classes.horizontalStatusItem}>
+                <Chip
+                  icon={React.cloneElement(statusData.icon, { size: 16 })}
+                  label={`${statusData.label}: ${loading ? '...' : count}`}
+                  className={classes[statusData.chipClass]}
+                  variant="outlined"
+                />
+              </Box>
+            );
+          })}
+        </Box>
+      </CardContent>
+    </Card>
+  </Grid>
+);
+
+/**
+ * Legacy Status Card Component (keeping for backwards compatibility)
  */
 export const StatusCard = ({ status, count, loading, classes }) => {
   const statusData = ORDER_STATUS_DATA[status];
