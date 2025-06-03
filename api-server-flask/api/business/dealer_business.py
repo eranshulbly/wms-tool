@@ -1,6 +1,6 @@
 # -*- encoding: utf-8 -*-
 """
-Dealer Business Logic
+FIXED: Dealer Business Logic for MySQL
 """
 
 from datetime import datetime
@@ -12,7 +12,7 @@ _dealer_cache = {}
 
 def get_or_create_dealer(dealer_name, dealer_code=None, dealer_last_name=None):
     """
-    Get an existing dealer or create a new one
+    Get an existing dealer or create a new one - FIXED for MySQL
 
     Args:
         dealer_name: Name of the dealer
@@ -22,26 +22,63 @@ def get_or_create_dealer(dealer_name, dealer_code=None, dealer_last_name=None):
     Returns:
         int: Dealer ID
     """
+    # Normalize dealer name
+    dealer_name = dealer_name.strip() if dealer_name else ''
+
+    if not dealer_name:
+        raise ValueError("Dealer name cannot be empty")
+
+    print(f"Getting or creating dealer: {dealer_name}")
+
     # Check cache first
-    if dealer_name in _dealer_cache:
-        return _dealer_cache[dealer_name]
+    cache_key = dealer_name.lower()
+    if cache_key in _dealer_cache:
+        print(f"Found dealer in cache: {_dealer_cache[cache_key]}")
+        return _dealer_cache[cache_key]
 
-    # Try to find by name
-    dealer = db.session.query(Dealer).filter(Dealer.name == dealer_name).first()
+    # Try to find by name in database
+    try:
+        dealer = db.session.query(Dealer).filter(
+            db.func.lower(Dealer.name) == dealer_name.lower()
+        ).first()
 
-    if not dealer:
-        # Create new dealer with current timestamp
+        if dealer:
+            print(f"Found existing dealer: {dealer.dealer_id}")
+            # Update cache
+            _dealer_cache[cache_key] = dealer.dealer_id
+            return dealer.dealer_id
+
+    except Exception as e:
+        print(f"Error querying for dealer: {str(e)}")
+
+    # Create new dealer if not found
+    try:
         current_time = datetime.utcnow()
         dealer = Dealer(
             name=dealer_name,
             created_at=current_time,
             updated_at=current_time
         )
-        # Add to session but don't commit - the transaction is managed at the service level
+
+        # FIXED: Add to session and flush to get ID
         db.session.add(dealer)
-        db.session.flush()  # This assigns the ID without committing
+        db.session.flush()  # This assigns the ID without committing the transaction
 
-    # Update cache
-    _dealer_cache[dealer_name] = dealer.dealer_id
+        dealer_id = dealer.dealer_id
+        print(f"Created new dealer with ID: {dealer_id}")
 
-    return dealer.dealer_id
+        # Update cache
+        _dealer_cache[cache_key] = dealer_id
+
+        return dealer_id
+
+    except Exception as e:
+        print(f"Error creating dealer: {str(e)}")
+        raise e
+
+
+def clear_dealer_cache():
+    """Clear the dealer cache - useful for testing"""
+    global _dealer_cache
+    _dealer_cache = {}
+    print("Dealer cache cleared")
