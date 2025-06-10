@@ -5,8 +5,12 @@ from flask_restx import Resource, fields
 from datetime import datetime, timedelta
 from sqlalchemy import func, and_, or_
 
-from .models import db, Warehouse, Company, PotentialOrder, PotentialOrderProduct, OrderStateHistory, OrderState, \
-    Product, Dealer
+from .models import (
+    Users, JWTTokenBlocklist, Warehouse, Company, PotentialOrder,
+    PotentialOrderProduct, OrderStateHistory, OrderState, Product,
+    Dealer, Box, Order, OrderProduct, OrderBox, BoxProduct, Invoice,
+    mysql_manager
+)
 from .routes import rest_api
 
 # Response models
@@ -101,7 +105,7 @@ error_response = rest_api.model('ErrorResponse', {
 @rest_api.route('/api/warehouses')
 class WarehouseList(Resource):
     """
-    Endpoint for retrieving all warehouses
+    MySQL endpoint for retrieving all warehouses
     """
 
     @rest_api.marshal_with(warehouses_response)
@@ -109,7 +113,7 @@ class WarehouseList(Resource):
     def get(self):
         """Get list of all warehouses"""
         try:
-            warehouses = Warehouse.query.all()
+            warehouses = Warehouse.get_all()
             warehouse_list = []
 
             for warehouse in warehouses:
@@ -134,7 +138,7 @@ class WarehouseList(Resource):
 @rest_api.route('/api/companies')
 class CompanyList(Resource):
     """
-    Endpoint for retrieving all companies
+    MySQL endpoint for retrieving all companies
     """
 
     @rest_api.marshal_with(companies_response)
@@ -142,7 +146,7 @@ class CompanyList(Resource):
     def get(self):
         """Get list of all companies"""
         try:
-            companies = Company.query.all()
+            companies = Company.get_all()
             company_list = []
 
             for company in companies:
@@ -166,38 +170,29 @@ class CompanyList(Resource):
 @rest_api.route('/api/orders/status')
 class OrderStatusCount(Resource):
     """
-    FIXED: Endpoint for retrieving order status counts - Compatible with both MySQL and SQLite
+    MySQL endpoint for retrieving order status counts
     """
 
     @rest_api.doc(params={'warehouse_id': 'Warehouse ID', 'company_id': 'Company ID'})
     @rest_api.marshal_with(status_response)
     @rest_api.response(400, 'Error', error_response)
     def get(self):
-        """Get counts of orders by status - Fixed version"""
+        """Get counts of orders by status - MySQL implementation"""
         try:
             warehouse_id = request.args.get('warehouse_id', type=int)
             company_id = request.args.get('company_id', type=int)
 
-            print(f"Debug: warehouse_id={warehouse_id}, company_id={company_id}")  # Debug log
+            print(f"Debug: warehouse_id={warehouse_id}, company_id={company_id}")
 
-            # Build base query
-            base_query = PotentialOrder.query
+            # Get counts for each status using MySQL
+            open_count = PotentialOrder.count_by_status('Open', warehouse_id, company_id)
+            picking_count = PotentialOrder.count_by_status('Picking', warehouse_id, company_id)
+            packing_count = PotentialOrder.count_by_status('Packing', warehouse_id, company_id)
+            dispatch_ready_count = PotentialOrder.count_by_status('Dispatch Ready', warehouse_id, company_id)
+            completed_count = PotentialOrder.count_by_status('Completed', warehouse_id, company_id)
+            partially_completed_count = PotentialOrder.count_by_status('Partially Completed', warehouse_id, company_id)
 
-            # Apply filters if provided
-            if warehouse_id:
-                base_query = base_query.filter(PotentialOrder.warehouse_id == warehouse_id)
-            if company_id:
-                base_query = base_query.filter(PotentialOrder.company_id == company_id)
-
-            # Get counts for each status using individual queries (more reliable across databases)
-            open_count = base_query.filter(PotentialOrder.status == 'Open').count()
-            picking_count = base_query.filter(PotentialOrder.status == 'Picking').count()
-            packing_count = base_query.filter(PotentialOrder.status == 'Packing').count()
-            dispatch_ready_count = base_query.filter(PotentialOrder.status == 'Dispatch Ready').count()
-            completed_count = base_query.filter(PotentialOrder.status == 'Completed').count()
-            partially_completed_count = base_query.filter(PotentialOrder.status == 'Partially Completed').count()
-
-            print(f"Debug counts: open={open_count}, picking={picking_count}, packing={packing_count}")  # Debug log
+            print(f"Debug counts: open={open_count}, picking={picking_count}, packing={packing_count}")
 
             # Prepare response
             response_data = {
@@ -233,19 +228,18 @@ class OrderStatusCount(Resource):
             }, 200
 
         except Exception as e:
-            print(f"Error in /api/orders/status: {str(e)}")  # Debug logging
+            print(f"Error in /api/orders/status: {str(e)}")
             import traceback
-            traceback.print_exc()  # Full traceback for debugging
+            traceback.print_exc()
             return {
                 'success': False,
                 'msg': f'Error retrieving order status counts: {str(e)}'
             }, 400
 
-
 @rest_api.route('/api/orders')
 class OrdersList(Resource):
     """
-    FIXED: Endpoint for retrieving orders filtered by status
+    MySQL endpoint for retrieving orders filtered by status
     """
 
     @rest_api.doc(params={
@@ -257,7 +251,7 @@ class OrdersList(Resource):
     @rest_api.marshal_with(orders_response)
     @rest_api.response(400, 'Error', error_response)
     def get(self):
-        """Get orders filtered by status - Fixed version"""
+        """Get orders filtered by status - MySQL implementation"""
         try:
             status = request.args.get('status', '')
             warehouse_id = request.args.get('warehouse_id', type=int)
@@ -276,60 +270,38 @@ class OrdersList(Resource):
 
             db_status = status_map.get(status.lower(), '') if status else ''
 
-            # Use simple query approach for better compatibility
-            query = db.session.query(PotentialOrder).join(
-                Dealer, PotentialOrder.dealer_id == Dealer.dealer_id, isouter=True
+            # Use MySQL query to get orders with dealer information
+            potential_orders = PotentialOrder.find_by_filters(
+                status=db_status,
+                warehouse_id=warehouse_id,
+                company_id=company_id,
+                limit=limit
             )
 
-            # Apply filters
-            if db_status:
-                query = query.filter(PotentialOrder.status == db_status)
-            if warehouse_id:
-                query = query.filter(PotentialOrder.warehouse_id == warehouse_id)
-            if company_id:
-                query = query.filter(PotentialOrder.company_id == company_id)
-
-            # Order by most recent first and limit
-            query = query.order_by(PotentialOrder.created_at.desc()).limit(limit)
-
-            # Execute query
-            potential_orders = query.all()
-
             orders = []
-            for potential_order in potential_orders:
+            for order_data in potential_orders:
                 # Get dealer name
-                dealer = Dealer.query.get(potential_order.dealer_id) if potential_order.dealer_id else None
-                dealer_name = dealer.name if dealer else 'Unknown Dealer'
+                dealer_name = order_data.get('dealer_name', 'Unknown Dealer')
 
                 # Get product count
-                product_count = PotentialOrderProduct.query.filter(
-                    PotentialOrderProduct.potential_order_id == potential_order.potential_order_id
-                ).count()
+                product_count = PotentialOrderProduct.count_by_order(order_data['potential_order_id'])
 
                 # Get state history
-                state_history = db.session.query(
-                    OrderStateHistory, OrderState.state_name
-                ).join(
-                    OrderState, OrderStateHistory.state_id == OrderState.state_id
-                ).filter(
-                    OrderStateHistory.potential_order_id == potential_order.potential_order_id
-                ).order_by(
-                    OrderStateHistory.changed_at
-                ).all()
+                state_history_data = OrderStateHistory.get_history_for_order(order_data['potential_order_id'])
 
                 # Format state history
                 formatted_history = []
-                for history, state_name in state_history:
+                for history in state_history_data:
                     formatted_history.append({
-                        'state_name': state_name,
-                        'timestamp': history.changed_at.isoformat(),
-                        'user': f"User {history.changed_by}"
+                        'state_name': history['state_name'],
+                        'timestamp': history['changed_at'].isoformat(),
+                        'user': f"User {history['changed_by']}"
                     })
 
                 # Get the time of the most recent state change
-                current_state_time = potential_order.updated_at
-                if state_history:
-                    current_state_time = state_history[-1][0].changed_at
+                current_state_time = order_data['updated_at']
+                if state_history_data:
+                    current_state_time = state_history_data[-1]['changed_at']
 
                 # Map database status to frontend status
                 frontend_status_map = {
@@ -340,21 +312,21 @@ class OrdersList(Resource):
                     'Completed': 'completed',
                     'Partially Completed': 'partially-completed'
                 }
-                frontend_status = frontend_status_map.get(potential_order.status, 'open')
+                frontend_status = frontend_status_map.get(order_data['status'], 'open')
 
                 # Format the order
-                order_data = {
-                    'order_request_id': f"PO{potential_order.potential_order_id}",
-                    'original_order_id': potential_order.original_order_id,
+                order_result = {
+                    'order_request_id': f"PO{order_data['potential_order_id']}",
+                    'original_order_id': order_data['original_order_id'],
                     'dealer_name': dealer_name,
-                    'order_date': potential_order.order_date.isoformat(),
+                    'order_date': order_data['order_date'].isoformat(),
                     'status': frontend_status,
                     'current_state_time': current_state_time.isoformat(),
-                    'assigned_to': f"User {potential_order.requested_by}",
+                    'assigned_to': f"User {order_data['requested_by']}",
                     'products': product_count,
                     'state_history': formatted_history
                 }
-                orders.append(order_data)
+                orders.append(order_result)
 
             return {
                 'success': True,
@@ -370,58 +342,54 @@ class OrdersList(Resource):
                 'msg': f'Error retrieving orders: {str(e)}'
             }, 400
 
-
 @rest_api.route('/api/orders/<string:order_id>')
 class OrderDetail(Resource):
     """
-    Endpoint for retrieving details of a specific order
+    MySQL endpoint for retrieving details of a specific order
     """
 
     @rest_api.marshal_with(order_detail_response)
     @rest_api.response(400, 'Error', error_response)
     @rest_api.response(404, 'Order not found', error_response)
     def get(self, order_id):
-        """Get order details"""
+        """Get order details - MySQL implementation"""
         try:
             # Extract the numeric part from the order_id
             numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
 
-            # Get the order
-            potential_order = PotentialOrder.query.get_or_404(numeric_id)
+            # Get the order using MySQL
+            potential_order = PotentialOrder.get_by_id(numeric_id)
+            if not potential_order:
+                return {
+                    'success': False,
+                    'msg': 'Order not found'
+                }, 404
 
-            # Get dealer name
-            dealer = Dealer.query.get(potential_order.dealer_id) if potential_order.dealer_id else None
+            # Get dealer information
+            dealer = None
+            if potential_order.dealer_id:
+                dealer = Dealer.get_by_id(potential_order.dealer_id)
             dealer_name = dealer.name if dealer else 'Unknown Dealer'
 
             # Get product count
-            product_count = PotentialOrderProduct.query.filter(
-                PotentialOrderProduct.potential_order_id == potential_order.potential_order_id
-            ).count()
+            product_count = PotentialOrderProduct.count_by_order(numeric_id)
 
             # Get state history
-            state_history = db.session.query(
-                OrderStateHistory, OrderState.state_name
-            ).join(
-                OrderState, OrderStateHistory.state_id == OrderState.state_id
-            ).filter(
-                OrderStateHistory.potential_order_id == potential_order.potential_order_id
-            ).order_by(
-                OrderStateHistory.changed_at
-            ).all()
+            state_history_data = OrderStateHistory.get_history_for_order(numeric_id)
 
             # Format state history
             formatted_history = []
-            for history, state_name in state_history:
+            for history in state_history_data:
                 formatted_history.append({
-                    'state_name': state_name,
-                    'timestamp': history.changed_at.isoformat(),
-                    'user': f"User {history.changed_by}"
+                    'state_name': history['state_name'],
+                    'timestamp': history['changed_at'].isoformat(),
+                    'user': f"User {history['changed_by']}"
                 })
 
             # Get the time of the most recent state change
             current_state_time = potential_order.updated_at
-            if state_history:
-                current_state_time = state_history[-1][0].changed_at
+            if state_history_data:
+                current_state_time = state_history_data[-1]['changed_at']
 
             # Map database status to frontend status
             status_map = {
@@ -459,11 +427,10 @@ class OrderDetail(Resource):
                 'msg': f'Error retrieving order details: {str(e)}'
             }, 400
 
-
 @rest_api.route('/api/orders/recent')
 class RecentOrders(Resource):
     """
-    Endpoint for retrieving recent order activity
+    MySQL endpoint for retrieving recent order activity
     """
 
     @rest_api.doc(params={
@@ -474,41 +441,30 @@ class RecentOrders(Resource):
     @rest_api.marshal_with(recent_orders_response)
     @rest_api.response(400, 'Error', error_response)
     def get(self):
-        """Get recent order activity"""
+        """Get recent order activity - MySQL implementation"""
         try:
             warehouse_id = request.args.get('warehouse_id', type=int)
             company_id = request.args.get('company_id', type=int)
             limit = request.args.get('limit', 10, type=int)
 
-            # Base query
-            query = PotentialOrder.query
-
-            # Apply filters if provided
-            if warehouse_id:
-                query = query.filter(PotentialOrder.warehouse_id == warehouse_id)
-            if company_id:
-                query = query.filter(PotentialOrder.company_id == company_id)
-
-            # Order by most recent and limit
-            query = query.order_by(PotentialOrder.created_at.desc()).limit(limit)
-
-            # Execute query
-            potential_orders = query.all()
+            # Get recent orders using MySQL
+            potential_orders = PotentialOrder.find_by_filters(
+                warehouse_id=warehouse_id,
+                company_id=company_id,
+                limit=limit
+            )
 
             orders = []
-            for potential_order in potential_orders:
+            for order_data in potential_orders:
                 # Get dealer name
-                dealer = Dealer.query.get(potential_order.dealer_id) if potential_order.dealer_id else None
-                dealer_name = dealer.name if dealer else 'Unknown Dealer'
+                dealer_name = order_data.get('dealer_name', 'Unknown Dealer')
 
                 # Get the most recent state change for each order
-                latest_state = db.session.query(OrderStateHistory).filter(
-                    OrderStateHistory.potential_order_id == potential_order.potential_order_id
-                ).order_by(OrderStateHistory.changed_at.desc()).first()
+                state_history_data = OrderStateHistory.get_history_for_order(order_data['potential_order_id'])
 
-                current_state_time = potential_order.updated_at
-                if latest_state:
-                    current_state_time = latest_state.changed_at
+                current_state_time = order_data['updated_at']
+                if state_history_data:
+                    current_state_time = state_history_data[-1]['changed_at']
 
                 # Map database status to frontend status
                 status_map = {
@@ -519,18 +475,18 @@ class RecentOrders(Resource):
                     'Completed': 'completed',
                     'Partially Completed': 'partially-completed'
                 }
-                status = status_map.get(potential_order.status, 'open')
+                status = status_map.get(order_data['status'], 'open')
 
                 # Format the order
-                order_data = {
-                    'order_request_id': f"PO{potential_order.potential_order_id}",
+                order_result = {
+                    'order_request_id': f"PO{order_data['potential_order_id']}",
                     'dealer_name': dealer_name,
                     'status': status,
-                    'order_date': potential_order.order_date.isoformat(),
+                    'order_date': order_data['order_date'].isoformat(),
                     'current_state_time': current_state_time.isoformat(),
-                    'assigned_to': f"User {potential_order.requested_by}",
+                    'assigned_to': f"User {order_data['requested_by']}",
                 }
-                orders.append(order_data)
+                orders.append(order_result)
 
             return {
                 'success': True,

@@ -4,13 +4,16 @@ FIXED: Order Business Logic for MySQL
 """
 
 from datetime import datetime
-from ..models import db, PotentialOrder, PotentialOrderProduct, OrderState, OrderStateHistory
+from ..models import (
+    Dealer, Product, PotentialOrder, PotentialOrderProduct,
+    OrderState, OrderStateHistory, Invoice, mysql_manager
+)
 from . import dealer_business, product_business
 
 
 def process_order_dataframe(df, warehouse_id, company_id, user_id):
     """
-    Process a dataframe of order data - FIXED for MySQL
+    Process a dataframe of order data - MySQL implementation
 
     Args:
         df: Pandas DataFrame with order data
@@ -54,8 +57,7 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id):
             except (ValueError, TypeError):
                 reserved_quantity = 0
 
-            print(
-                f"Row {index} data: order_id={order_id}, product_id={product_id}, dealer_name={dealer_name}, quantity={order_quantity}")
+            print(f"Row {index} data: order_id={order_id}, product_id={product_id}, dealer_name={dealer_name}, quantity={order_quantity}")
 
             # Skip rows with missing critical data
             if not order_id or not product_id:
@@ -128,7 +130,6 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id):
         'errors': errors
     }
 
-
 def parse_order_date(order_date_str, row_index, errors):
     """Parse order date from various formats"""
     try:
@@ -157,14 +158,12 @@ def parse_order_date(order_date_str, row_index, errors):
         errors.append(f"Row {row_index}: Could not parse date '{order_date_str}'. Using current date. Error: {str(e)}")
         return datetime.now()
 
-
 def create_potential_order(order_id, warehouse_id, company_id, dealer_id, order_date, user_id):
-    """Create a new order request - FIXED for MySQL"""
+    """Create a new order request - MySQL implementation"""
     # Get current UTC time
     current_time = datetime.utcnow()
 
-    print(
-        f"Creating potential order: order_id={order_id}, warehouse_id={warehouse_id}, company_id={company_id}, dealer_id={dealer_id}")
+    print(f"Creating potential order: order_id={order_id}, warehouse_id={warehouse_id}, company_id={company_id}, dealer_id={dealer_id}")
 
     # Create new order request
     potential_order = PotentialOrder(
@@ -179,24 +178,20 @@ def create_potential_order(order_id, warehouse_id, company_id, dealer_id, order_
         updated_at=current_time
     )
 
-    # Save and get ID - FIXED: Don't use flush, add and commit properly
-    db.session.add(potential_order)
-    db.session.flush()  # This assigns the ID but doesn't commit
-
+    potential_order.save()
     potential_order_id = potential_order.potential_order_id
     print(f"Created potential order with ID: {potential_order_id}")
 
     # Create initial order state history
     try:
         # Get or create Open state
-        initial_state = db.session.query(OrderState).filter(OrderState.state_name == 'Open').first()
+        initial_state = OrderState.find_by_name('Open')
         if not initial_state:
             initial_state = OrderState(
                 state_name='Open',
                 description='Order is open and ready for processing'
             )
-            db.session.add(initial_state)
-            db.session.flush()
+            initial_state.save()
 
         state_history = OrderStateHistory(
             potential_order_id=potential_order_id,
@@ -204,8 +199,7 @@ def create_potential_order(order_id, warehouse_id, company_id, dealer_id, order_
             changed_by=user_id,
             changed_at=current_time
         )
-        db.session.add(state_history)
-        db.session.flush()
+        state_history.save()
         print(f"Created state history for order {potential_order_id}")
 
     except Exception as e:
@@ -214,23 +208,20 @@ def create_potential_order(order_id, warehouse_id, company_id, dealer_id, order_
 
     return potential_order_id
 
-
 def add_product_to_order(potential_order_id, product_id, quantity):
-    """Add a product to an order request - FIXED for MySQL"""
+    """Add a product to an order request - MySQL implementation"""
     current_time = datetime.utcnow()
 
     print(f"Adding product to order: order_id={potential_order_id}, product_id={product_id}, quantity={quantity}")
 
     # Check if this product already exists in this order
-    existing_product = db.session.query(PotentialOrderProduct).filter(
-        PotentialOrderProduct.potential_order_id == potential_order_id,
-        PotentialOrderProduct.product_id == product_id
-    ).first()
+    existing_product = PotentialOrderProduct.find_by_order_and_product(potential_order_id, product_id)
 
     if existing_product:
         # Update quantity instead of creating duplicate
         existing_product.quantity += quantity
         existing_product.updated_at = current_time
+        existing_product.save()
         print(f"Updated existing product quantity to {existing_product.quantity}")
     else:
         # Create new product order entry
@@ -243,8 +234,5 @@ def add_product_to_order(potential_order_id, product_id, quantity):
             created_at=current_time,
             updated_at=current_time
         )
-
-        # Save - FIXED: Don't use flush, add and commit properly
-        db.session.add(potential_order_product)
-        db.session.flush()
+        potential_order_product.save()
         print(f"Created new product order entry")

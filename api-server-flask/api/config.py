@@ -3,11 +3,12 @@
 Copyright (c) 2019 - present AppSeed.us
 """
 
-import os, random, string
+import os
+import random
+import string
 from datetime import timedelta
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
-
 
 class BaseConfig():
     SECRET_KEY = os.getenv('SECRET_KEY', None)
@@ -23,9 +24,7 @@ class BaseConfig():
 
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=1)
 
-    SQLALCHEMY_TRACK_MODIFICATIONS = False
-
-    # MySQL Database Configuration
+    # MySQL Database Configuration (REQUIRED)
     DB_ENGINE = os.getenv('DB_ENGINE', 'mysql+pymysql')
     DB_USERNAME = os.getenv('DB_USERNAME', 'root')
     DB_PASS = os.getenv('DB_PASS', 'root-pw')
@@ -42,47 +41,11 @@ class BaseConfig():
     MYSQL_CHARSET = os.getenv('MYSQL_CHARSET', 'utf8mb4')
     MYSQL_COLLATION = os.getenv('MYSQL_COLLATION', 'utf8mb4_unicode_ci')
 
-    USE_SQLITE = False
-    SQLALCHEMY_DATABASE_URI = None
+    # Validate MySQL configuration
+    if not all([DB_USERNAME, DB_PASS, DB_HOST, DB_PORT, DB_NAME]):
+        raise ValueError("MySQL configuration incomplete. Please set all required environment variables: "
+                        "DB_USERNAME, DB_PASS, DB_HOST, DB_PORT, DB_NAME")
 
-    # Configure MySQL database
-    if DB_ENGINE and DB_NAME and DB_USERNAME:
-        try:
-            # MySQL database URI with connection parameters
-            SQLALCHEMY_DATABASE_URI = '{}://{}:{}@{}:{}/{}?charset={}'.format(
-                DB_ENGINE,
-                DB_USERNAME,
-                DB_PASS,
-                DB_HOST,
-                DB_PORT,
-                DB_NAME,
-                MYSQL_CHARSET
-            )
-
-            # Additional SQLAlchemy engine options for MySQL
-            SQLALCHEMY_ENGINE_OPTIONS = {
-                'pool_size': DB_POOL_SIZE,
-                'max_overflow': DB_MAX_OVERFLOW,
-                'pool_recycle': DB_POOL_RECYCLE,
-                'pool_pre_ping': True,  # Verify connections before use
-                'connect_args': {
-                    'charset': MYSQL_CHARSET,
-                    'use_unicode': True,
-                    'autocommit': False,
-                    'sql_mode': 'STRICT_TRANS_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO',
-                }
-            }
-
-            USE_SQLITE = False
-            print(f'> Using MySQL Database: {DB_HOST}:{DB_PORT}/{DB_NAME}')
-
-        except Exception as e:
-            print('> Error: MySQL Configuration Exception: ' + str(e))
-            print('> Falling back to SQLite...')
-            USE_SQLITE = True
-
-    # Fallback to SQLite if MySQL configuration fails
-    if USE_SQLITE or not SQLALCHEMY_DATABASE_URI:
-        print('> Using SQLite Database as fallback')
-        SQLALCHEMY_DATABASE_URI = 'sqlite:///' + os.path.join(BASE_DIR, 'db.sqlite3')
-        SQLALCHEMY_ENGINE_OPTIONS = {}
+    print(f'> Using MySQL Database: {DB_HOST}:{DB_PORT}/{DB_NAME}')
+    print(f'> Connection Pool: {DB_POOL_SIZE} connections, {DB_MAX_OVERFLOW} overflow')
+    print(f'> Character Set: {MYSQL_CHARSET}, Collation: {MYSQL_COLLATION}')
