@@ -41,33 +41,6 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
     products_processed = 0
     errors = []
 
-    # Verify warehouse and company exist
-    try:
-        warehouse = db.session.query(Warehouse).filter(
-            Warehouse.warehouse_id == warehouse_id
-        ).first()
-
-        if not warehouse:
-            raise Exception(f"Warehouse with ID {warehouse_id} not found")
-
-        company = db.session.query(Company).filter(
-            Company.company_id == company_id
-        ).first()
-
-        if not company:
-            raise Exception(f"Company with ID {company_id} not found")
-
-        print(f"Validated warehouse: {warehouse.name}, company: {company.name}")
-
-    except Exception as e:
-        return {
-            'success': False,
-            'msg': 'Invalid warehouse or company ID',
-            'orders_processed': 0,
-            'products_processed': 0,
-            'errors': [str(e)]
-        }, 400
-
     # Save and process the file
     temp_path = None
 

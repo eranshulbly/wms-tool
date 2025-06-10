@@ -27,6 +27,14 @@ const warehouse = {
             breadcrumbs: false
         },
         {
+            id: 'upload-invoices',
+            title: 'Upload Invoice',
+            type: 'item',
+            url: '/warehouse/upload-invoices',
+            icon: icons.IconFileUpload,
+            breadcrumbs: false
+        },
+        {
             id: 'manage-orders',
             title: 'Manage Orders',
             type: 'item',

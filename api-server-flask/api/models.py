@@ -590,3 +590,149 @@ class BoxProduct(db.Model):
             'quantity': self.quantity,
             'potential_order_id': self.potential_order_id
         }
+
+
+class Invoice(db.Model):
+    __tablename__ = 'invoice'
+
+    invoice_id = db.Column(db.Integer(), primary_key=True, autoincrement=True)
+
+    # Foreign key relationships
+    potential_order_id = db.Column(db.Integer(), db.ForeignKey('potential_order.potential_order_id'), index=True)
+    warehouse_id = db.Column(db.Integer(), db.ForeignKey('warehouse.warehouse_id'), index=True)
+    company_id = db.Column(db.Integer(), db.ForeignKey('company.company_id'), index=True)
+
+    # Invoice identification
+    invoice_number = db.Column(db.String(255), nullable=False, index=True)
+    dealer_code = db.Column(db.String(100), index=True)
+    original_order_id = db.Column(db.String(255), nullable=False, index=True)  # From narration
+
+    # Customer information
+    customer_name = db.Column(db.String(500))
+    customer_code = db.Column(db.String(100))
+    customer_category = db.Column(db.String(100))
+
+    # Invoice details
+    invoice_date = db.Column(db.DateTime())
+    invoice_status = db.Column(db.String(50))
+    invoice_type = db.Column(db.String(50))
+    invoice_format = db.Column(db.String(50))
+
+    # Product information
+    part_no = db.Column(db.String(255))
+    part_name = db.Column(db.String(500))
+    uom = db.Column(db.String(50))
+    hsn_number = db.Column(db.String(100))
+    product_type = db.Column(db.String(100))
+    product_category = db.Column(db.String(100))
+
+    # Quantity and pricing
+    quantity = db.Column(db.Integer())
+    unit_price = db.Column(db.DECIMAL(10, 2))
+    line_item_discount_percent = db.Column(db.DECIMAL(5, 2))
+    line_item_discount = db.Column(db.DECIMAL(10, 2))
+    net_selling_price = db.Column(db.DECIMAL(10, 2))
+    assessable_value = db.Column(db.DECIMAL(10, 2))
+
+    # Tax information
+    vat_amount = db.Column(db.DECIMAL(10, 2))
+    cgst_percent = db.Column(db.DECIMAL(5, 2))
+    cgst_amount = db.Column(db.DECIMAL(10, 2))
+    sgst_percent = db.Column(db.DECIMAL(5, 2))
+    sgst_amount = db.Column(db.DECIMAL(10, 2))
+    utgst_percent = db.Column(db.DECIMAL(5, 2))
+    utgst_amount = db.Column(db.DECIMAL(10, 2))
+    igst_percent = db.Column(db.DECIMAL(5, 2))
+    igst_amount = db.Column(db.DECIMAL(10, 2))
+    cess_percent = db.Column(db.DECIMAL(5, 2))
+    cess_amount = db.Column(db.DECIMAL(10, 2))
+
+    # Additional tax amounts
+    additional_tax_amt = db.Column(db.DECIMAL(10, 2))
+    additional_tax_amt2 = db.Column(db.DECIMAL(10, 2))
+    additional_tax_amt3 = db.Column(db.DECIMAL(10, 2))
+    additional_tax_amt4 = db.Column(db.DECIMAL(10, 2))
+    additional_tax_amt5 = db.Column(db.DECIMAL(10, 2))
+
+    # Freight and packaging
+    freight_amount = db.Column(db.DECIMAL(10, 2))
+    packaging_charges = db.Column(db.DECIMAL(10, 2))
+
+    # Freight/Packaging GST
+    frt_pkg_cgst_percent = db.Column(db.DECIMAL(5, 2))
+    frt_pkg_cgst_amount = db.Column(db.DECIMAL(10, 2))
+    frt_pkg_sgst_percent = db.Column(db.DECIMAL(5, 2))
+    frt_pkg_sgst_amount = db.Column(db.DECIMAL(10, 2))
+    frt_pkg_igst_percent = db.Column(db.DECIMAL(5, 2))
+    frt_pkg_igst_amount = db.Column(db.DECIMAL(10, 2))
+    frt_pkg_cess_percent = db.Column(db.DECIMAL(5, 2))
+    frt_pkg_cess_amount = db.Column(db.DECIMAL(10, 2))
+
+    # Totals and discounts
+    total_invoice_amount = db.Column(db.DECIMAL(12, 2))
+    additional_discount_percent = db.Column(db.DECIMAL(5, 2))
+    cash_discount_percent = db.Column(db.DECIMAL(5, 2))
+    credit_days = db.Column(db.Integer())
+
+    # Location and tax details
+    location_code = db.Column(db.String(50))
+    state = db.Column(db.String(100))
+    state_code = db.Column(db.String(10))
+    gstin = db.Column(db.String(50))
+
+    # System fields
+    record_updated_dt = db.Column(db.DateTime())
+    login = db.Column(db.String(100))
+    voucher = db.Column(db.String(100))
+    type_field = db.Column(db.String(100))  # 'type' is a reserved word
+    parent = db.Column(db.String(100))
+    sale_return_date = db.Column(db.DateTime())
+    narration = db.Column(db.Text())  # Store the full narration
+    cancellation_date = db.Column(db.DateTime())
+    executive_name = db.Column(db.String(255))
+
+    # Upload tracking
+    uploaded_by = db.Column(db.Integer(), index=True)  # User ID who uploaded
+    upload_batch_id = db.Column(db.String(100), index=True)  # To group uploads
+    created_at = db.Column(db.DateTime(), default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime(), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    potential_order = db.relationship('PotentialOrder', backref=db.backref('invoices', lazy=True))
+    warehouse = db.relationship('Warehouse', backref=db.backref('invoices', lazy=True))
+    company = db.relationship('Company', backref=db.backref('invoices', lazy=True))
+
+    __table_args__ = (
+        db.Index('idx_invoice_number', 'invoice_number'),
+        db.Index('idx_invoice_original_order', 'original_order_id'),
+        db.Index('idx_invoice_batch', 'upload_batch_id'),
+        db.Index('idx_invoice_date', 'invoice_date'),
+        db.Index('idx_invoice_composite', 'warehouse_id', 'company_id', 'invoice_date'),
+        {'mysql_charset': 'utf8mb4', 'mysql_collate': 'utf8mb4_unicode_ci'}
+    )
+
+    def __repr__(self):
+        return f"Invoice {self.invoice_number} - Order {self.original_order_id}"
+
+    def save(self):
+        db.session.add(self)
+        db.session.commit()
+
+    @classmethod
+    def get_by_id(cls, invoice_id):
+        return cls.query.get_or_404(invoice_id)
+
+    def to_dict(self):
+        return {
+            'invoice_id': self.invoice_id,
+            'invoice_number': self.invoice_number,
+            'original_order_id': self.original_order_id,
+            'customer_name': self.customer_name,
+            'invoice_date': self.invoice_date.isoformat() if self.invoice_date else None,
+            'total_invoice_amount': str(self.total_invoice_amount) if self.total_invoice_amount else None,
+            'invoice_status': self.invoice_status,
+            'part_no': self.part_no,
+            'part_name': self.part_name,
+            'quantity': self.quantity,
+            'unit_price': str(self.unit_price) if self.unit_price else None
+        }

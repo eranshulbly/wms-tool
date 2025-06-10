@@ -6,7 +6,7 @@ Copyright (c) 2019 - present AppSeed.us
 from datetime import datetime, timezone, timedelta
 
 import werkzeug
-from .services import order_service
+from .services import order_service, invoice_service
 
 from functools import wraps
 
@@ -16,7 +16,7 @@ import jwt
 from .config import BaseConfig
 import requests
 from .models import db, Warehouse, Company, PotentialOrder, PotentialOrderProduct, OrderStateHistory, OrderState, \
-    Product, Dealer, Box, Order, OrderProduct, OrderBox, BoxProduct, Users, JWTTokenBlocklist
+    Product, Dealer, Box, Order, OrderProduct, OrderBox, BoxProduct, Users, JWTTokenBlocklist, Invoice
 from sqlalchemy import func
 
 rest_api = Api(version="1.0", title="Users API")
@@ -166,6 +166,76 @@ move_to_dispatch_model = rest_api.model('MoveToDispatchModel', {
     'products': fields.List(fields.Raw, description='Products with packed quantities'),
     'boxes': fields.List(fields.Raw, description='Box assignments')
 })
+
+
+
+"""
+   Invoice Management Routes
+"""
+
+# Define the request parser for invoice file upload
+invoice_upload_parser = reqparse.RequestParser()
+invoice_upload_parser.add_argument('file',
+                                 type=werkzeug.datastructures.FileStorage,
+                                 location='files',
+                                 required=True,
+                                 help='Excel/CSV file with invoice data')
+invoice_upload_parser.add_argument('warehouse_id',
+                                 type=int,
+                                 location='form',
+                                 required=True,
+                                 help='Warehouse ID must be provided')
+invoice_upload_parser.add_argument('company_id',
+                                 type=int,
+                                 location='form',
+                                 required=True,
+                                 help='Company ID must be provided')
+
+# Response model for invoice upload
+invoice_upload_response = rest_api.model('InvoiceUploadResponse', {
+    'success': fields.Boolean(description='Success status of upload'),
+    'msg': fields.String(description='Message describing the result'),
+    'invoices_processed': fields.Integer(description='Number of invoices processed'),
+    'orders_completed': fields.Integer(description='Number of orders completed'),
+    'errors': fields.List(fields.String, description='List of errors encountered'),
+    'upload_batch_id': fields.String(description='Batch ID for tracking'),
+    'has_errors': fields.Boolean(description='Whether errors occurred')
+})
+
+# Invoice statistics response model
+invoice_statistics_response = rest_api.model('InvoiceStatisticsResponse', {
+    'success': fields.Boolean(description='Success status'),
+    'total_invoices': fields.Integer(description='Total number of invoices'),
+    'unique_orders': fields.Integer(description='Number of unique orders'),
+    'total_amount': fields.Float(description='Total invoice amount'),
+    'recent_batches': fields.List(fields.Raw, description='Recent upload batches')
+})
+
+# Invoice list response model
+invoice_model = rest_api.model('Invoice', {
+    'invoice_id': fields.Integer(description='Invoice ID'),
+    'invoice_number': fields.String(description='Invoice number'),
+    'original_order_id': fields.String(description='Original order ID'),
+    'customer_name': fields.String(description='Customer name'),
+    'invoice_date': fields.String(description='Invoice date'),
+    'total_invoice_amount': fields.String(description='Total amount'),
+    'invoice_status': fields.String(description='Invoice status'),
+    'part_no': fields.String(description='Part number'),
+    'part_name': fields.String(description='Part name'),
+    'quantity': fields.Integer(description='Quantity'),
+    'unit_price': fields.String(description='Unit price')
+})
+
+invoice_list_response = rest_api.model('InvoiceListResponse', {
+    'success': fields.Boolean(description='Success status'),
+    'invoices': fields.List(fields.Nested(invoice_model), description='List of invoices'),
+    'total_count': fields.Integer(description='Total number of invoices'),
+    'page': fields.Integer(description='Current page'),
+    'per_page': fields.Integer(description='Items per page')
+})
+
+
+
 
 """
    Helper function for JWT token required
@@ -1264,4 +1334,274 @@ class CompleteDispatch(Resource):
             return {
                 'success': False,
                 'msg': f'Error completing dispatch: {str(e)}'
+            }, 400
+
+
+"""
+   Invoice Management Routes
+"""
+
+
+@rest_api.route('/api/invoices/upload')
+class InvoiceUpload(Resource):
+    """
+    MySQL optimized handles the upload of Excel/CSV files containing invoice data
+    """
+
+    @rest_api.expect(invoice_upload_parser)
+    @rest_api.response(200, 'Success', invoice_upload_response)
+    @rest_api.response(400, 'Bad Request', invoice_upload_response)
+    def post(self):
+        try:
+            # Parse the request arguments
+            args = invoice_upload_parser.parse_args()
+            uploaded_file = args['file']
+            warehouse_id = args['warehouse_id']
+            company_id = args['company_id']
+
+            # Validate that warehouse and company exist using MySQL optimized queries
+            warehouse = db.session.query(Warehouse.warehouse_id).filter(
+                Warehouse.warehouse_id == warehouse_id
+            ).first()
+
+            if not warehouse:
+                return {
+                    'success': False,
+                    'msg': f'Warehouse with ID {warehouse_id} not found',
+                    'invoices_processed': 0,
+                    'orders_completed': 0,
+                    'errors': ['Invalid warehouse ID'],
+                    'has_errors': True
+                }, 400
+
+            company = db.session.query(Company.company_id).filter(
+                Company.company_id == company_id
+            ).first()
+
+            if not company:
+                return {
+                    'success': False,
+                    'msg': f'Company with ID {company_id} not found',
+                    'invoices_processed': 0,
+                    'orders_completed': 0,
+                    'errors': ['Invalid company ID'],
+                    'has_errors': True
+                }, 400
+
+            # Call the service layer to process the upload
+            result, status_code, error_csv_content = invoice_service.process_invoice_upload(
+                uploaded_file,
+                warehouse_id,
+                company_id,
+                123  # Default user ID - in real app, use authenticated user
+            )
+
+            # Prepare the response
+            from flask import make_response
+            response = make_response(result, status_code)
+
+            # If there are errors, add the CSV content to headers for frontend to access
+            if error_csv_content:
+                # Store the CSV content in a way the frontend can access it
+                # Note: HTTP headers have size limits, so for large error files,
+                # we might need to store it temporarily and provide a download link
+                try:
+                    import base64
+                    # Encode the CSV content to base64 for safe header transmission
+                    encoded_csv = base64.b64encode(error_csv_content.encode('utf-8')).decode('utf-8')
+
+                    # Only include in header if it's not too large (< 8KB when encoded)
+                    if len(encoded_csv) < 8192:
+                        response.headers['X-Error-CSV-Available'] = 'true'
+                        response.headers['X-Error-CSV-Content'] = encoded_csv
+                    else:
+                        # For large error files, we'll include a flag and let frontend request it separately
+                        response.headers['X-Error-CSV-Available'] = 'true'
+                        response.headers['X-Error-CSV-Large'] = 'true'
+                        response.headers['X-Error-Batch-ID'] = result.get('upload_batch_id', '')
+
+                        # Store the CSV content temporarily (you might want to use Redis or file storage)
+                        # For now, we'll include it in the response body
+                        result['error_csv_content'] = error_csv_content
+
+                except Exception as e:
+                    print(f"Error encoding CSV for header: {str(e)}")
+                    # Fallback: include in response body
+                    result['error_csv_content'] = error_csv_content
+
+            return response
+
+        except Exception as e:
+            return {
+                'success': False,
+                'msg': f'Error processing upload: {str(e)}',
+                'invoices_processed': 0,
+                'orders_completed': 0,
+                'errors': [str(e)],
+                'has_errors': True
+            }, 400
+
+
+@rest_api.route('/api/invoices/download-errors')
+class InvoiceErrorDownload(Resource):
+    """
+    Download error CSV from invoice upload
+    """
+
+    def post(self):
+        try:
+            from flask import request, make_response
+
+            # Get the error CSV content from request
+            error_csv_content = request.json.get('error_csv_content', '')
+
+            if not error_csv_content:
+                return {
+                    'success': False,
+                    'msg': 'No error data available'
+                }, 400
+
+            # Create response with CSV content
+            response = make_response(error_csv_content)
+            response.headers['Content-Type'] = 'text/csv'
+            response.headers['Content-Disposition'] = 'attachment; filename=invoice_upload_errors.csv'
+            return response
+
+        except Exception as e:
+            return {
+                'success': False,
+                'msg': f'Error creating error file: {str(e)}'
+            }, 400
+
+
+@rest_api.route('/api/invoices/statistics')
+class InvoiceStatistics(Resource):
+    """
+    Get invoice upload statistics
+    """
+
+    @rest_api.response(200, 'Success', invoice_statistics_response)
+    @rest_api.response(400, 'Error', error_response)
+    def get(self):
+        """Get invoice statistics"""
+        try:
+            warehouse_id = request.args.get('warehouse_id', type=int)
+            company_id = request.args.get('company_id', type=int)
+            batch_id = request.args.get('batch_id')
+
+            stats = invoice_service.get_invoice_statistics(
+                warehouse_id=warehouse_id,
+                company_id=company_id,
+                batch_id=batch_id
+            )
+
+            return {
+                'success': True,
+                **stats
+            }, 200
+
+        except Exception as e:
+            return {
+                'success': False,
+                'msg': f'Error retrieving statistics: {str(e)}'
+            }, 400
+
+
+@rest_api.route('/api/invoices')
+class InvoiceList(Resource):
+    """
+    Get list of invoices with pagination and filtering
+    """
+
+    @rest_api.response(200, 'Success', invoice_list_response)
+    @rest_api.response(400, 'Error', error_response)
+    def get(self):
+        """Get list of invoices"""
+        try:
+            warehouse_id = request.args.get('warehouse_id', type=int)
+            company_id = request.args.get('company_id', type=int)
+            batch_id = request.args.get('batch_id')
+            page = request.args.get('page', 1, type=int)
+            per_page = request.args.get('per_page', 50, type=int)
+
+            # Limit per_page to prevent large queries
+            per_page = min(per_page, 100)
+
+            # Build query
+            query = db.session.query(Invoice)
+
+            if warehouse_id:
+                query = query.filter(Invoice.warehouse_id == warehouse_id)
+            if company_id:
+                query = query.filter(Invoice.company_id == company_id)
+            if batch_id:
+                query = query.filter(Invoice.upload_batch_id == batch_id)
+
+            # Get total count
+            total_count = query.count()
+
+            # Apply pagination and ordering
+            invoices = query.order_by(
+                Invoice.created_at.desc()
+            ).offset(
+                (page - 1) * per_page
+            ).limit(per_page).all()
+
+            # Convert to dict
+            invoice_list = [invoice.to_dict() for invoice in invoices]
+
+            return {
+                'success': True,
+                'invoices': invoice_list,
+                'total_count': total_count,
+                'page': page,
+                'per_page': per_page
+            }, 200
+
+        except Exception as e:
+            return {
+                'success': False,
+                'msg': f'Error retrieving invoices: {str(e)}'
+            }, 400
+
+
+@rest_api.route('/api/invoices/<int:invoice_id>')
+class InvoiceDetail(Resource):
+    """
+    Get detailed information about a specific invoice
+    """
+
+    @rest_api.response(200, 'Success')
+    @rest_api.response(404, 'Invoice not found', error_response)
+    def get(self, invoice_id):
+        """Get invoice details"""
+        try:
+            invoice = Invoice.get_by_id(invoice_id)
+
+            # Get related order information
+            from .models import PotentialOrder
+            order_info = None
+            if invoice.potential_order_id:
+                order = db.session.query(PotentialOrder).filter(
+                    PotentialOrder.potential_order_id == invoice.potential_order_id
+                ).first()
+                if order:
+                    order_info = {
+                        'order_request_id': f"PO{order.potential_order_id}",
+                        'status': order.status,
+                        'order_date': order.order_date.isoformat() if order.order_date else None
+                    }
+
+            invoice_dict = invoice.to_dict()
+            invoice_dict['order_info'] = order_info
+
+            return {
+                'success': True,
+                'invoice': invoice_dict
+            }, 200
+
+        except Exception as e:
+            return {
+                'success': False,
+                'msg': f'Error retrieving invoice details: {str(e)}'
             }, 400
