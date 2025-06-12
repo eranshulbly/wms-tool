@@ -41,6 +41,8 @@ urllib3==1.26.13
 six==1.16.0
 setuptools==75.6.0
 pandas==1.5.3
+
+Pillow==10.0.0  # For PNG image generation
 # Note: Removed all SQLAlchemy dependencies
 # Removed: Flask-SQLAlchemy, SQLAlchemy, greenlet
 # This application now uses direct MySQL connectivity via PyMySQL

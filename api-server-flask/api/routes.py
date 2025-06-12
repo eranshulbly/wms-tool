@@ -12,6 +12,7 @@ from functools import wraps
 from flask import request
 from flask_restx import Api, Resource, fields, reqparse
 import jwt
+from PIL import Image, ImageDraw, ImageFont
 from .config import BaseConfig
 
 # Import MySQL models
@@ -1763,4 +1764,364 @@ class InvoiceDetail(Resource):
             return {
                 'success': False,
                 'msg': f'Error retrieving invoice details: {str(e)}'
+            }, 400
+
+
+# Add these routes to your routes.py file
+
+@rest_api.route('/api/invoices/supply-sheet/download')
+class SupplySheetDownload(Resource):
+    """
+    Download Supply Sheet as Excel or PNG matching the exact format from the image
+    """
+
+    @rest_api.doc(params={
+        'format': 'Download format (excel or png)',
+        'warehouse_id': 'Warehouse ID',
+        'company_id': 'Company ID',
+        'start_date': 'Start date (YYYY-MM-DD)',
+        'end_date': 'End date (YYYY-MM-DD)',
+        'batch_id': 'Upload batch ID (optional)'
+    })
+    def get(self):
+        """Download supply sheet in specified format"""
+        try:
+            from flask import make_response
+            import pandas as pd
+            from io import BytesIO
+            import openpyxl
+            from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+            from openpyxl.utils.dataframe import dataframe_to_rows
+
+            # Get parameters
+            format_type = request.args.get('format', 'excel').lower()
+            warehouse_id = request.args.get('warehouse_id', type=int)
+            company_id = request.args.get('company_id', type=int)
+            start_date = request.args.get('start_date')
+            end_date = request.args.get('end_date')
+            batch_id = request.args.get('batch_id')
+
+            # Get invoice data
+            query = """
+                SELECT 
+                    invoice_number,
+                    original_order_id,
+                    customer_name,
+                    total_invoice_amount,
+                    quantity,
+                    invoice_date,
+                    part_no,
+                    part_name
+                FROM invoice 
+                WHERE 1=1
+            """
+            params = []
+
+            if warehouse_id:
+                query += " AND warehouse_id = %s"
+                params.append(warehouse_id)
+            if company_id:
+                query += " AND company_id = %s"
+                params.append(company_id)
+            if start_date:
+                query += " AND DATE(invoice_date) >= %s"
+                params.append(start_date)
+            if end_date:
+                query += " AND DATE(invoice_date) <= %s"
+                params.append(end_date)
+            if batch_id:
+                query += " AND upload_batch_id = %s"
+                params.append(batch_id)
+
+            query += " ORDER BY invoice_date DESC, invoice_number"
+            invoices_data = mysql_manager.execute_query(query, params)
+
+            if format_type == 'excel':
+                return self._generate_excel(invoices_data)
+            elif format_type == 'png':
+                return self._generate_png(invoices_data)
+            else:
+                return {
+                    'success': False,
+                    'msg': 'Invalid format. Use "excel" or "png"'
+                }, 400
+
+        except Exception as e:
+            return {
+                'success': False,
+                'msg': f'Error generating supply sheet: {str(e)}'
+            }, 400
+
+    def _generate_excel(self, invoices_data):
+        """Generate Excel file matching the image format exactly"""
+        from flask import make_response
+        import pandas as pd
+        from io import BytesIO
+        import openpyxl
+        from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+        from openpyxl.utils import get_column_letter
+
+        # Create workbook and worksheet
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Supply Sheet"
+
+        # Add header with company info and title
+        ws.merge_cells('A1:H1')
+        ws['A1'] = 'On Marketing - Supply Sheet'
+        ws['A1'].font = Font(size=16, bold=True)
+        ws['A1'].alignment = Alignment(horizontal='center')
+
+        # Add date info
+        ws.merge_cells('A2:H2')
+        current_date = datetime.now().strftime('%d/%m/%Y')
+        ws['A2'] = f'Date: {current_date}'
+        ws['A2'].alignment = Alignment(horizontal='center')
+
+        # Table headers (starting from row 4)
+        headers = [
+            'Invoice Number',
+            'Order No.',
+            'Agencies Name',
+            'Invoice Value',
+            'Cases',
+            'Part No',
+            'Type',
+            'CODE'
+        ]
+
+        # Write headers
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=4, column=col, value=header)
+            cell.font = Font(bold=True, size=10)
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            cell.border = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thin'),
+                bottom=Side(style='thin')
+            )
+            cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+
+        # Write data
+        row_num = 5
+        total_value = 0
+        total_cases = 0
+
+        for invoice in invoices_data:
+            invoice_number = invoice.get('invoice_number') or ''
+            order_number = invoice.get('original_order_id') or ''
+            agency_name = invoice.get('customer_name') or ''
+            invoice_value = float(invoice.get('total_invoice_amount') or 0)
+            cases = int(invoice.get('quantity') or 0)
+            part_no = invoice.get('part_no') or ''
+
+            # Determine type based on part_no (you can customize this logic)
+            type_value = 'STD' if part_no else 'GEN'
+
+            # Generate code (you can customize this logic)
+            code = '3' if invoice_value > 1000 else '1'
+
+            # Write data to cells
+            data_row = [
+                invoice_number,
+                order_number,
+                agency_name,
+                invoice_value,
+                cases,
+                part_no,
+                type_value,
+                code
+            ]
+
+            for col, value in enumerate(data_row, 1):
+                cell = ws.cell(row=row_num, column=col, value=value)
+                cell.border = Border(
+                    left=Side(style='thin'),
+                    right=Side(style='thin'),
+                    top=Side(style='thin'),
+                    bottom=Side(style='thin')
+                )
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+
+                # Format currency for invoice value
+                if col == 4:  # Invoice Value column
+                    cell.number_format = '#,##0.00'
+
+            total_value += invoice_value
+            total_cases += cases
+            row_num += 1
+
+        # Add totals row
+        total_row = row_num
+        ws.cell(row=total_row, column=3, value='TOTAL').font = Font(bold=True)
+        ws.cell(row=total_row, column=4, value=total_value).font = Font(bold=True)
+        ws.cell(row=total_row, column=4).number_format = '#,##0.00'
+        ws.cell(row=total_row, column=5, value=total_cases).font = Font(bold=True)
+
+        # Add borders to total row
+        for col in range(1, 9):
+            cell = ws.cell(row=total_row, column=col)
+            cell.border = Border(
+                left=Side(style='thin'),
+                right=Side(style='thin'),
+                top=Side(style='thick'),
+                bottom=Side(style='thick')
+            )
+
+        # Auto-adjust column widths
+        column_widths = [15, 12, 25, 12, 8, 12, 8, 8]
+        for i, width in enumerate(column_widths, 1):
+            ws.column_dimensions[get_column_letter(i)].width = width
+
+        # Save to BytesIO
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+
+        # Create response
+        response = make_response(output.getvalue())
+        response.headers['Content-Type'] = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        response.headers[
+            'Content-Disposition'] = f'attachment; filename=supply_sheet_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
+
+        return response
+
+    def _generate_png(self, invoices_data):
+        """Generate PNG image matching the image format exactly"""
+        try:
+            from flask import make_response
+            from io import BytesIO
+            import os
+
+            # Image dimensions
+            img_width = 1200
+            header_height = 100
+            row_height = 25
+            total_rows = len(invoices_data) + 1  # +1 for header
+            img_height = header_height + (total_rows * row_height) + 50  # +50 for totals
+
+            # Create image
+            img = Image.new('RGB', (img_width, img_height), color='white')
+            draw = ImageDraw.Draw(img)
+
+            # Try to load fonts (fallback to default if not available)
+            try:
+                title_font = ImageFont.truetype("arial.ttf", 16)
+                header_font = ImageFont.truetype("arial.ttf", 12)
+                data_font = ImageFont.truetype("arial.ttf", 10)
+            except:
+                title_font = ImageFont.load_default()
+                header_font = ImageFont.load_default()
+                data_font = ImageFont.load_default()
+
+            # Draw title
+            title = "On Marketing - Supply Sheet"
+            title_bbox = draw.textbbox((0, 0), title, font=title_font)
+            title_width = title_bbox[2] - title_bbox[0]
+            draw.text(((img_width - title_width) // 2, 20), title, fill='black', font=title_font)
+
+            # Draw date
+            current_date = datetime.now().strftime('%d/%m/%Y')
+            date_text = f"Date: {current_date}"
+            date_bbox = draw.textbbox((0, 0), date_text, font=header_font)
+            date_width = date_bbox[2] - date_bbox[0]
+            draw.text(((img_width - date_width) // 2, 50), date_text, fill='black', font=header_font)
+
+            # Column definitions
+            columns = [
+                {'name': 'Invoice Number', 'width': 150, 'x': 50},
+                {'name': 'Order No.', 'width': 120, 'x': 200},
+                {'name': 'Agencies Name', 'width': 250, 'x': 320},
+                {'name': 'Invoice Value', 'width': 120, 'x': 570},
+                {'name': 'Cases', 'width': 80, 'x': 690},
+                {'name': 'Part No', 'width': 100, 'x': 770},
+                {'name': 'Type', 'width': 60, 'x': 870},
+                {'name': 'CODE', 'width': 60, 'x': 930}
+            ]
+
+            # Draw table header
+            y_start = header_height
+
+            # Header background
+            draw.rectangle([40, y_start, img_width - 40, y_start + row_height],
+                           fill='lightgray', outline='black')
+
+            # Header text
+            for col in columns:
+                draw.text((col['x'], y_start + 5), col['name'], fill='black', font=header_font)
+
+            # Draw data rows
+            y_current = y_start + row_height
+            total_value = 0
+            total_cases = 0
+
+            for invoice in invoices_data:
+                # Draw row background (alternating)
+                if (y_current - y_start) // row_height % 2 == 0:
+                    draw.rectangle([40, y_current, img_width - 40, y_current + row_height],
+                                   fill='#f8f8f8', outline='black', width=1)
+                else:
+                    draw.rectangle([40, y_current, img_width - 40, y_current + row_height],
+                                   fill='white', outline='black', width=1)
+
+                # Prepare data
+                invoice_number = str(invoice.get('invoice_number') or '')
+                order_number = str(invoice.get('original_order_id') or '')
+                agency_name = str(invoice.get('customer_name') or '')[:25]  # Truncate long names
+                invoice_value = float(invoice.get('total_invoice_amount') or 0)
+                cases = int(invoice.get('quantity') or 0)
+                part_no = str(invoice.get('part_no') or '')
+                type_value = 'STD' if part_no else 'GEN'
+                code = '3' if invoice_value > 1000 else '1'
+
+                # Draw data
+                data_values = [
+                    invoice_number,
+                    order_number,
+                    agency_name,
+                    f"{invoice_value:,.2f}",
+                    str(cases),
+                    part_no,
+                    type_value,
+                    code
+                ]
+
+                for i, (col, value) in enumerate(zip(columns, data_values)):
+                    draw.text((col['x'], y_current + 5), value, fill='black', font=data_font)
+
+                total_value += invoice_value
+                total_cases += cases
+                y_current += row_height
+
+            # Draw totals row
+            draw.rectangle([40, y_current, img_width - 40, y_current + row_height],
+                           fill='lightblue', outline='black', width=2)
+
+            draw.text((columns[2]['x'], y_current + 5), "TOTAL", fill='black', font=header_font)
+            draw.text((columns[3]['x'], y_current + 5), f"{total_value:,.2f}", fill='black', font=header_font)
+            draw.text((columns[4]['x'], y_current + 5), str(total_cases), fill='black', font=header_font)
+
+            # Draw vertical lines for columns
+            for col in columns[1:]:  # Skip first column, start from second
+                draw.line([col['x'] - 10, y_start, col['x'] - 10, y_current + row_height],
+                          fill='black', width=1)
+
+            # Save to BytesIO
+            output = BytesIO()
+            img.save(output, format='PNG')
+            output.seek(0)
+
+            # Create response
+            response = make_response(output.getvalue())
+            response.headers['Content-Type'] = 'image/png'
+            response.headers[
+                'Content-Disposition'] = f'attachment; filename=supply_sheet_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
+
+            return response
+
+        except Exception as e:
+            return {
+                'success': False,
+                'msg': f'Error generating PNG: {str(e)}'
             }, 400

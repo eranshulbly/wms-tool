@@ -1,6 +1,6 @@
 // Updated menu items for warehouse management
 
-import { IconFileUpload, IconPackage, IconTruckDelivery, IconBoxSeam, IconDashboard } from '@tabler/icons';
+import { IconFileUpload, IconPackage, IconTruckDelivery, IconBoxSeam, IconDashboard, IconTable } from '@tabler/icons';
 
 // constant
 const icons = {
@@ -8,7 +8,8 @@ const icons = {
     IconPackage,
     IconTruckDelivery,
     IconBoxSeam,
-    IconDashboard
+    IconDashboard,
+    IconTable
 };
 
 // ==============================|| WAREHOUSE MENU ITEMS ||============================== //
@@ -39,23 +40,31 @@ const warehouse = {
             title: 'Manage Orders',
             type: 'item',
             url: '/warehouse/manage-orders',
-            icon: icons.IconList,
+            icon: icons.IconTable,
             breadcrumbs: false
         },
+        // {
+        //     id: 'pick-tickets',
+        //     title: 'Pick Tickets',
+        //     type: 'item',
+        //     url: '/warehouse/pick-tickets',
+        //     icon: icons.IconBoxSeam,
+        //     breadcrumbs: false
+        // },
+        // {
+        //     id: 'dispatch',
+        //     title: 'Dispatch',
+        //     type: 'item',
+        //     url: '/warehouse/dispatch',
+        //     icon: icons.IconTruckDelivery,
+        //     breadcrumbs: false
+        // },
         {
-            id: 'pick-tickets',
-            title: 'Pick Tickets',
+           id: 'supply-sheet',
+            title: 'Supply Sheet',
             type: 'item',
-            url: '/warehouse/pick-tickets',
-            icon: icons.IconBoxSeam,
-            breadcrumbs: false
-        },
-        {
-            id: 'dispatch',
-            title: 'Dispatch',
-            type: 'item',
-            url: '/warehouse/dispatch',
-            icon: icons.IconTruckDelivery,
+            url: '/warehouse/supply-sheet',
+            icon: icons.IconTable,
             breadcrumbs: false
         }
     ]

@@ -12,8 +12,7 @@ import AuthGuard from './../utils/route-guard/AuthGuard';
 const OrderUpload = Loadable(lazy(() => import('../views/warehouse/OrderUpload')));
 const WarehouseDashboard = Loadable(lazy(() => import('../views/warehouse/WarehouseDashboard')));
 const OrderManagement = Loadable(lazy(() => import('../views/warehouse/OrderManagement')));
-
-// NEW: Invoice management routing
+const SupplySheetDownload = Loadable(lazy(() => import('../views/warehouse/SupplySheetDownload')));
 const InvoiceUpload = Loadable(lazy(() => import('../views/warehouse/InvoiceUpload')));
 
 //-----------------------|| MAIN ROUTING ||-----------------------//
@@ -35,7 +34,8 @@ const MainRoutes = () => {
                 '/warehouse/dashboard',
                 '/warehouse/manage-orders',
                 // NEW: Invoice routes
-                '/warehouse/upload-invoices'
+                '/warehouse/upload-invoices',
+                '/warehouse/supply-sheet'
             ]}
         >
             <MainLayout>
@@ -46,9 +46,8 @@ const MainRoutes = () => {
                         {/* Warehouse Management Routes */}
                         <Route path="/warehouse/upload-orders" component={OrderUpload} />
                         <Route path="/warehouse/manage-orders" component={OrderManagement} />
-
-                        {/* NEW: Invoice Management Routes */}
                         <Route path="/warehouse/upload-invoices" component={InvoiceUpload} />
+                        <Route path="/warehouse/supply-sheet" component={SupplySheetDownload} />
                     </AuthGuard>
                 </Switch>
             </MainLayout>
