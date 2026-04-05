@@ -1,0 +1,738 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  Grid, Typography, Tabs, Tab, Box, Paper, Button, TextField,
+  Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
+  Snackbar, Alert, Dialog, DialogTitle, DialogContent, DialogActions,
+  DialogContentText, CircularProgress, MenuItem, Select, InputLabel,
+  FormControl, Chip, IconButton, Tooltip, Collapse, Divider
+} from '@material-ui/core';
+import { gridSpacing } from '../../store/constant';
+import config from '../../config';
+import axios from 'axios';
+
+// ─── Tab wrapper ────────────────────────────────────────────────────────────
+function TabPanel({ children, value, index }) {
+  return (
+    <div role="tabpanel" hidden={value !== index}>
+      {value === index && <Box p={3}>{children}</Box>}
+    </div>
+  );
+}
+
+// ─── Root component ──────────────────────────────────────────────────────────
+const EwayBillGenerator = () => {
+  const [tab, setTab] = useState(0);
+  const [snack, setSnack] = useState({ open: false, msg: '', sev: 'info' });
+
+  const showSnack = useCallback((msg, sev = 'success') => setSnack({ open: true, msg, sev }), []);
+  const closeSnack = () => setSnack(s => ({ ...s, open: false }));
+
+  const tabs = [
+    'Route Administration',
+    'Customer City Mapping',
+    'Company Schema Config',
+    'Daily Dispatch Manifest',
+    'Generate Bulk JSON',
+  ];
+
+  return (
+    <Grid container spacing={gridSpacing}>
+      <Grid item xs={12}>
+        <Typography variant="h3" gutterBottom>E-Way Bill Automation</Typography>
+        <Typography variant="subtitle1" color="textSecondary">
+          Configure routes &amp; cities, map customers, assign vehicles, and generate bulk JSON for the E-Way portal.
+        </Typography>
+      </Grid>
+
+      <Grid item xs={12}>
+        <Paper>
+          <Tabs value={tab} onChange={(_, v) => setTab(v)} indicatorColor="primary" textColor="primary" variant="scrollable" scrollButtons="auto">
+            {tabs.map((t, i) => <Tab key={i} label={t} />)}
+          </Tabs>
+        </Paper>
+      </Grid>
+
+      <Grid item xs={12}>
+        <Paper>
+          <TabPanel value={tab} index={0}><RouteAdmin showSnack={showSnack} /></TabPanel>
+          <TabPanel value={tab} index={1}><CustomerCityMapping showSnack={showSnack} /></TabPanel>
+          <TabPanel value={tab} index={2}><CompanySchemaConfig showSnack={showSnack} /></TabPanel>
+          <TabPanel value={tab} index={3}><DailyManifest showSnack={showSnack} /></TabPanel>
+          <TabPanel value={tab} index={4}><GenerateBulkJson showSnack={showSnack} /></TabPanel>
+        </Paper>
+      </Grid>
+
+      <Snackbar open={snack.open} autoHideDuration={5000} onClose={closeSnack}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}>
+        <Alert onClose={closeSnack} severity={snack.sev}>{snack.msg}</Alert>
+      </Snackbar>
+    </Grid>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TAB 1 — Route Administration (route + cities in one place)
+// ─────────────────────────────────────────────────────────────────────────────
+const RouteAdmin = ({ showSnack }) => {
+  const [routes, setRoutes] = useState([]);
+  const [form, setForm] = useState({ name: '', description: '' });
+  const [expandedRoute, setExpandedRoute] = useState(null);
+  const [newCity, setNewCity] = useState('');
+
+  const fetchRoutes = useCallback(async () => {
+    const res = await axios.get(config.API_SERVER + 'eway/routes');
+    if (res.data.success) setRoutes(res.data.routes);
+  }, []);
+
+  useEffect(() => { fetchRoutes(); }, [fetchRoutes]);
+
+  const addRoute = async () => {
+    if (!form.name) return showSnack('Route name is required', 'warning');
+    try {
+      const res = await axios.post(config.API_SERVER + 'eway/routes', form);
+      if (res.data.success) {
+        showSnack(`Route "${form.name}" created`);
+        setForm({ name: '', description: '' });
+        fetchRoutes();
+      } else showSnack(res.data.msg, 'error');
+    } catch { showSnack('Failed to create route', 'error'); }
+  };
+
+  const addCity = async (routeId) => {
+    if (!newCity.trim()) return;
+    try {
+      const res = await axios.post(config.API_SERVER + 'eway/route-cities', { route_id: routeId, city_name: newCity.trim() });
+      if (res.data.success) {
+        showSnack(`City "${newCity}" added`);
+        setNewCity('');
+        fetchRoutes();
+      } else showSnack(res.data.msg, 'error');
+    } catch { showSnack('Failed to add city', 'error'); }
+  };
+
+  const removeCity = async (routeId, cityName) => {
+    try {
+      await axios.post(config.API_SERVER + 'eway/route-cities/delete', { route_id: routeId, city_name: cityName });
+      showSnack(`City "${cityName}" removed`);
+      fetchRoutes();
+    } catch { showSnack('Failed to remove city', 'error'); }
+  };
+
+  return (
+    <Grid container spacing={2}>
+      <Grid item xs={12}>
+        <Typography variant="h5">Manage Routes &amp; Cities</Typography>
+        <Typography variant="body2" color="textSecondary" style={{ marginTop: 4 }}>
+          Create geographic routes and assign cities to them. A city can only belong to one route.
+        </Typography>
+      </Grid>
+
+      {/* Add Route Form */}
+      <Grid item xs={12}>
+        <Paper variant="outlined" style={{ padding: 16 }}>
+          <Typography variant="subtitle1" gutterBottom><b>Add New Route</b></Typography>
+          <Grid container spacing={2} alignItems="center">
+            <Grid item xs={12} sm={3}>
+              <TextField fullWidth label="Route Name *" variant="outlined" size="small"
+                value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
+                placeholder="e.g. UP Route A" />
+            </Grid>
+            <Grid item xs={12} sm={7}>
+              <TextField fullWidth label="Description" variant="outlined" size="small"
+                value={form.description} onChange={e => setForm({ ...form, description: e.target.value })}
+                placeholder="e.g. Covers Pilibhit, Badaun, Bareilly" />
+            </Grid>
+            <Grid item xs={12} sm={2}>
+              <Button fullWidth variant="contained" color="primary" onClick={addRoute} style={{ height: 40 }}>
+                Add Route
+              </Button>
+            </Grid>
+          </Grid>
+        </Paper>
+      </Grid>
+
+      {/* Routes Table */}
+      <Grid item xs={12}>
+        <TableContainer component={Paper} variant="outlined">
+          <Table size="small">
+            <TableHead>
+              <TableRow style={{ backgroundColor: '#f5f5f5' }}>
+                <TableCell width={40}></TableCell>
+                <TableCell><b>Route Name</b></TableCell>
+                <TableCell><b>Description</b></TableCell>
+                <TableCell><b>Cities</b></TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {routes.map(r => (
+                <React.Fragment key={r.route_id}>
+                  <TableRow hover>
+                    <TableCell>
+                      <IconButton size="small" onClick={() => setExpandedRoute(expandedRoute === r.route_id ? null : r.route_id)}>
+                        {expandedRoute === r.route_id ? '▲' : '▼'}
+                      </IconButton>
+                    </TableCell>
+                    <TableCell><b>{r.name}</b></TableCell>
+                    <TableCell>{r.description || '—'}</TableCell>
+                    <TableCell>
+                      {r.cities && r.cities.length > 0
+                        ? r.cities.map(c => <Chip key={c} label={c} size="small" style={{ marginRight: 4, marginBottom: 2 }} />)
+                        : <Typography variant="caption" color="textSecondary">No cities yet — expand to add</Typography>
+                      }
+                    </TableCell>
+                  </TableRow>
+                  {/* Expanded city management row */}
+                  <TableRow>
+                    <TableCell colSpan={4} style={{ paddingTop: 0, paddingBottom: 0, borderBottom: expandedRoute === r.route_id ? undefined : 'none' }}>
+                      <Collapse in={expandedRoute === r.route_id} timeout="auto" unmountOnExit>
+                        <Box p={2} bgcolor="#fafafa">
+                          <Grid container spacing={1} alignItems="center">
+                            <Grid item xs={12} sm={5}>
+                              <TextField fullWidth size="small" variant="outlined" label="Add city to this route"
+                                value={newCity} onChange={e => setNewCity(e.target.value)}
+                                onKeyPress={e => e.key === 'Enter' && addCity(r.route_id)}
+                                placeholder="e.g. Pilibhit" />
+                            </Grid>
+                            <Grid item xs="auto">
+                              <Button variant="contained" color="primary" size="small" onClick={() => addCity(r.route_id)}>
+                                Add City
+                              </Button>
+                            </Grid>
+                          </Grid>
+                          <Box mt={1} display="flex" flexWrap="wrap" style={{ gap: 6 }}>
+                            {(r.cities || []).map(c => (
+                              <Chip key={c} label={c} onDelete={() => removeCity(r.route_id, c)}
+                                color="primary" variant="outlined" size="small" />
+                            ))}
+                          </Box>
+                        </Box>
+                      </Collapse>
+                    </TableCell>
+                  </TableRow>
+                </React.Fragment>
+              ))}
+              {routes.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={4} align="center" style={{ color: '#888', padding: 24 }}>
+                    No routes yet. Add your first route above.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Grid>
+    </Grid>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TAB 2 — Customer City Mapping
+// ─────────────────────────────────────────────────────────────────────────────
+const CustomerCityMapping = ({ showSnack }) => {
+  const [cities, setCities] = useState([]);
+  const [mappings, setMappings] = useState([]);
+  const [form, setForm] = useState({ customer_code: '', customer_name: '', city_name: '', distance: '' });
+  // Bulk upload state
+  const [bulkFile, setBulkFile] = useState(null);
+  const [bulkLoading, setBulkLoading] = useState(false);
+
+  const fetchAll = useCallback(async () => {
+    const [cRes, mRes] = await Promise.all([
+      axios.get(config.API_SERVER + 'eway/route-cities'),
+      axios.get(config.API_SERVER + 'eway/customer-city-mappings'),
+    ]);
+    if (cRes.data.success) setCities(cRes.data.cities);
+    if (mRes.data.success) setMappings(mRes.data.mappings);
+  }, []);
+
+  useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  const addMapping = async () => {
+    if (!form.customer_code || !form.city_name || !form.distance)
+      return showSnack('Customer Code, City, and Distance are required', 'warning');
+    try {
+      const res = await axios.post(config.API_SERVER + 'eway/customer-city-mappings', {
+        ...form, distance: parseInt(form.distance)
+      });
+      if (res.data.success) {
+        showSnack('Mapping saved!');
+        setForm({ customer_code: '', customer_name: '', city_name: '', distance: '' });
+        fetchAll();
+      } else showSnack(res.data.msg, 'error');
+    } catch { showSnack('Failed to save mapping', 'error'); }
+  };
+
+  const downloadTemplate = () => {
+    window.location.href = config.API_SERVER + 'eway/customer-city-mappings/template';
+  };
+
+  const handleBulkUpload = async () => {
+    if (!bulkFile) return showSnack('Select an Excel file first', 'warning');
+    setBulkLoading(true);
+    const fd = new FormData();
+    fd.append('file', bulkFile);
+    try {
+      const res = await axios.post(config.API_SERVER + 'eway/customer-city-mappings/bulk', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      if (res.data.success) {
+        showSnack(res.data.msg);
+        setBulkFile(null);
+        fetchAll();
+      } else showSnack(res.data.msg, 'error');
+    } catch { showSnack('Bulk upload failed', 'error'); }
+    finally { setBulkLoading(false); }
+  };
+
+  // Group cities by route for the dropdown section header
+  const cityOptions = cities.map(c => ({ label: `${c.city_name} (${c.route_name})`, value: c.city_name }));
+
+  return (
+    <Grid container spacing={2}>
+      <Grid item xs={12}>
+        <Typography variant="h5">Customer ID → City Mapping</Typography>
+        <Typography variant="body2" color="textSecondary" style={{ marginTop: 4 }}>
+          Map each Customer Code from your invoice CSV to a city and distance. The city determines the route automatically.
+        </Typography>
+      </Grid>
+
+      {/* Manual Add Form */}
+      <Grid item xs={12}>
+        <Paper variant="outlined" style={{ padding: 16 }}>
+          <Typography variant="subtitle1" gutterBottom><b>Add / Update Mapping</b></Typography>
+          <Grid container spacing={2} alignItems="flex-start">
+            <Grid item xs={12} sm={2}>
+              <TextField fullWidth label="Customer Code *" variant="outlined" size="small"
+                value={form.customer_code} onChange={e => setForm({ ...form, customer_code: e.target.value })}
+                helperText="e.g. HMC001" />
+            </Grid>
+            <Grid item xs={12} sm={3}>
+              <TextField fullWidth label="Customer Name" variant="outlined" size="small"
+                value={form.customer_name} onChange={e => setForm({ ...form, customer_name: e.target.value })}
+                helperText="For reference only" />
+            </Grid>
+            <Grid item xs={12} sm={3}>
+              <FormControl fullWidth variant="outlined" size="small">
+                <InputLabel>City *</InputLabel>
+                <Select label="City *" value={form.city_name} onChange={e => setForm({ ...form, city_name: e.target.value })}>
+                  {cityOptions.map(c => <MenuItem key={c.value} value={c.value}>{c.label}</MenuItem>)}
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12} sm={2}>
+              <TextField fullWidth label="Distance (km) *" variant="outlined" size="small" type="number"
+                value={form.distance} onChange={e => setForm({ ...form, distance: e.target.value })}
+                helperText="km to hub" />
+            </Grid>
+            <Grid item xs={12} sm={2}>
+              <Button fullWidth variant="contained" color="primary" onClick={addMapping} style={{ height: 40 }}>
+                Save Mapping
+              </Button>
+            </Grid>
+          </Grid>
+        </Paper>
+      </Grid>
+
+      {/* Bulk Upload */}
+      <Grid item xs={12}>
+        <Paper variant="outlined" style={{ padding: 16 }}>
+          <Typography variant="subtitle1" gutterBottom><b>Bulk Upload via Excel</b></Typography>
+          <Typography variant="body2" color="textSecondary" gutterBottom>
+            Upload an Excel file with columns: <b>Customer Code, Customer Name, City, Distance (km)</b>.
+            Existing entries will be overwritten (upsert).
+          </Typography>
+          <Box display="flex" alignItems="center" style={{ gap: 12 }}>
+            <Button variant="outlined" size="small" onClick={downloadTemplate}>
+              ⬇ Download Template
+            </Button>
+            <input type="file" accept=".xlsx,.xls" onChange={e => setBulkFile(e.target.files[0] || null)} />
+            <Button variant="contained" color="primary" size="small"
+              onClick={handleBulkUpload} disabled={bulkLoading || !bulkFile}>
+              {bulkLoading ? <CircularProgress size={20} /> : 'Upload Excel'}
+            </Button>
+          </Box>
+        </Paper>
+      </Grid>
+
+      {/* Mappings Table */}
+      <Grid item xs={12}>
+        <Typography variant="subtitle1" gutterBottom><b>Existing Mappings ({mappings.length})</b></Typography>
+        <TableContainer component={Paper} variant="outlined">
+          <Table size="small">
+            <TableHead>
+              <TableRow style={{ backgroundColor: '#f5f5f5' }}>
+                <TableCell><b>Customer Code</b></TableCell>
+                <TableCell><b>Customer Name</b></TableCell>
+                <TableCell><b>City</b></TableCell>
+                <TableCell><b>Route</b></TableCell>
+                <TableCell><b>Distance (km)</b></TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {mappings.map((m, i) => (
+                <TableRow key={i}>
+                  <TableCell><Chip label={m.customer_code} size="small" color="primary" variant="outlined" /></TableCell>
+                  <TableCell>{m.customer_name || '—'}</TableCell>
+                  <TableCell>{m.city_name}</TableCell>
+                  <TableCell><Chip label={m.route_name || 'Unmapped'} size="small"
+                    color={m.route_name ? 'default' : 'secondary'} /></TableCell>
+                  <TableCell>{m.distance} km</TableCell>
+                </TableRow>
+              ))}
+              {mappings.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={5} align="center" style={{ color: '#888', padding: 24 }}>
+                    No mappings yet. Add manually or bulk upload via Excel above.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Grid>
+    </Grid>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TAB 3 — Company Schema Config
+// ─────────────────────────────────────────────────────────────────────────────
+const CompanySchemaConfig = ({ showSnack }) => {
+  const [companies, setCompanies] = useState([]);
+  const [selected, setSelected] = useState('');
+  const [schema, setSchema] = useState({ invoice_no_col: '', customer_code_col: '', customer_name_col: '', irn_col: '', amount_col: '' });
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    axios.get(config.API_SERVER + 'companies').then(r => { if (r.data.success) setCompanies(r.data.companies); }).catch(() => {});
+  }, []);
+
+  const handleCompanyChange = async (id) => {
+    setSelected(id); setSaved(false);
+    if (!id) return;
+    try {
+      const r = await axios.get(config.API_SERVER + 'eway/schema-mappings?company_id=' + id);
+      if (r.data.success && r.data.schema) {
+        setSchema({ invoice_no_col: r.data.schema.invoice_no_col || '', customer_code_col: r.data.schema.customer_code_col || '', customer_name_col: r.data.schema.customer_name_col || '', irn_col: r.data.schema.irn_col || '', amount_col: r.data.schema.amount_col || '' });
+      } else {
+        setSchema({ invoice_no_col: '', customer_code_col: '', customer_name_col: '', irn_col: '', amount_col: '' });
+      }
+    } catch { setSchema({ invoice_no_col: '', customer_code_col: '', customer_name_col: '', irn_col: '', amount_col: '' }); }
+  };
+
+  const handleSave = async () => {
+    if (!selected) return showSnack('Select a company first', 'warning');
+    if (!schema.invoice_no_col || !schema.customer_code_col || !schema.customer_name_col || !schema.irn_col)
+      return showSnack('Invoice No, Customer Code, Customer Name, and IRN are required', 'warning');
+    try {
+      const r = await axios.post(config.API_SERVER + 'eway/schema-mappings', { company_id: parseInt(selected), ...schema });
+      if (r.data.success) { showSnack('Schema saved!'); setSaved(true); } else showSnack(r.data.msg, 'error');
+    } catch { showSnack('Save failed', 'error'); }
+  };
+
+  const fields = [
+    { key: 'invoice_no_col', label: 'Invoice # Column *', hint: 'e.g. Invoice #' },
+    { key: 'customer_code_col', label: 'Customer Code Column *', hint: 'e.g. Code' },
+    { key: 'customer_name_col', label: 'Customer Name Column *', hint: 'e.g. Account Name' },
+    { key: 'irn_col', label: 'IRN Column *', hint: 'e.g. IRN#' },
+    { key: 'amount_col', label: 'Amount Column (optional)', hint: 'e.g. Amount' },
+  ];
+
+  return (
+    <Grid container spacing={2}>
+      <Grid item xs={12}>
+        <Typography variant="h5">Company CSV Schema Configuration</Typography>
+        <Typography variant="body2" color="textSecondary" style={{ marginTop: 4 }}>
+          Each company's CSV may use different column names. Configure them here so the system correctly reads invoices during upload.
+        </Typography>
+      </Grid>
+      <Grid item xs={12} sm={4}>
+        <FormControl fullWidth variant="outlined">
+          <InputLabel>Select Company</InputLabel>
+          <Select label="Select Company" value={selected} onChange={e => handleCompanyChange(e.target.value)}>
+            {companies.map(c => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}
+          </Select>
+        </FormControl>
+      </Grid>
+      {selected && (
+        <Grid item xs={12}>
+          <Paper variant="outlined" style={{ padding: 20 }}>
+            <Typography variant="subtitle1" gutterBottom><b>Column Header Mapping</b> — Enter exact header as it appears in the CSV.</Typography>
+            <Grid container spacing={2}>
+              {fields.map(f => (
+                <Grid item xs={12} sm={6} md={4} key={f.key}>
+                  <TextField fullWidth label={f.label} variant="outlined" size="small" placeholder={f.hint}
+                    value={schema[f.key]} onChange={e => setSchema({ ...schema, [f.key]: e.target.value })} />
+                </Grid>
+              ))}
+            </Grid>
+            <Box mt={2} display="flex" alignItems="center" style={{ gap: 12 }}>
+              <Button variant="contained" color="primary" onClick={handleSave}>Save Schema</Button>
+              {saved && <Typography variant="body2" style={{ color: '#388e3c', fontWeight: 600 }}>✓ Saved</Typography>}
+            </Box>
+          </Paper>
+        </Grid>
+      )}
+    </Grid>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TAB 4 — Daily Dispatch Manifest
+// ─────────────────────────────────────────────────────────────────────────────
+const DailyManifest = ({ showSnack }) => {
+  const [routes, setRoutes] = useState([]);
+  const [manifests, setManifests] = useState({});
+  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+
+  const fetchRoutes = useCallback(async () => {
+    const r = await axios.get(config.API_SERVER + 'eway/routes');
+    if (r.data.success) setRoutes(r.data.routes);
+  }, []);
+
+  const fetchManifests = useCallback(async (d) => {
+    const r = await axios.get(config.API_SERVER + 'eway/manifest?date=' + d);
+    if (r.data.success) {
+      const dict = {};
+      r.data.manifests.forEach(m => { dict[m.route_id] = m.vehicle_number; });
+      setManifests(dict);
+    }
+  }, []);
+
+  useEffect(() => { fetchRoutes(); fetchManifests(date); }, [fetchRoutes, fetchManifests, date]);
+
+  const save = async () => {
+    const assignments = Object.keys(manifests)
+      .map(k => ({ route_id: parseInt(k), vehicle_number: manifests[k] }))
+      .filter(x => x.vehicle_number);
+    try {
+      const r = await axios.post(config.API_SERVER + 'eway/manifest', { date, assignments });
+      if (r.data.success) showSnack('Manifest saved!'); else showSnack(r.data.msg, 'error');
+    } catch { showSnack('Save failed', 'error'); }
+  };
+
+  return (
+    <Grid container spacing={2}>
+      <Grid item xs={12} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <Typography variant="h5">Daily Dispatch Manifest</Typography>
+          <Typography variant="body2" color="textSecondary" style={{ marginTop: 4 }}>
+            Assign a vehicle number to each route for the selected date. Cities and customer counts are shown for reference.
+          </Typography>
+        </div>
+        <TextField label="Date" type="date" value={date} onChange={e => setDate(e.target.value)}
+          InputLabelProps={{ shrink: true }} variant="outlined" size="small" />
+      </Grid>
+
+      <Grid item xs={12}>
+        <TableContainer component={Paper} variant="outlined">
+          <Table size="small">
+            <TableHead>
+              <TableRow style={{ backgroundColor: '#f5f5f5' }}>
+                <TableCell><b>Route</b></TableCell>
+                <TableCell><b>Cities Covered</b></TableCell>
+                <TableCell><b>Vehicle Number</b></TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {routes.map(r => (
+                <TableRow key={r.route_id}>
+                  <TableCell><b>{r.name}</b></TableCell>
+                  <TableCell>
+                    {(r.cities || []).length > 0
+                      ? r.cities.map(c => <Chip key={c} label={c} size="small" style={{ marginRight: 4, marginBottom: 2 }} />)
+                      : <Typography variant="caption" color="textSecondary">No cities assigned</Typography>
+                    }
+                  </TableCell>
+                  <TableCell>
+                    <TextField variant="outlined" size="small" placeholder="e.g. UP 41 AT 1234"
+                      value={manifests[r.route_id] || ''}
+                      onChange={e => setManifests({ ...manifests, [r.route_id]: e.target.value })}
+                      style={{ minWidth: 180 }} />
+                  </TableCell>
+                </TableRow>
+              ))}
+              {routes.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={3} align="center" style={{ color: '#888', padding: 24 }}>
+                    No routes defined. Go to Route Administration to add routes.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Grid>
+
+      <Grid item xs={12}>
+        <Button variant="contained" color="primary" onClick={save}>Save Manifest for {date}</Button>
+      </Grid>
+    </Grid>
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TAB 5 — Generate Bulk JSON
+// ─────────────────────────────────────────────────────────────────────────────
+const GenerateBulkJson = ({ showSnack }) => {
+  const [companies, setCompanies] = useState([]);
+  const [company, setCompany] = useState('');
+  const [file, setFile] = useState(null);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
+
+  useEffect(() => {
+    axios.get(config.API_SERVER + 'companies').then(r => { if (r.data.success) setCompanies(r.data.companies); }).catch(() => {});
+  }, []);
+
+  const upload = async () => {
+    if (!company) return showSnack('Select a company first', 'warning');
+    if (!file) return showSnack('Select a CSV file first', 'warning');
+    setLoading(true);
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('company_id', company);
+    try {
+      const r = await axios.post(config.API_SERVER + 'eway/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+      if (r.data.success) {
+        setRows(r.data.data);
+        showSnack(`Loaded ${r.data.data.length} e-invoice rows`);
+      } else showSnack(r.data.msg, 'error');
+    } catch (e) { showSnack(e.response?.data?.msg || 'Upload failed', 'error'); }
+    finally { setLoading(false); }
+  };
+
+  const updateRow = (i, field, val) => {
+    const next = [...rows];
+    next[i] = { ...next[i], [field]: val };
+    setRows(next);
+  };
+
+  const exportJson = async () => {
+    try {
+      const r = await axios.post(config.API_SERVER + 'eway/generate-json', rows);
+      if (r.data.success) {
+        const blob = new Blob([JSON.stringify(r.data.json_payload, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `EWay_Bulk_${Date.now()}.json`;
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a); URL.revokeObjectURL(url);
+        setInstructionsOpen(true);
+      } else showSnack(r.data.msg, 'error');
+    } catch (e) { showSnack(e.response?.data?.msg || 'Export failed', 'error'); }
+  };
+
+  const incomplete = rows.filter(r => r.status === 'Incomplete').length;
+
+  return (
+    <Grid container spacing={2}>
+      <Grid item xs={12}>
+        <Typography variant="h5">Generate Bulk E-Way JSON</Typography>
+        <Typography variant="body2" color="textSecondary" style={{ marginTop: 4 }}>
+          Select the source company, upload their invoice CSV. The system will auto-fill city, route, vehicle, and distance using configured mappings.
+        </Typography>
+      </Grid>
+
+      {/* Controls */}
+      <Grid item xs={12} sm={4}>
+        <FormControl fullWidth variant="outlined">
+          <InputLabel>Company *</InputLabel>
+          <Select label="Company *" value={company} onChange={e => { setCompany(e.target.value); setRows([]); }}>
+            {companies.map(c => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}
+          </Select>
+        </FormControl>
+      </Grid>
+      <Grid item xs={12} sm={8} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <input type="file" accept=".csv" onChange={e => setFile(e.target.files[0] || null)} />
+        <Button variant="contained" color="primary" onClick={upload} disabled={loading || !file || !company}>
+          {loading ? <CircularProgress size={24} /> : 'Process CSV'}
+        </Button>
+      </Grid>
+
+      {/* Data Grid */}
+      {rows.length > 0 && (
+        <>
+          <Grid item xs={12}>
+            {incomplete > 0 && (
+              <Alert severity="warning" style={{ marginBottom: 8 }}>
+                <b>{incomplete} rows are incomplete</b> — city/vehicle mapping is missing. You can fill them manually below.
+              </Alert>
+            )}
+            <TableContainer component={Paper} variant="outlined" style={{ maxHeight: 420 }}>
+              <Table stickyHeader size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell><b>Status</b></TableCell>
+                    <TableCell><b>Invoice #</b></TableCell>
+                    <TableCell><b>Customer Code</b></TableCell>
+                    <TableCell><b>Customer Name</b></TableCell>
+                    <TableCell><b>City</b></TableCell>
+                    <TableCell><b>Distance (km)</b></TableCell>
+                    <TableCell><b>Vehicle No</b></TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {rows.map((row, i) => (
+                    <TableRow key={i} style={{ backgroundColor: row.status === 'Incomplete' ? '#fff8e1' : undefined }}>
+                      <TableCell>
+                        <Chip label={row.status} size="small"
+                          style={{ backgroundColor: row.status === 'Complete' ? '#e8f5e9' : '#fff3e0',
+                                   color: row.status === 'Complete' ? '#2e7d32' : '#e65100' }} />
+                      </TableCell>
+                      <TableCell>{row.invoice_no}</TableCell>
+                      <TableCell>{row.customer_code}</TableCell>
+                      <TableCell>{row.customer_name}</TableCell>
+                      <TableCell>{row.city || <Typography variant="caption" color="error">Not mapped</Typography>}</TableCell>
+                      <TableCell>
+                        <TextField size="small" type="number" variant="outlined"
+                          value={row.distance || ''}
+                          onChange={e => updateRow(i, 'distance', e.target.value)}
+                          error={!row.distance} style={{ width: 80 }} />
+                      </TableCell>
+                      <TableCell>
+                        <TextField size="small" variant="outlined"
+                          value={row.vehicle_no || ''}
+                          onChange={e => updateRow(i, 'vehicle_no', e.target.value)}
+                          error={!row.vehicle_no} style={{ width: 150 }} />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </Grid>
+          <Grid item xs={12} style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Button variant="contained" style={{ backgroundColor: '#2e7d32', color: '#fff' }} onClick={exportJson}>
+              Export Bulk JSON ({rows.length} records)
+            </Button>
+          </Grid>
+        </>
+      )}
+
+      {/* Instructions Dialog */}
+      <Dialog open={instructionsOpen} onClose={() => setInstructionsOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle style={{ backgroundColor: '#e8f5e9', color: '#2e7d32' }}>✅ JSON Generated Successfully!</DialogTitle>
+        <DialogContent style={{ marginTop: 12 }}>
+          <DialogContentText component="div">
+            <b style={{ fontSize: '1.05em' }}>Next Steps — File on the E-Way Bill Portal:</b>
+            <ol style={{ lineHeight: 2 }}>
+              <li>Open <a href="https://ewaybillgst.gov.in" target="_blank" rel="noreferrer">https://ewaybillgst.gov.in</a> and log in.</li>
+              <li>Navigate to <b>E-Waybill → Bulk Generation</b>.</li>
+              <li>Click <b>Choose File</b> and select the JSON file you just downloaded.</li>
+              <li>Click <b>Upload &amp; Generate</b>.</li>
+              <li>Review the generated E-Way bills and download the acknowledgement.</li>
+            </ol>
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setInstructionsOpen(false)} color="primary" variant="contained">Got it!</Button>
+        </DialogActions>
+      </Dialog>
+    </Grid>
+  );
+};
+
+export default EwayBillGenerator;

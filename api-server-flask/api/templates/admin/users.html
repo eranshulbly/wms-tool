@@ -1,0 +1,86 @@
+{% extends 'admin/base_custom.html' %}
+
+{% block body %}
+<div class="container-fluid mt-4">
+  <h4>User Management</h4>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="alert alert-{{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <table class="table table-bordered table-hover bg-white">
+    <thead>
+      <tr>
+        <th>ID</th><th>Username</th><th>Email</th><th>Status</th><th>Role</th><th>Joined</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for user in users %}
+      <tr>
+        <td>{{ user.id }}</td>
+        <td>{{ user.username }}</td>
+        <td>{{ user.email }}</td>
+        <td>
+          <span class="badge badge-{{ user.status }}">{{ user.status }}</span>
+        </td>
+        <td>{{ user.role }}</td>
+        <td>{{ user.date_joined }}</td>
+        <td>
+          {% if user.status == 'pending' %}
+          <form method="POST" action="{{ url_for('usermanagement.approve', user_id=user.id) }}" class="d-inline">
+            <select name="role" class="form-control-sm mr-1" style="display:inline-block;width:auto;">
+              {% for r in roles %}
+              <option value="{{ r }}">{{ r }}</option>
+              {% endfor %}
+            </select>
+            <button type="submit" class="btn btn-success btn-sm">Approve</button>
+          </form>
+          {% endif %}
+
+          {% if user.status == 'active' %}
+          <form method="POST" action="{{ url_for('usermanagement.set_role', user_id=user.id) }}" class="d-inline">
+            <select name="role" class="form-control-sm mr-1" style="display:inline-block;width:auto;">
+              {% for r in roles %}
+              <option value="{{ r }}" {% if user.role == r %}selected{% endif %}>{{ r }}</option>
+              {% endfor %}
+            </select>
+            <button type="submit" class="btn btn-primary btn-sm">Set Role</button>
+          </form>
+
+          <form method="POST" action="{{ url_for('usermanagement.block', user_id=user.id) }}" class="d-inline ml-1">
+            <button type="submit" class="btn btn-warning btn-sm" onclick="return confirm('Block this user?')">Block</button>
+          </form>
+          {% endif %}
+
+          {% if user.status == 'blocked' %}
+          <form method="POST" action="{{ url_for('usermanagement.approve', user_id=user.id) }}" class="d-inline">
+            <select name="role" class="form-control-sm mr-1" style="display:inline-block;width:auto;">
+              {% for r in roles %}
+              <option value="{{ r }}" {% if user.role == r %}selected{% endif %}>{{ r }}</option>
+              {% endfor %}
+            </select>
+            <button type="submit" class="btn btn-success btn-sm">Unblock</button>
+          </form>
+          {% endif %}
+
+          <!-- Reset Password -->
+          <form method="POST" action="{{ url_for('usermanagement.reset_password', user_id=user.id) }}" class="d-inline ml-1"
+                onsubmit="var p=prompt('Enter new password (min 4 chars):');if(!p||p.length<4){alert('Password too short');return false;}this.querySelector('[name=new_password]').value=p;return true;">
+            <input type="hidden" name="new_password" value="">
+            <button type="submit" class="btn btn-secondary btn-sm">Reset Password</button>
+          </form>
+
+          <form method="POST" action="{{ url_for('usermanagement.delete', user_id=user.id) }}" class="d-inline ml-1">
+            <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Delete this user permanently?')">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="text-center text-muted">No users found.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

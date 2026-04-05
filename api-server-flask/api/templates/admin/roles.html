@@ -1,0 +1,61 @@
+{% extends 'admin/base_custom.html' %}
+
+{% block body %}
+<div class="container-fluid mt-4">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h4>Role Management</h4>
+    <a href="{{ url_for('rolemanagement.create') }}" class="btn btn-success">+ Create New Role</a>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="alert alert-{{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <div class="row">
+    {% for role in roles %}
+    <div class="col-md-6 mb-4">
+      <div class="card shadow-sm">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <strong>{{ role.name }}</strong>
+          <span class="badge badge-{{ 'success' if role.all_warehouses else 'secondary' }}">
+            {{ 'All Warehouses' if role.all_warehouses else 'Assigned Warehouses' }}
+          </span>
+        </div>
+        <div class="card-body">
+          <p class="text-muted small">{{ role.description or '—' }}</p>
+
+          <p class="mb-1"><strong>Order States:</strong></p>
+          <div class="mb-2">
+            {% for state in all_order_states %}
+              <span class="badge mr-1 {{ 'badge-primary' if state in role.order_states else 'badge-light border' }}">
+                {{ state }}
+              </span>
+            {% endfor %}
+          </div>
+
+          <p class="mb-1"><strong>Upload Permissions:</strong></p>
+          <div>
+            {% for upload in all_upload_types %}
+              <span class="badge mr-1 {{ 'badge-success' if upload in role.uploads else 'badge-light border' }}">
+                {{ upload }}
+              </span>
+            {% endfor %}
+          </div>
+        </div>
+        <div class="card-footer">
+          <a href="{{ url_for('rolemanagement.edit', role_id=role.role_id) }}" class="btn btn-primary btn-sm">Edit</a>
+          <form method="POST" action="{{ url_for('rolemanagement.delete', role_id=role.role_id) }}" class="d-inline ml-2">
+            <button type="submit" class="btn btn-danger btn-sm"
+              onclick="return confirm('Delete role {{ role.name }}? This cannot be undone.')">Delete</button>
+          </form>
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <div class="col-12"><p class="text-muted">No roles found.</p></div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

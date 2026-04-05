@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WMS Admin Login</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css">
+  <style>
+    body { background: #343a40; display: flex; align-items: center; justify-content: center; height: 100vh; }
+    .login-card { width: 380px; border-radius: 8px; }
+    .login-card .card-header { background: #007bff; color: white; text-align: center; font-size: 1.2rem; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="card login-card shadow-lg">
+    <div class="card-header">WMS Admin Panel</div>
+    <div class="card-body">
+      {% if error %}
+        <div class="alert alert-danger">{{ error }}</div>
+      {% endif %}
+      <form method="POST">
+        <div class="form-group">
+          <label>Email</label>
+          <input type="email" name="email" class="form-control" required autofocus>
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" name="password" class="form-control" required>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">Login</button>
+      </form>
+    </div>
+    <div class="card-footer text-muted text-center small">Only admin accounts can access this panel.</div>
+  </div>
+</body>
+</html>
