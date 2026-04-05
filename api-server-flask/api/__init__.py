@@ -5,18 +5,23 @@ Copyright (c) 2019 - present AppSeed.us
 """
 
 import json
+import os
 from flask import Flask
 from flask_cors import CORS
 
 from .routes import rest_api
 from .db_manager import initialize_database
-# Import dashboard routes to register them with rest_api
 from . import dashboard_routes
+from . import upload_history_routes
+from . import eway_bill_routes
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder='templates')
 
 # Load configuration
 app.config.from_object('api.config.BaseConfig')
+
+# Flask sessions need a fixed secret key (used by Flask-Admin login)
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'AnshulWMSSecretKey2024')
 
 # Initialize Flask-RESTX
 rest_api.init_app(app)
@@ -31,6 +36,10 @@ try:
 except Exception as e:
     print(f"❌ Failed to initialize MySQL database: {str(e)}")
     raise e
+
+# Initialize Flask-Admin
+from .admin import init_admin
+init_admin(app)
 
 
 # Custom error handlers

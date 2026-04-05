@@ -1,19 +1,36 @@
 import React from 'react';
 import ReactDOM from 'react-dom';
-
-// third party
+import axios from 'axios';
 import { BrowserRouter } from 'react-router-dom';
 import { Provider } from 'react-redux';
 import { PersistGate } from 'redux-persist/integration/react';
-
-// project imports
 import { store, persister } from './store';
 import * as serviceWorker from './serviceWorker';
 import App from './App';
 import config from './config';
-
-// style + assets
 import './assets/scss/style.scss';
+
+// Attach JWT token to every axios request automatically
+axios.interceptors.request.use((cfg) => {
+    const token = localStorage.getItem('wms_token');
+    if (token) {
+        cfg.headers['authorization'] = token;
+    }
+    return cfg;
+});
+
+// Auto-logout on 401 (token expired or invalid)
+axios.interceptors.response.use(
+    (response) => response,
+    (error) => {
+        if (error.response && error.response.status === 401) {
+            localStorage.removeItem('wms_token');
+            localStorage.removeItem('wms_user');
+            window.location.href = '/login';
+        }
+        return Promise.reject(error);
+    }
+);
 
 //-----------------------|| REACT DOM RENDER  ||-----------------------//
 

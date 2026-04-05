@@ -8,7 +8,7 @@ from ..models import (
 )
 
 
-def process_invoice_dataframe(df, warehouse_id, company_id, user_id):
+def process_invoice_dataframe(df, warehouse_id, company_id, user_id, upload_batch_id=None):
     """
     Process a dataframe of invoice data and update order statuses - MySQL implementation
 
@@ -21,13 +21,10 @@ def process_invoice_dataframe(df, warehouse_id, company_id, user_id):
     Returns:
         dict: Processing results with success and error data
     """
-    import uuid
-
     invoices_processed = 0
     orders_completed = 0
     errors = []
     error_rows = []
-    upload_batch_id = f"BATCH_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
     print(f"Processing DataFrame with {len(df)} rows for batch {upload_batch_id}")
     print(f"DataFrame columns: {df.columns.tolist()}")

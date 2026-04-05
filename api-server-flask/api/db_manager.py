@@ -178,6 +178,8 @@ def create_all_tables():
         password TEXT,
         jwt_auth_active BOOLEAN DEFAULT FALSE,
         date_joined DATETIME DEFAULT CURRENT_TIMESTAMP,
+        status VARCHAR(20) DEFAULT 'pending',
+        role VARCHAR(20) DEFAULT 'viewer',
         INDEX idx_users_username (username),
         INDEX idx_users_email (email)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -470,20 +472,203 @@ def create_all_tables():
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
 
+    # User-Warehouse-Company access table (paired access)
+    user_warehouse_company_sql = """
+    CREATE TABLE IF NOT EXISTS user_warehouse_company (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        warehouse_id INT NOT NULL,
+        company_id INT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_user_wh_co (user_id, warehouse_id, company_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (warehouse_id) REFERENCES warehouse(warehouse_id),
+        FOREIGN KEY (company_id) REFERENCES company(company_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+
+    # Dynamic roles table
+    roles_sql = """
+    CREATE TABLE IF NOT EXISTS roles (
+        role_id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(50) NOT NULL UNIQUE,
+        description TEXT,
+        all_warehouses BOOLEAN DEFAULT FALSE,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+
+    # Order state permissions per role
+    role_order_states_sql = """
+    CREATE TABLE IF NOT EXISTS role_order_states (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        role_id INT NOT NULL,
+        state_name VARCHAR(50) NOT NULL,
+        UNIQUE KEY unique_role_state (role_id, state_name),
+        FOREIGN KEY (role_id) REFERENCES roles(role_id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+
+    # Upload permissions per role
+    role_uploads_sql = """
+    CREATE TABLE IF NOT EXISTS role_uploads (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        role_id INT NOT NULL,
+        upload_type VARCHAR(50) NOT NULL,
+        UNIQUE KEY unique_role_upload (role_id, upload_type),
+        FOREIGN KEY (role_id) REFERENCES roles(role_id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+
+    upload_batches_sql = """
+    CREATE TABLE IF NOT EXISTS upload_batches (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        upload_type VARCHAR(20) NOT NULL,
+        filename VARCHAR(255),
+        warehouse_id INT,
+        company_id INT,
+        uploaded_by INT,
+        uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        record_count INT DEFAULT 0,
+        status VARCHAR(20) DEFAULT 'active',
+        reverted_by INT NULL,
+        reverted_at DATETIME NULL,
+        FOREIGN KEY (warehouse_id) REFERENCES warehouse(warehouse_id),
+        FOREIGN KEY (company_id) REFERENCES company(company_id),
+        FOREIGN KEY (uploaded_by) REFERENCES users(id),
+        INDEX idx_upload_batches_type (upload_type),
+        INDEX idx_upload_batches_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+
+    # E-way bill automation tables
+    transport_routes_sql = """
+    CREATE TABLE IF NOT EXISTS transport_routes (
+        route_id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL UNIQUE,
+        description TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+
+    customer_route_mappings_sql = """
+    CREATE TABLE IF NOT EXISTS customer_route_mappings (
+        mapping_id INT AUTO_INCREMENT PRIMARY KEY,
+        customer_code VARCHAR(100) NOT NULL UNIQUE,
+        customer_name VARCHAR(500),
+        route_id INT,
+        distance INT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (route_id) REFERENCES transport_routes(route_id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+
+    route_cities_sql = """
+    CREATE TABLE IF NOT EXISTS route_cities (
+        city_id   INT AUTO_INCREMENT PRIMARY KEY,
+        route_id  INT NOT NULL,
+        city_name VARCHAR(200) NOT NULL,
+        UNIQUE KEY unique_route_city (route_id, city_name),
+        FOREIGN KEY (route_id) REFERENCES transport_routes(route_id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+
+    customer_city_mappings_sql = """
+    CREATE TABLE IF NOT EXISTS customer_city_mappings (
+        mapping_id    INT AUTO_INCREMENT PRIMARY KEY,
+        customer_code VARCHAR(100) NOT NULL UNIQUE,
+        customer_name VARCHAR(500),
+        city_name     VARCHAR(200) NOT NULL,
+        distance      INT NOT NULL,
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+
+    daily_route_manifests_sql = """
+    CREATE TABLE IF NOT EXISTS daily_route_manifests (
+        manifest_id INT AUTO_INCREMENT PRIMARY KEY,
+        route_id INT NOT NULL,
+        vehicle_number VARCHAR(50) NOT NULL,
+        manifest_date DATE NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_route_date (route_id, manifest_date),
+        FOREIGN KEY (route_id) REFERENCES transport_routes(route_id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+
+    company_schema_mappings_sql = """
+    CREATE TABLE IF NOT EXISTS company_schema_mappings (
+        mapping_id INT AUTO_INCREMENT PRIMARY KEY,
+        company_id INT NOT NULL UNIQUE,
+        invoice_no_col VARCHAR(100),
+        customer_code_col VARCHAR(100),
+        customer_name_col VARCHAR(100),
+        irn_col VARCHAR(100),
+        amount_col VARCHAR(100),
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (company_id) REFERENCES company(company_id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+
     # Execute all table creation queries
     tables = [
         users_sql, jwt_blocklist_sql, warehouse_sql, company_sql,
         dealer_sql, box_sql, product_sql, order_state_sql,
         potential_order_sql, potential_order_product_sql, order_sql,
         order_state_history_sql, order_box_sql, order_product_sql,
-        box_product_sql, invoice_sql
+        box_product_sql, invoice_sql, user_warehouse_company_sql,
+        roles_sql, role_order_states_sql, role_uploads_sql, upload_batches_sql,
+        transport_routes_sql, customer_route_mappings_sql, daily_route_manifests_sql, company_schema_mappings_sql,
+        route_cities_sql, customer_city_mappings_sql
     ]
 
     for table_sql in tables:
         mysql_manager.execute_query(table_sql, fetch=False)
 
+    # Migrate existing tables
+    _migrate_users_table()
+    _migrate_potential_order_table()
+
     # Insert default order states
     insert_default_states()
+
+    # Seed default roles into DB
+    seed_default_roles()
+
+
+def _migrate_users_table():
+    """Add status and role columns to existing users table if missing"""
+    try:
+        mysql_manager.execute_query(
+            "ALTER TABLE users ADD COLUMN status VARCHAR(20) DEFAULT 'pending'",
+            fetch=False
+        )
+    except Exception:
+        pass  # Column already exists
+
+    try:
+        mysql_manager.execute_query(
+            "ALTER TABLE users ADD COLUMN role VARCHAR(20) DEFAULT 'viewer'",
+            fetch=False
+        )
+    except Exception:
+        pass  # Column already exists
+
+
+def _migrate_potential_order_table():
+    """Add upload_batch_id column to potential_order if missing"""
+    try:
+        mysql_manager.execute_query(
+            "ALTER TABLE potential_order ADD COLUMN upload_batch_id INT NULL",
+            fetch=False
+        )
+    except Exception:
+        pass  # Column already exists
 
 
 def insert_default_states():
@@ -506,3 +691,74 @@ def insert_default_states():
             )
         except Exception as e:
             print(f"Error inserting state {state_name}: {e}")
+
+
+ALL_ORDER_STATES = ['Open', 'Picking', 'Packing', 'Dispatch Ready', 'Completed', 'Partially Completed']
+ALL_UPLOAD_TYPES = ['orders', 'invoices']
+
+
+def seed_default_roles():
+    """Seed default roles into DB if they don't exist yet."""
+    defaults = [
+        {
+            'name': 'admin',
+            'description': 'Full access to everything. All warehouses.',
+            'all_warehouses': True,
+            'order_states': ALL_ORDER_STATES,
+            'uploads': ALL_UPLOAD_TYPES,
+        },
+        {
+            'name': 'manager',
+            'description': 'All order states and uploads. Assigned warehouses only.',
+            'all_warehouses': False,
+            'order_states': ALL_ORDER_STATES,
+            'uploads': ALL_UPLOAD_TYPES,
+        },
+        {
+            'name': 'warehouse_staff',
+            'description': 'Open/Picking/Packing states. Order uploads only.',
+            'all_warehouses': False,
+            'order_states': ['Open', 'Picking', 'Packing'],
+            'uploads': ['orders'],
+        },
+        {
+            'name': 'dispatcher',
+            'description': 'Dispatch Ready/Completed states. Invoice uploads only.',
+            'all_warehouses': False,
+            'order_states': ['Dispatch Ready', 'Completed', 'Partially Completed'],
+            'uploads': ['invoices'],
+        },
+        {
+            'name': 'viewer',
+            'description': 'Open orders only. No uploads.',
+            'all_warehouses': False,
+            'order_states': ['Open'],
+            'uploads': [],
+        },
+    ]
+
+    for role in defaults:
+        # Insert role if not exists
+        existing = mysql_manager.execute_query(
+            "SELECT role_id FROM roles WHERE name = %s", (role['name'],)
+        )
+        if existing:
+            continue  # already seeded, don't overwrite admin customisations
+
+        with mysql_manager.get_cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO roles (name, description, all_warehouses) VALUES (%s, %s, %s)",
+                (role['name'], role['description'], role['all_warehouses'])
+            )
+            role_id = cursor.lastrowid
+
+        for state in role['order_states']:
+            mysql_manager.execute_query(
+                "INSERT IGNORE INTO role_order_states (role_id, state_name) VALUES (%s, %s)",
+                (role_id, state), fetch=False
+            )
+        for upload in role['uploads']:
+            mysql_manager.execute_query(
+                "INSERT IGNORE INTO role_uploads (role_id, upload_type) VALUES (%s, %s)",
+                (role_id, upload), fetch=False
+            )

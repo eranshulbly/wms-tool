@@ -46,8 +46,13 @@ export const FilterControls = ({
   onWarehouseChange,
   onCompanyChange,
   onStatusFilterChange,
+  allowedStatuses,
   classes
-}) => (
+}) => {
+  const visibleFilterOptions = allowedStatuses
+    ? STATUS_FILTER_OPTIONS.filter((o) => o.value === 'all' || allowedStatuses.includes(o.value))
+    : STATUS_FILTER_OPTIONS;
+  return (
   <Grid item xs={12}>
     <Card>
       <CardContent>
@@ -98,7 +103,7 @@ export const FilterControls = ({
                 onChange={onStatusFilterChange}
                 label="Filter by Status"
               >
-                {STATUS_FILTER_OPTIONS.map((option) => (
+                {visibleFilterOptions.map((option) => (
                   <MenuItem key={option.value} value={option.value}>
                     {option.label}
                   </MenuItem>
@@ -110,42 +115,49 @@ export const FilterControls = ({
       </CardContent>
     </Card>
   </Grid>
-);
+  );
+};
 
 /**
  * Compact Status Summary Component - NEW DESIGN
  */
-export const CompactStatusSummary = ({ statusCounts, loading, classes }) => (
-  <Grid item xs={12}>
-    <Paper className={classes.statusSummaryContainer} elevation={1}>
-      <Typography variant="h6" className={classes.statusSummaryTitle}>
-        Order Status Overview
-      </Typography>
-      <Box className={classes.statusSummaryContent}>
-        {Object.keys(ORDER_STATUS_DATA).map((status) => {
-          const statusData = ORDER_STATUS_DATA[status];
-          const count = statusCounts[status]?.count || 0;
+export const CompactStatusSummary = ({ statusCounts, loading, classes, allowedStatuses }) => {
+  const visibleStatuses = allowedStatuses
+    ? Object.keys(ORDER_STATUS_DATA).filter((s) => allowedStatuses.includes(s))
+    : Object.keys(ORDER_STATUS_DATA);
 
-          return (
-            <Box key={status} className={classes.compactStatusItem}>
-              <Box className={classes.statusIconSmall}>
-                {React.cloneElement(statusData.icon, { size: 20 })}
+  return (
+    <Grid item xs={12}>
+      <Paper className={classes.statusSummaryContainer} elevation={1}>
+        <Typography variant="h6" className={classes.statusSummaryTitle}>
+          Order Status Overview
+        </Typography>
+        <Box className={classes.statusSummaryContent}>
+          {visibleStatuses.map((status) => {
+            const statusData = ORDER_STATUS_DATA[status];
+            const count = statusCounts[status]?.count || 0;
+
+            return (
+              <Box key={status} className={classes.compactStatusItem}>
+                <Box className={classes.statusIconSmall}>
+                  {React.cloneElement(statusData.icon, { size: 20 })}
+                </Box>
+                <Box className={classes.statusInfo}>
+                  <Typography variant="body2" className={classes.statusLabelCompact}>
+                    {statusData.label}
+                  </Typography>
+                  <Typography variant="h6" className={classes.statusCountCompact}>
+                    {loading ? <CircularProgress size={16} /> : count}
+                  </Typography>
+                </Box>
               </Box>
-              <Box className={classes.statusInfo}>
-                <Typography variant="body2" className={classes.statusLabelCompact}>
-                  {statusData.label}
-                </Typography>
-                <Typography variant="h6" className={classes.statusCountCompact}>
-                  {loading ? <CircularProgress size={16} /> : count}
-                </Typography>
-              </Box>
-            </Box>
-          );
-        })}
-      </Box>
-    </Paper>
-  </Grid>
-);
+            );
+          })}
+        </Box>
+      </Paper>
+    </Grid>
+  );
+};
 
 /**
  * Alternative Horizontal Status Bar Component

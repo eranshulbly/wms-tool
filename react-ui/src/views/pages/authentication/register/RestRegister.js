@@ -130,7 +130,7 @@ const RestRegister = ({ ...others }) => {
                             })
                             .then(function (response) {
                                 if (response.data.success) {
-                                    history.push('/login');
+                                    history.push('/login?registered=1');
                                 } else {
                                     setStatus({ success: false });
                                     setErrors({ submit: response.data.msg });

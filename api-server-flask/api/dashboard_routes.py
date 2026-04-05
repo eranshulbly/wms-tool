@@ -3,15 +3,15 @@
 from flask import request
 from flask_restx import Resource, fields
 from datetime import datetime, timedelta
-from sqlalchemy import func, and_, or_
 
 from .models import (
     Users, JWTTokenBlocklist, Warehouse, Company, PotentialOrder,
     PotentialOrderProduct, OrderStateHistory, OrderState, Product,
     Dealer, Box, Order, OrderProduct, OrderBox, BoxProduct, Invoice,
-    mysql_manager
+    UserWarehouseCompany, mysql_manager
 )
-from .routes import rest_api
+from .routes import rest_api, token_required, active_required
+from .permissions import get_permissions, has_all_warehouse_access
 
 # Response models
 warehouse_model = rest_api.model('Warehouse', {
@@ -104,67 +104,34 @@ error_response = rest_api.model('ErrorResponse', {
 
 @rest_api.route('/api/warehouses')
 class WarehouseList(Resource):
-    """
-    MySQL endpoint for retrieving all warehouses
-    """
-
     @rest_api.marshal_with(warehouses_response)
     @rest_api.response(400, 'Error', error_response)
-    def get(self):
-        """Get list of all warehouses"""
+    @token_required
+    @active_required
+    def get(self, current_user):
         try:
             warehouses = Warehouse.get_all()
-            warehouse_list = []
-
-            for warehouse in warehouses:
-                warehouse_list.append({
-                    'id': warehouse.warehouse_id,
-                    'name': warehouse.name,
-                    'location': warehouse.location
-                })
-
-            return {
-                'success': True,
-                'warehouses': warehouse_list
-            }, 200
-
+            warehouse_list = [{'id': w.warehouse_id, 'name': w.name, 'location': w.location} for w in warehouses]
+            return {'success': True, 'warehouses': warehouse_list}, 200
         except Exception as e:
-            return {
-                'success': False,
-                'msg': f'Error retrieving warehouses: {str(e)}'
-            }, 400
+            return {'success': False, 'msg': f'Error retrieving warehouses: {str(e)}'}, 400
 
 
 @rest_api.route('/api/companies')
 class CompanyList(Resource):
-    """
-    MySQL endpoint for retrieving all companies
-    """
-
     @rest_api.marshal_with(companies_response)
     @rest_api.response(400, 'Error', error_response)
-    def get(self):
-        """Get list of all companies"""
+    @token_required
+    @active_required
+    def get(self, current_user):
         try:
+            warehouse_id = request.args.get('warehouse_id', type=int)
+
             companies = Company.get_all()
-            company_list = []
-
-            for company in companies:
-                company_list.append({
-                    'id': company.company_id,
-                    'name': company.name
-                })
-
-            return {
-                'success': True,
-                'companies': company_list
-            }, 200
-
+            company_list = [{'id': c.company_id, 'name': c.name} for c in companies]
+            return {'success': True, 'companies': company_list}, 200
         except Exception as e:
-            return {
-                'success': False,
-                'msg': f'Error retrieving companies: {str(e)}'
-            }, 400
+            return {'success': False, 'msg': f'Error retrieving companies: {str(e)}'}, 400
 
 
 @rest_api.route('/api/orders/status')
@@ -176,65 +143,31 @@ class OrderStatusCount(Resource):
     @rest_api.doc(params={'warehouse_id': 'Warehouse ID', 'company_id': 'Company ID'})
     @rest_api.marshal_with(status_response)
     @rest_api.response(400, 'Error', error_response)
-    def get(self):
-        """Get counts of orders by status - MySQL implementation"""
+    @token_required
+    @active_required
+    def get(self, current_user):
         try:
             warehouse_id = request.args.get('warehouse_id', type=int)
             company_id = request.args.get('company_id', type=int)
 
-            print(f"Debug: warehouse_id={warehouse_id}, company_id={company_id}")
+            all_statuses = [
+                ('open',                'Open',               'Open Orders'),
+                ('picking',             'Picking',            'Picking'),
+                ('packing',             'Packing',            'Packing'),
+                ('dispatch-ready',      'Dispatch Ready',     'Dispatch Ready'),
+                ('completed',           'Completed',          'Completed'),
+                ('partially-completed', 'Partially Completed','Partially Completed'),
+            ]
 
-            # Get counts for each status using MySQL
-            open_count = PotentialOrder.count_by_status('Open', warehouse_id, company_id)
-            picking_count = PotentialOrder.count_by_status('Picking', warehouse_id, company_id)
-            packing_count = PotentialOrder.count_by_status('Packing', warehouse_id, company_id)
-            dispatch_ready_count = PotentialOrder.count_by_status('Dispatch Ready', warehouse_id, company_id)
-            completed_count = PotentialOrder.count_by_status('Completed', warehouse_id, company_id)
-            partially_completed_count = PotentialOrder.count_by_status('Partially Completed', warehouse_id, company_id)
+            response_data = {}
+            for key, db_status, label in all_statuses:
+                count = PotentialOrder.count_by_status(db_status, warehouse_id, company_id)
+                response_data[key] = {'count': count, 'label': label}
 
-            print(f"Debug counts: open={open_count}, picking={picking_count}, packing={packing_count}")
-
-            # Prepare response
-            response_data = {
-                'open': {
-                    'count': open_count,
-                    'label': 'Open Orders'
-                },
-                'picking': {
-                    'count': picking_count,
-                    'label': 'Picking'
-                },
-                'packing': {
-                    'count': packing_count,
-                    'label': 'Packing'
-                },
-                'dispatch-ready': {
-                    'count': dispatch_ready_count,
-                    'label': 'Dispatch Ready'
-                },
-                'completed': {
-                    'count': completed_count,
-                    'label': 'Completed'
-                },
-                'partially-completed': {
-                    'count': partially_completed_count,
-                    'label': 'Partially Completed'
-                }
-            }
-
-            return {
-                'success': True,
-                'status_counts': response_data
-            }, 200
+            return {'success': True, 'status_counts': response_data}, 200
 
         except Exception as e:
-            print(f"Error in /api/orders/status: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return {
-                'success': False,
-                'msg': f'Error retrieving order status counts: {str(e)}'
-            }, 400
+            return {'success': False, 'msg': f'Error retrieving order status counts: {str(e)}'}, 400
 
 @rest_api.route('/api/orders')
 class OrdersList(Resource):
@@ -250,8 +183,9 @@ class OrdersList(Resource):
     })
     @rest_api.marshal_with(orders_response)
     @rest_api.response(400, 'Error', error_response)
-    def get(self):
-        """Get orders filtered by status - MySQL implementation"""
+    @token_required
+    @active_required
+    def get(self, current_user):
         try:
             status = request.args.get('status', '')
             warehouse_id = request.args.get('warehouse_id', type=int)
@@ -270,7 +204,6 @@ class OrdersList(Resource):
 
             db_status = status_map.get(status.lower(), '') if status else ''
 
-            # Use MySQL query to get orders with dealer information
             potential_orders = PotentialOrder.find_by_filters(
                 status=db_status,
                 warehouse_id=warehouse_id,
@@ -440,19 +373,23 @@ class RecentOrders(Resource):
     })
     @rest_api.marshal_with(recent_orders_response)
     @rest_api.response(400, 'Error', error_response)
-    def get(self):
-        """Get recent order activity - MySQL implementation"""
+    @token_required
+    @active_required
+    def get(self, current_user):
         try:
             warehouse_id = request.args.get('warehouse_id', type=int)
             company_id = request.args.get('company_id', type=int)
             limit = request.args.get('limit', 10, type=int)
 
-            # Get recent orders using MySQL
+            allowed_states = get_permissions(current_user.role)['order_states']
+
             potential_orders = PotentialOrder.find_by_filters(
                 warehouse_id=warehouse_id,
                 company_id=company_id,
                 limit=limit
             )
+            # Only show orders in states the role can see
+            potential_orders = [o for o in potential_orders if o['status'] in allowed_states]
 
             orders = []
             for order_data in potential_orders:

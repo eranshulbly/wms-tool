@@ -17,7 +17,7 @@ PyMySQL==1.0.2
 mysqlclient==2.1.1
 
 # Excel and CSV Processing Dependencies - REQUIRED for file uploads
-openpyxl==3.1.2
+openpyxl>=3.1.5
 xlrd==2.0.1
 xlsxwriter==3.0.9
 et-xmlfile==1.1.0
@@ -29,6 +29,8 @@ charset-normalizer==2.1.1
 
 # Web Server
 gunicorn==20.1.0
+flask-admin==1.6.1
+wtforms>=3.0.0
 
 # Development and Testing
 python-dotenv==0.19.2
@@ -40,9 +42,9 @@ idna==3.4
 urllib3==1.26.13
 six==1.16.0
 setuptools==75.6.0
-pandas==1.5.3
+pandas>=2.0.0
 
-Pillow==10.0.0  # For PNG image generation
+Pillow>=10.0.0  # For PNG image generation
 # Note: Removed all SQLAlchemy dependencies
 # Removed: Flask-SQLAlchemy, SQLAlchemy, greenlet
 # This application now uses direct MySQL connectivity via PyMySQL

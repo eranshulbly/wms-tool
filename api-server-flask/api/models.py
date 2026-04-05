@@ -19,25 +19,27 @@ class Users(MySQLModel):
         self.password = kwargs.get('password')
         self.jwt_auth_active = kwargs.get('jwt_auth_active', False)
         self.date_joined = kwargs.get('date_joined')
+        self.status = kwargs.get('status', 'pending')   # pending | active | blocked
+        self.role = kwargs.get('role', 'viewer')         # admin | manager | warehouse_staff | dispatcher | viewer
 
     def save(self):
         """Save user to database"""
         if self.id:
-            # Update existing user
             mysql_manager.execute_query(
-                """UPDATE users SET username=%s, email=%s, password=%s, 
-                   jwt_auth_active=%s WHERE id=%s""",
-                (self.username, self.email, self.password, self.jwt_auth_active, self.id),
+                """UPDATE users SET username=%s, email=%s, password=%s,
+                   jwt_auth_active=%s, status=%s, role=%s WHERE id=%s""",
+                (self.username, self.email, self.password,
+                 self.jwt_auth_active, self.status, self.role, self.id),
                 fetch=False
             )
         else:
-            # Create new user
             with mysql_manager.get_cursor() as cursor:
                 cursor.execute(
-                    """INSERT INTO users (username, email, password, jwt_auth_active, date_joined) 
-                       VALUES (%s, %s, %s, %s, %s)""",
+                    """INSERT INTO users (username, email, password, jwt_auth_active,
+                       date_joined, status, role)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
                     (self.username, self.email, self.password, self.jwt_auth_active,
-                     self.date_joined or datetime.utcnow())
+                     self.date_joined or datetime.utcnow(), self.status, self.role)
                 )
                 self.id = cursor.lastrowid
 
@@ -410,6 +412,7 @@ class PotentialOrder(MySQLModel):
         self.order_date = kwargs.get('order_date')
         self.requested_by = kwargs.get('requested_by')
         self.status = kwargs.get('status', 'Open')
+        self.upload_batch_id = kwargs.get('upload_batch_id')
         self.created_at = kwargs.get('created_at')
         self.updated_at = kwargs.get('updated_at')
 
@@ -417,8 +420,8 @@ class PotentialOrder(MySQLModel):
         """Save potential order"""
         if self.potential_order_id:
             mysql_manager.execute_query(
-                """UPDATE potential_order SET original_order_id=%s, warehouse_id=%s, 
-                   company_id=%s, dealer_id=%s, order_date=%s, requested_by=%s, 
+                """UPDATE potential_order SET original_order_id=%s, warehouse_id=%s,
+                   company_id=%s, dealer_id=%s, order_date=%s, requested_by=%s,
                    status=%s, updated_at=%s WHERE potential_order_id=%s""",
                 (self.original_order_id, self.warehouse_id, self.company_id,
                  self.dealer_id, self.order_date, self.requested_by, self.status,
@@ -428,12 +431,13 @@ class PotentialOrder(MySQLModel):
         else:
             with mysql_manager.get_cursor() as cursor:
                 cursor.execute(
-                    """INSERT INTO potential_order (original_order_id, warehouse_id, 
-                       company_id, dealer_id, order_date, requested_by, status, 
-                       created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    """INSERT INTO potential_order (original_order_id, warehouse_id,
+                       company_id, dealer_id, order_date, requested_by, status,
+                       upload_batch_id, created_at, updated_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     (self.original_order_id, self.warehouse_id, self.company_id,
                      self.dealer_id, self.order_date, self.requested_by, self.status,
-                     datetime.utcnow(), datetime.utcnow())
+                     self.upload_batch_id, datetime.utcnow(), datetime.utcnow())
                 )
                 self.potential_order_id = cursor.lastrowid
 
@@ -879,3 +883,340 @@ class Invoice(MySQLModel):
             'unique_orders': unique_orders,
             'total_amount': float(total_amount or 0)
         }
+
+
+class UserWarehouseCompany(MySQLModel):
+    """Maps users to allowed warehouse+company pairs"""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.id = kwargs.get('id')
+        self.user_id = kwargs.get('user_id')
+        self.warehouse_id = kwargs.get('warehouse_id')
+        self.company_id = kwargs.get('company_id')
+
+    def save(self):
+        with mysql_manager.get_cursor() as cursor:
+            cursor.execute(
+                """INSERT IGNORE INTO user_warehouse_company (user_id, warehouse_id, company_id)
+                   VALUES (%s, %s, %s)""",
+                (self.user_id, self.warehouse_id, self.company_id)
+            )
+            self.id = cursor.lastrowid
+
+    @classmethod
+    def get_for_user(cls, user_id):
+        """Return list of {warehouse_id, company_id} pairs for a user"""
+        return mysql_manager.execute_query(
+            """SELECT uwc.warehouse_id, uwc.company_id,
+                      w.name as warehouse_name, c.name as company_name
+               FROM user_warehouse_company uwc
+               JOIN warehouse w ON uwc.warehouse_id = w.warehouse_id
+               JOIN company c ON uwc.company_id = c.company_id
+               WHERE uwc.user_id = %s""",
+            (user_id,)
+        )
+
+    @classmethod
+    def delete_for_user(cls, user_id):
+        mysql_manager.execute_query(
+            "DELETE FROM user_warehouse_company WHERE user_id = %s",
+            (user_id,), fetch=False
+        )
+
+    @classmethod
+    def user_can_access(cls, user_id, warehouse_id, company_id):
+        """Check if user has access to a specific warehouse+company pair"""
+        result = mysql_manager.execute_query(
+            """SELECT id FROM user_warehouse_company
+               WHERE user_id=%s AND warehouse_id=%s AND company_id=%s""",
+            (user_id, warehouse_id, company_id)
+        )
+        return bool(result)
+
+
+# E-Way Bill Automation Models
+
+class TransportRoute(MySQLModel):
+    """Transport Route model"""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.route_id = kwargs.get('route_id')
+        self.name = kwargs.get('name')
+        self.description = kwargs.get('description')
+        self.created_at = kwargs.get('created_at')
+        self.updated_at = kwargs.get('updated_at')
+
+    def save(self):
+        if self.route_id:
+            mysql_manager.execute_query(
+                "UPDATE transport_routes SET name=%s, description=%s, updated_at=%s WHERE route_id=%s",
+                (self.name, self.description, datetime.utcnow(), self.route_id),
+                fetch=False
+            )
+        else:
+            with mysql_manager.get_cursor() as cursor:
+                cursor.execute(
+                    "INSERT INTO transport_routes (name, description, created_at, updated_at) VALUES (%s, %s, %s, %s)",
+                    (self.name, self.description, datetime.utcnow(), datetime.utcnow())
+                )
+                self.route_id = cursor.lastrowid
+
+    @classmethod
+    def get_by_id(cls, route_id):
+        result = mysql_manager.execute_query(
+            "SELECT * FROM transport_routes WHERE route_id = %s", (route_id,)
+        )
+        return cls(**result[0]) if result else None
+
+    @classmethod
+    def get_all(cls):
+        routes = mysql_manager.execute_query("SELECT * FROM transport_routes ORDER BY route_id")
+        result = []
+        for row in routes:
+            r = cls(**row)
+            cities = mysql_manager.execute_query(
+                "SELECT city_name FROM route_cities WHERE route_id = %s ORDER BY city_name",
+                (r.route_id,)
+            )
+            r._cities = [c['city_name'] for c in (cities or [])]
+            result.append(r)
+        return result
+
+    def to_dict(self):
+        return {
+            'route_id': self.route_id,
+            'name': self.name,
+            'description': self.description,
+            'cities': getattr(self, '_cities', [])
+        }
+
+
+class RouteCity(MySQLModel):
+    """City belonging to a transport route"""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.city_id = kwargs.get('city_id')
+        self.route_id = kwargs.get('route_id')
+        self.city_name = kwargs.get('city_name')
+
+    def save(self):
+        with mysql_manager.get_cursor() as cursor:
+            cursor.execute(
+                """INSERT IGNORE INTO route_cities (route_id, city_name) VALUES (%s, %s)""",
+                (self.route_id, self.city_name)
+            )
+            self.city_id = cursor.lastrowid
+
+    def delete(self):
+        mysql_manager.execute_query(
+            "DELETE FROM route_cities WHERE route_id = %s AND city_name = %s",
+            (self.route_id, self.city_name), fetch=False
+        )
+
+    @classmethod
+    def get_for_route(cls, route_id):
+        results = mysql_manager.execute_query(
+            "SELECT city_name FROM route_cities WHERE route_id = %s ORDER BY city_name",
+            (route_id,)
+        )
+        return [row['city_name'] for row in (results or [])]
+
+    @classmethod
+    def get_all_cities(cls):
+        """Return list of distinct cities with their route info"""
+        results = mysql_manager.execute_query(
+            """SELECT rc.city_name, rc.route_id, tr.name as route_name
+               FROM route_cities rc
+               JOIN transport_routes tr ON rc.route_id = tr.route_id
+               ORDER BY rc.city_name"""
+        )
+        return results or []
+
+    @classmethod
+    def find_route_by_city(cls, city_name):
+        """Given a city name, return its route_id"""
+        result = mysql_manager.execute_query(
+            "SELECT route_id FROM route_cities WHERE city_name = %s LIMIT 1",
+            (city_name,)
+        )
+        return result[0]['route_id'] if result else None
+
+
+class CustomerCityMapping(MySQLModel):
+    """Maps a customer code to a city and distance"""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.mapping_id = kwargs.get('mapping_id')
+        self.customer_code = kwargs.get('customer_code')
+        self.customer_name = kwargs.get('customer_name')
+        self.city_name = kwargs.get('city_name')
+        self.distance = kwargs.get('distance')
+        self.created_at = kwargs.get('created_at')
+        self.updated_at = kwargs.get('updated_at')
+
+    def save(self):
+        with mysql_manager.get_cursor() as cursor:
+            cursor.execute(
+                """INSERT INTO customer_city_mappings
+                   (customer_code, customer_name, city_name, distance, created_at, updated_at)
+                   VALUES (%s, %s, %s, %s, %s, %s)
+                   ON DUPLICATE KEY UPDATE
+                   customer_name=VALUES(customer_name), city_name=VALUES(city_name),
+                   distance=VALUES(distance), updated_at=VALUES(updated_at)""",
+                (self.customer_code, self.customer_name, self.city_name,
+                 self.distance, datetime.utcnow(), datetime.utcnow())
+            )
+            if cursor.lastrowid:
+                self.mapping_id = cursor.lastrowid
+
+    @classmethod
+    def get_all(cls):
+        results = mysql_manager.execute_query(
+            """SELECT m.*, rc.route_id,
+                      COALESCE(tr.name, 'Unmapped City') as route_name
+               FROM customer_city_mappings m
+               LEFT JOIN route_cities rc ON m.city_name = rc.city_name
+               LEFT JOIN transport_routes tr ON rc.route_id = tr.route_id
+               ORDER BY m.city_name, m.customer_code"""
+        )
+        return results or []
+
+    @classmethod
+    def find_by_customer_code(cls, customer_code):
+        result = mysql_manager.execute_query(
+            "SELECT * FROM customer_city_mappings WHERE customer_code = %s",
+            (customer_code,)
+        )
+        return cls(**result[0]) if result else None
+
+
+class CustomerRouteMapping(MySQLModel):
+    """Customer to Route Mapping model"""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.mapping_id = kwargs.get('mapping_id')
+        self.customer_code = kwargs.get('customer_code')
+        self.customer_name = kwargs.get('customer_name')
+        self.route_id = kwargs.get('route_id')
+        self.distance = kwargs.get('distance')
+        self.created_at = kwargs.get('created_at')
+        self.updated_at = kwargs.get('updated_at')
+
+    def save(self):
+        if self.mapping_id:
+            mysql_manager.execute_query(
+                """UPDATE customer_route_mappings SET customer_code=%s, customer_name=%s, 
+                   route_id=%s, distance=%s, updated_at=%s WHERE mapping_id=%s""",
+                (self.customer_code, self.customer_name, self.route_id, self.distance, 
+                 datetime.utcnow(), self.mapping_id), fetch=False
+            )
+        else:
+            with mysql_manager.get_cursor() as cursor:
+                cursor.execute(
+                    """INSERT INTO customer_route_mappings (customer_code, customer_name, route_id, 
+                       distance, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (self.customer_code, self.customer_name, self.route_id, self.distance, 
+                     datetime.utcnow(), datetime.utcnow())
+                )
+                self.mapping_id = cursor.lastrowid
+
+    @classmethod
+    def get_all(cls):
+        results = mysql_manager.execute_query(
+            """SELECT m.*, r.name as route_name 
+               FROM customer_route_mappings m 
+               LEFT JOIN transport_routes r ON m.route_id = r.route_id"""
+        )
+        return results
+
+    @classmethod
+    def find_by_customer_code(cls, customer_code):
+        result = mysql_manager.execute_query(
+            "SELECT * FROM customer_route_mappings WHERE customer_code = %s", (customer_code,)
+        )
+        return cls(**result[0]) if result else None
+
+
+class DailyRouteManifest(MySQLModel):
+    """Daily Route Manifest model"""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.manifest_id = kwargs.get('manifest_id')
+        self.route_id = kwargs.get('route_id')
+        self.vehicle_number = kwargs.get('vehicle_number')
+        self.manifest_date = kwargs.get('manifest_date')
+        self.created_at = kwargs.get('created_at')
+        self.updated_at = kwargs.get('updated_at')
+
+    def save(self):
+        # Handle UPSERT for unique (route_id, manifest_date)
+        with mysql_manager.get_cursor() as cursor:
+            cursor.execute(
+                """INSERT INTO daily_route_manifests (route_id, vehicle_number, manifest_date, created_at, updated_at)
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON DUPLICATE KEY UPDATE vehicle_number = VALUES(vehicle_number), updated_at = VALUES(updated_at)""",
+                (self.route_id, self.vehicle_number, self.manifest_date, datetime.utcnow(), datetime.utcnow())
+            )
+            # If inserted, lastrowid works. If updated, might be 0 but that's ok for our flow.
+            if cursor.lastrowid:
+                self.manifest_id = cursor.lastrowid
+
+    @classmethod
+    def get_for_date(cls, manifest_date):
+        results = mysql_manager.execute_query(
+            """SELECT m.*, r.name as route_name 
+               FROM daily_route_manifests m 
+               JOIN transport_routes r ON m.route_id = r.route_id 
+               WHERE m.manifest_date = %s""",
+            (manifest_date,)
+        )
+        return results
+
+    @classmethod
+    def get_vehicle_for_route_date(cls, route_id, manifest_date):
+        result = mysql_manager.execute_query(
+            "SELECT vehicle_number FROM daily_route_manifests WHERE route_id = %s AND manifest_date = %s",
+            (route_id, manifest_date)
+        )
+        return result[0]['vehicle_number'] if result else None
+
+
+class CompanySchemaMapping(MySQLModel):
+    """Company Schema Mapping model"""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.mapping_id = kwargs.get('mapping_id')
+        self.company_id = kwargs.get('company_id')
+        self.invoice_no_col = kwargs.get('invoice_no_col')
+        self.customer_code_col = kwargs.get('customer_code_col')
+        self.customer_name_col = kwargs.get('customer_name_col')
+        self.irn_col = kwargs.get('irn_col')
+        self.amount_col = kwargs.get('amount_col')
+
+    def save(self):
+        with mysql_manager.get_cursor() as cursor:
+            cursor.execute(
+                """INSERT INTO company_schema_mappings 
+                   (company_id, invoice_no_col, customer_code_col, customer_name_col, irn_col, amount_col, created_at, updated_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                   ON DUPLICATE KEY UPDATE 
+                   invoice_no_col=VALUES(invoice_no_col), customer_code_col=VALUES(customer_code_col),
+                   customer_name_col=VALUES(customer_name_col), irn_col=VALUES(irn_col), 
+                   amount_col=VALUES(amount_col), updated_at=VALUES(updated_at)""",
+                (self.company_id, self.invoice_no_col, self.customer_code_col, self.customer_name_col, 
+                 self.irn_col, self.amount_col, datetime.utcnow(), datetime.utcnow())
+            )
+
+    @classmethod
+    def get_for_company(cls, company_id):
+        result = mysql_manager.execute_query(
+            "SELECT * FROM company_schema_mappings WHERE company_id = %s", (company_id,)
+        )
+        return result[0] if result else None

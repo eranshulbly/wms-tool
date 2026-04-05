@@ -14,6 +14,7 @@ const WarehouseDashboard = Loadable(lazy(() => import('../views/warehouse/Wareho
 const OrderManagement = Loadable(lazy(() => import('../views/warehouse/OrderManagement')));
 const SupplySheetDownload = Loadable(lazy(() => import('../views/warehouse/SupplySheetDownload')));
 const InvoiceUpload = Loadable(lazy(() => import('../views/warehouse/InvoiceUpload')));
+const EwayBillGenerator = Loadable(lazy(() => import('../views/warehouse/EwayBillGenerator')));
 
 //-----------------------|| MAIN ROUTING ||-----------------------//
 
@@ -35,7 +36,8 @@ const MainRoutes = () => {
                 '/warehouse/manage-orders',
                 // NEW: Invoice routes
                 '/warehouse/upload-invoices',
-                '/warehouse/supply-sheet'
+                '/warehouse/supply-sheet',
+                '/warehouse/eway-bill'
             ]}
         >
             <MainLayout>
@@ -48,6 +50,7 @@ const MainRoutes = () => {
                         <Route path="/warehouse/manage-orders" component={OrderManagement} />
                         <Route path="/warehouse/upload-invoices" component={InvoiceUpload} />
                         <Route path="/warehouse/supply-sheet" component={SupplySheetDownload} />
+                        <Route path="/warehouse/eway-bill" component={EwayBillGenerator} />
                     </AuthGuard>
                 </Switch>
             </MainLayout>

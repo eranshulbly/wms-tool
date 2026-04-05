@@ -217,6 +217,20 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
         clear_dealer_cache()
         clear_product_cache()
 
+        # Create upload batch record before processing
+        upload_batch_id = None
+        try:
+            with mysql_manager.get_cursor() as cursor:
+                cursor.execute(
+                    """INSERT INTO upload_batches (upload_type, filename, warehouse_id, company_id, uploaded_by)
+                       VALUES (%s, %s, %s, %s, %s)""",
+                    ('orders', filename, warehouse_id, company_id, user_id)
+                )
+                upload_batch_id = cursor.lastrowid
+            print(f"Created upload batch record: {upload_batch_id}")
+        except Exception as e:
+            print(f"Warning: Could not create upload batch record: {e}")
+
         # Use MySQL transaction context manager for proper transaction handling
         try:
             with mysql_manager.get_cursor(commit=False) as cursor:
@@ -224,33 +238,43 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
 
                 # Process the dataframe using the business logic
                 result = process_order_dataframe(
-                    df, warehouse_id, company_id, user_id
+                    df, warehouse_id, company_id, user_id, upload_batch_id
                 )
 
                 print(f"Business logic result: {result}")
 
                 # Check if we have successful processing
                 if result['orders_processed'] > 0 or result['products_processed'] > 0:
-                    # Commit the transaction
                     cursor.connection.commit()
                     print("MySQL transaction committed successfully")
 
-                    # Clean up the temporary file
+                    # Update batch record count
+                    if upload_batch_id:
+                        mysql_manager.execute_query(
+                            "UPDATE upload_batches SET record_count=%s WHERE id=%s",
+                            (result['orders_processed'], upload_batch_id), fetch=False
+                        )
+
                     if temp_path and os.path.exists(temp_path):
                         os.remove(temp_path)
-                        print("Cleaned up temporary file")
 
                     return {
                         'success': True,
                         'msg': f'Orders uploaded successfully. Processed {result["orders_processed"]} orders and {result["products_processed"]} products.',
                         'orders_processed': result['orders_processed'],
                         'products_processed': result['products_processed'],
-                        'errors': result['errors']
+                        'errors': result['errors'],
+                        'upload_batch_id': upload_batch_id
                     }, 200
                 else:
-                    # Rollback the transaction
                     cursor.connection.rollback()
                     print("No data processed, rolling back MySQL transaction")
+
+                    # Delete the batch record since nothing was saved
+                    if upload_batch_id:
+                        mysql_manager.execute_query(
+                            "DELETE FROM upload_batches WHERE id=%s", (upload_batch_id,), fetch=False
+                        )
 
                     return {
                         'success': False,
@@ -262,7 +286,13 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
 
         except Exception as db_error:
             print(f"MySQL transaction error: {str(db_error)}")
-            # Transaction will auto-rollback due to context manager
+            if upload_batch_id:
+                try:
+                    mysql_manager.execute_query(
+                        "DELETE FROM upload_batches WHERE id=%s", (upload_batch_id,), fetch=False
+                    )
+                except Exception:
+                    pass
             raise db_error
 
     except Exception as e:

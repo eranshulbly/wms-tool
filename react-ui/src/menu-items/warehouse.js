@@ -66,6 +66,14 @@ const warehouse = {
             url: '/warehouse/supply-sheet',
             icon: icons.IconTable,
             breadcrumbs: false
+        },
+        {
+            id: 'eway-bills',
+            title: 'E-Way Bills',
+            type: 'item',
+            url: '/warehouse/eway-bill',
+            icon: icons.IconTruckDelivery,
+            breadcrumbs: false
         }
     ]
 };

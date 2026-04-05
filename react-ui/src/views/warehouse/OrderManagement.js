@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { useSelector } from 'react-redux';
 import {
   Grid,
   Typography,
@@ -19,6 +20,14 @@ import orderManagementService from '../../services/orderManagementService';
 
 const OrderManagement = () => {
   const classes = useOrderManagementStyles();
+  const user = useSelector((state) => state.account.user);
+
+  // Compute allowed statuses from permissions (null = no restriction = show all)
+  const allowedStatuses = useMemo(() => {
+    const orderStates = user?.permissions?.order_states;
+    if (!orderStates || orderStates.length === 0) return null;
+    return orderStates.map((name) => name.toLowerCase().replace(/ /g, '-'));
+  }, [user]);
 
   // State management
   const [warehouse, setWarehouse] = useState('');
@@ -377,6 +386,7 @@ const OrderManagement = () => {
         onWarehouseChange={handleWarehouseChange}
         onCompanyChange={handleCompanyChange}
         onStatusFilterChange={handleStatusFilterChange}
+        allowedStatuses={allowedStatuses}
         classes={classes}
       />
 
@@ -387,6 +397,7 @@ const OrderManagement = () => {
         statusFilter={statusFilter}
         onOrderClick={handleOrderClick}
         onStatusUpdate={handleStatusUpdate}
+        allowedStatuses={allowedStatuses}
         classes={classes}
       />
 
@@ -396,6 +407,7 @@ const OrderManagement = () => {
         order={selectedOrder}
         onClose={handleOrderDetailsClose}
         onStatusUpdate={handleDialogStatusUpdate}
+        allowedStatuses={allowedStatuses}
         classes={classes}
       />
 

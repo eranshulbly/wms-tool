@@ -11,7 +11,7 @@ from ..models import (
 from . import dealer_business, product_business
 
 
-def process_order_dataframe(df, warehouse_id, company_id, user_id):
+def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_id=None):
     """
     Process a dataframe of order data - MySQL implementation
 
@@ -98,7 +98,7 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id):
             else:
                 try:
                     potential_order_id = create_potential_order(
-                        order_id, warehouse_id, company_id, dealer_id, order_date, user_id
+                        order_id, warehouse_id, company_id, dealer_id, order_date, user_id, upload_batch_id
                     )
                     orders_map[order_id] = potential_order_id
                     orders_processed += 1
@@ -158,7 +158,7 @@ def parse_order_date(order_date_str, row_index, errors):
         errors.append(f"Row {row_index}: Could not parse date '{order_date_str}'. Using current date. Error: {str(e)}")
         return datetime.now()
 
-def create_potential_order(order_id, warehouse_id, company_id, dealer_id, order_date, user_id):
+def create_potential_order(order_id, warehouse_id, company_id, dealer_id, order_date, user_id, upload_batch_id=None):
     """Create a new order request - MySQL implementation"""
     # Get current UTC time
     current_time = datetime.utcnow()
@@ -174,6 +174,7 @@ def create_potential_order(order_id, warehouse_id, company_id, dealer_id, order_
         order_date=order_date,
         requested_by=user_id,
         status='Open',
+        upload_batch_id=upload_batch_id,
         created_at=current_time,
         updated_at=current_time
     )

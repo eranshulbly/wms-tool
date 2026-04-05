@@ -62,8 +62,16 @@ export const FilterControls = ({
   onWarehouseChange,
   onCompanyChange,
   onStatusFilterChange,
+  allowedStatuses,
   classes
-}) => (
+}) => {
+  const visibleStatusOptions = STATUS_FILTER_OPTIONS.filter((opt) => {
+    if (opt.value === 'all') return true;
+    if (!allowedStatuses) return true;
+    return allowedStatuses.includes(opt.value);
+  });
+
+  return (
   <Grid item xs={12} className={classes.orderFilterContainer}>
     <Card>
       <CardContent>
@@ -120,7 +128,7 @@ export const FilterControls = ({
                 onChange={onStatusFilterChange}
                 label="Order Status"
               >
-                {STATUS_FILTER_OPTIONS.map((option) => (
+                {visibleStatusOptions.map((option) => (
                   <MenuItem key={option.value} value={option.value}>
                     {option.label}
                   </MenuItem>
@@ -132,7 +140,8 @@ export const FilterControls = ({
       </CardContent>
     </Card>
   </Grid>
-);
+  );
+};
 
 /**
  * Status Chip Component
@@ -161,7 +170,9 @@ const CORRECT_STATUS_PROGRESSION = {
 };
 
 /**
- * FIXED: Status Action Button with Correct Flow - DISABLE for dispatch-ready to prevent duplicate calls
+ * Status Action Button — shows next-status action for each order row.
+ * Backend already filters orders to only those the user can see, so no
+ * frontend allowedStatuses check is needed here.
  */
 export const StatusActionButton = ({ order, onStatusUpdate, classes }) => {
   const currentStatus = order.status?.toLowerCase().replace(/\s+/g, '-');
@@ -169,19 +180,16 @@ export const StatusActionButton = ({ order, onStatusUpdate, classes }) => {
 
   if (!nextAction) return null;
 
-  // FIXED: Disable the action button for dispatch-ready orders to prevent duplicate API calls
-  // The dialog should handle the complete dispatch action
-  if (currentStatus === 'dispatch-ready') return null;
-
   const handleClick = (e) => {
     e.stopPropagation();
 
-    // Different handling based on status transition
     if (currentStatus === 'packing') {
-      // This requires the packing dialog to handle dispatch ready
+      // Opens dialog to configure packing before moving to dispatch-ready
       onStatusUpdate(order, 'packing-to-dispatch');
+    } else if (currentStatus === 'dispatch-ready') {
+      // Complete dispatch directly from table
+      onStatusUpdate(order, 'complete-dispatch');
     } else {
-      // Regular status update
       onStatusUpdate(order, nextAction.next);
     }
   };
@@ -209,6 +217,7 @@ export const OrdersTable = ({
   statusFilter,
   onOrderClick,
   onStatusUpdate,
+  allowedStatuses,
   classes
 }) => (
   <Grid item xs={12}>
@@ -640,6 +649,7 @@ export const OrderDetailsDialog = ({
   order,
   onClose,
   onStatusUpdate,
+  allowedStatuses,
   classes
 }) => {
   const [activeStep, setActiveStep] = useState(0);
@@ -1147,7 +1157,6 @@ export const OrderDetailsDialog = ({
             Close
           </Button>
 
-          {/* FIXED: Proper action buttons based on status */}
           {activeStep === 0 && order.status?.toLowerCase() === 'picking' && (
             <Button
               onClick={() => setActiveStep(1)}

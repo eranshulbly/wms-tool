@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useSelector } from 'react-redux';
 import {
   Grid,
   Card,
@@ -21,8 +22,19 @@ import {
   OrderDetailsDialog
 } from './components/warehouseDashboard.components';
 
+// Convert backend state names ("Dispatch Ready") to frontend keys ("dispatch-ready")
+const stateNameToKey = (name) => name.toLowerCase().replace(/ /g, '-');
+
 const WarehouseDashboard = () => {
   const classes = useWarehouseDashboardStyles();
+  const user = useSelector((state) => state.account.user);
+
+  // Derive allowed status keys from permissions (admin/no-perms = show all)
+  const allowedStatuses = React.useMemo(() => {
+    const orderStates = user?.permissions?.order_states;
+    if (!orderStates || orderStates.length === 0) return null; // null = show all
+    return orderStates.map(stateNameToKey);
+  }, [user]);
 
   // State management
   const [warehouse, setWarehouse] = useState('');
@@ -139,31 +151,22 @@ const WarehouseDashboard = () => {
   // Render status counts based on preference
   const renderStatusCounts = () => {
     if (compactView) {
-      // Option 1: Compact grid layout (recommended)
       return (
         <CompactStatusSummary
           statusCounts={statusCounts}
           loading={loading}
           classes={classes}
+          allowedStatuses={allowedStatuses}
         />
       );
-
-      // Option 2: Horizontal bar layout (uncomment to use this instead)
-      /*
-      return (
-        <HorizontalStatusBar
-          statusCounts={statusCounts}
-          loading={loading}
-          classes={classes}
-        />
-      );
-      */
     } else {
-      // Original large cards layout
+      const statusKeys = allowedStatuses
+        ? Object.keys(ORDER_STATUS_DATA).filter((s) => allowedStatuses.includes(s))
+        : Object.keys(ORDER_STATUS_DATA);
       return (
         <Grid item xs={12}>
           <Grid container spacing={gridSpacing}>
-            {Object.keys(ORDER_STATUS_DATA).map((status) => (
+            {statusKeys.map((status) => (
               <StatusCard
                 key={status}
                 status={status}
@@ -195,6 +198,7 @@ const WarehouseDashboard = () => {
         onWarehouseChange={handleWarehouseChange}
         onCompanyChange={handleCompanyChange}
         onStatusFilterChange={handleStatusFilterChange}
+        allowedStatuses={allowedStatuses}
         classes={classes}
       />
 

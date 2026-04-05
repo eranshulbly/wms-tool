@@ -3,6 +3,9 @@
 Copyright (c) 2019 - present AppSeed.us
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from api import app
 from api.db_manager import mysql_manager
 

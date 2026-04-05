@@ -237,25 +237,56 @@ def token_required(f):
             current_user = Users.get_by_email(data["email"])
 
             if not current_user:
-                return {"success": False,
-                        "msg": "Sorry. Wrong auth token. This user does not exist."}, 400
+                return {"success": False, "msg": "User does not exist."}, 401
 
-            # Check if token is blocklisted using MySQL
             blocked_token = mysql_manager.execute_query(
                 "SELECT id FROM jwt_token_blocklist WHERE jwt_token = %s", (token,)
             )
-
             if blocked_token:
-                return {"success": False, "msg": "Token revoked."}, 400
+                return {"success": False, "msg": "Token revoked."}, 401
 
             if not current_user.check_jwt_auth_active():
-                return {"success": False, "msg": "Token expired."}, 400
+                return {"success": False, "msg": "Token expired."}, 401
 
-        except:
-            return {"success": False, "msg": "Token is invalid"}, 400
+            if current_user.status == 'blocked':
+                return {"success": False, "msg": "Account has been blocked."}, 403
 
-        return f(current_user, *args, **kwargs)
+        except Exception:
+            return {"success": False, "msg": "Token is invalid"}, 401
 
+        # For Flask-RESTX class methods: args = (self,)
+        # We need to call f(self, current_user, ...) not f(current_user, self, ...)
+        if args:
+            return f(args[0], current_user, *args[1:], **kwargs)
+        return f(current_user, **kwargs)
+
+    return decorator
+
+
+def active_required(f):
+    """Ensures user is active (not pending). Pending users get 403 with pending message."""
+    @wraps(f)
+    def decorator(*args, **kwargs):
+        # args = (self, current_user, ...) after token_required fix
+        current_user = args[1] if len(args) > 1 else kwargs.get('current_user')
+        if current_user and current_user.status == 'pending':
+            return {"success": False, "msg": "pending", "status": "pending"}, 403
+        return f(*args, **kwargs)
+    return decorator
+
+
+def upload_permission_required(upload_type):
+    """Decorator factory that checks upload permission for the given type."""
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            # args = (self, current_user, ...) after token_required fix
+            current_user = args[1] if len(args) > 1 else kwargs.get('current_user')
+            from .permissions import can_upload
+            if current_user and not can_upload(current_user.role, upload_type):
+                return {"success": False, "msg": f"You do not have permission to perform {upload_type} uploads."}, 403
+            return f(*args, **kwargs)
+        return wrapper
     return decorator
 
 """
@@ -281,13 +312,13 @@ class Register(Resource):
             return {"success": False,
                     "msg": "Email already taken"}, 400
 
-        new_user = Users(username=_username, email=_email)
+        new_user = Users(username=_username, email=_email, status='pending', role='viewer')
         new_user.set_password(_password)
         new_user.save()
 
         return {"success": True,
                 "userID": new_user.id,
-                "msg": "The user was successfully registered"}, 200
+                "msg": "Registration successful. Your account is pending admin approval."}, 200
 
 @rest_api.route('/api/users/login')
 class Login(Resource):
@@ -304,16 +335,46 @@ class Login(Resource):
 
         user_exists = Users.get_by_email(_email)
 
-        # create access token using JWT
-        token = "eyJhbGciOiAiSFMyNTYiLCJraWQiOiAiYXBpY2VydC1rZXkiLCAidHlwIjogIkpXVCJ9.eyJleHBpcnkiOiAiMjAyNS0wMS0wNVQxMjozMjo1Ni4wMDBaIiwibmFtZSI6ICJqb2huZG9lIiwic3ViIjogIjEyMzQ1Njc4OSIsImlhdCI6IDE2MjcwNTkzMDAwMDB9.Ojw8sFv84H4t7Z54lJtneEEHLy8MhG8g8Xy0jHk7uhtTYq0EFU0OOf_mDQ5yM6yyjrQPSGcBQwLX5hqp36-PmHjyfg"
+        if not user_exists:
+            return {"success": False, "msg": "Wrong credentials."}, 400
 
-        if user_exists:
-            user_exists.set_jwt_auth_active(True)
-            user_exists.save()
+        if not user_exists.check_password(_password):
+            return {"success": False, "msg": "Wrong credentials."}, 400
+
+        # Build warehouse/company access list
+        from .models import UserWarehouseCompany
+        from .permissions import get_permissions, has_all_warehouse_access
+        perms = get_permissions(user_exists.role)
+        if has_all_warehouse_access(user_exists.role):
+            wh_access = []  # empty = all access for admin
+        else:
+            wh_access = UserWarehouseCompany.get_for_user(user_exists.id)
+            wh_access = [{'warehouse_id': r['warehouse_id'], 'company_id': r['company_id']} for r in wh_access]
+
+        token = jwt.encode({
+            "email": user_exists.email,
+            "user_id": user_exists.id,
+            "role": user_exists.role,
+            "status": user_exists.status,
+            "exp": datetime.utcnow() + timedelta(hours=8)
+        }, BaseConfig.SECRET_KEY, algorithm="HS256")
+
+        user_exists.set_jwt_auth_active(True)
+        user_exists.save()
 
         return {"success": True,
                 "token": token,
-                "user": user_exists.toJSON() if user_exists else {"username": "demo", "email": _email}}, 200
+                "user": {
+                    **user_exists.toJSON(),
+                    "status": user_exists.status,
+                    "role": user_exists.role,
+                    "permissions": {
+                        "order_states": perms['order_states'],
+                        "uploads": perms['uploads'],
+                        "all_warehouses": perms['all_warehouses'],
+                        "warehouse_company_access": wh_access
+                    }
+                }}, 200
 
 @rest_api.route('/api/users/edit')
 class EditUser(Resource):
@@ -356,64 +417,7 @@ class LogoutUser(Resource):
 
         return {"success": True}, 200
 
-@rest_api.route('/api/warehouses')
-class WarehouseList(Resource):
-    """
-    MySQL endpoint for retrieving all warehouses
-    """
-
-    def get(self):
-        """Get list of all warehouses"""
-        try:
-            warehouses = Warehouse.get_all()
-            warehouse_list = []
-
-            for warehouse in warehouses:
-                warehouse_list.append({
-                    'id': warehouse.warehouse_id,
-                    'name': warehouse.name,
-                    'location': warehouse.location
-                })
-
-            return {
-                'success': True,
-                'warehouses': warehouse_list
-            }, 200
-
-        except Exception as e:
-            return {
-                'success': False,
-                'msg': f'Error retrieving warehouses: {str(e)}'
-            }, 400
-
-@rest_api.route('/api/companies')
-class CompanyList(Resource):
-    """
-    MySQL endpoint for retrieving all companies
-    """
-
-    def get(self):
-        """Get list of all companies"""
-        try:
-            companies = Company.get_all()
-            company_list = []
-
-            for company in companies:
-                company_list.append({
-                    'id': company.company_id,
-                    'name': company.name
-                })
-
-            return {
-                'success': True,
-                'companies': company_list
-            }, 200
-
-        except Exception as e:
-            return {
-                'success': False,
-                'msg': f'Error retrieving companies: {str(e)}'
-            }, 400
+# Warehouses and Companies endpoints are defined in dashboard_routes.py with auth
 
 @rest_api.route('/api/orders/upload')
 class OrderUpload(Resource):
@@ -424,13 +428,23 @@ class OrderUpload(Resource):
     @rest_api.expect(upload_parser)
     @rest_api.response(200, 'Success', order_upload_response)
     @rest_api.response(400, 'Bad Request', order_upload_response)
-    def post(self):
+    @token_required
+    @active_required
+    @upload_permission_required('orders')
+    def post(self, current_user):
         try:
-            # Parse the request arguments
             args = upload_parser.parse_args()
             uploaded_file = args['file']
             warehouse_id = args['warehouse_id']
             company_id = args['company_id']
+
+            # Check warehouse+company access for non-admin users
+            from .permissions import has_all_warehouse_access
+            if not has_all_warehouse_access(current_user.role):
+                from .models import UserWarehouseCompany
+                if not UserWarehouseCompany.user_can_access(current_user.id, warehouse_id, company_id):
+                    return {'success': False, 'msg': 'You do not have access to this warehouse/company combination.',
+                            'orders_processed': 0, 'products_processed': 0, 'errors': []}, 403
 
             # Validate that warehouse and company exist
             warehouse = Warehouse.get_by_id(warehouse_id)
@@ -458,7 +472,7 @@ class OrderUpload(Resource):
                 uploaded_file,
                 warehouse_id,
                 company_id,
-                123  # Default user ID - in real app, use authenticated user
+                current_user.id
             )
 
             return result, status_code
@@ -617,7 +631,9 @@ class OrderStatusUpdate(Resource):
     @rest_api.response(200, 'Success', update_status_response)
     @rest_api.response(400, 'Error', error_response)
     @rest_api.response(404, 'Order not found', error_response)
-    def post(self, order_id):
+    @token_required
+    @active_required
+    def post(self, current_user, order_id):
         """Update order status for regular transitions - Complete MySQL implementation"""
         try:
             # Extract numeric ID from order_id
@@ -630,6 +646,14 @@ class OrderStatusUpdate(Resource):
                     'success': False,
                     'msg': 'Order not found'
                 }, 404
+
+            # Check that user has permission for the order's current state
+            from .permissions import can_see_order_state
+            if not can_see_order_state(current_user.role, potential_order.status):
+                return {
+                    'success': False,
+                    'msg': f'You do not have permission to manage orders in {potential_order.status} status.'
+                }, 403
 
             # Parse request data
             req_data = request.get_json()
@@ -701,7 +725,7 @@ class OrderStatusUpdate(Resource):
                 state_history = OrderStateHistory(
                     potential_order_id=potential_order.potential_order_id,
                     state_id=new_state.state_id,
-                    changed_by=1,  # TODO: Use authenticated user ID
+                    changed_by=current_user.id,
                     changed_at=current_time
                 )
                 state_history.save()
@@ -1223,9 +1247,19 @@ class MoveToDispatchReady(Resource):
     @rest_api.expect(move_to_dispatch_model)
     @rest_api.response(200, 'Success', move_to_dispatch_response)
     @rest_api.response(400, 'Error', error_response)
-    def post(self, order_id):
+    @token_required
+    @active_required
+    def post(self, current_user, order_id):
         """Move order from packing to dispatch ready and create final order records - MySQL"""
         try:
+            # Check that user has permission for Packing state
+            from .permissions import can_see_order_state
+            if not can_see_order_state(current_user.role, 'Packing'):
+                return {
+                    'success': False,
+                    'msg': 'You do not have permission to manage orders in Packing status.'
+                }, 403
+
             # Extract numeric ID
             numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
             potential_order = PotentialOrder.get_by_id(numeric_id)
@@ -1399,9 +1433,19 @@ class CompleteDispatch(Resource):
 
     @rest_api.response(200, 'Success', complete_dispatch_response)
     @rest_api.response(400, 'Error', error_response)
-    def post(self, order_id):
+    @token_required
+    @active_required
+    def post(self, current_user, order_id):
         """Mark order as completed (dispatched from warehouse) - MySQL"""
         try:
+            # Check that user has permission for Dispatch Ready state
+            from .permissions import can_see_order_state
+            if not can_see_order_state(current_user.role, 'Dispatch Ready'):
+                return {
+                    'success': False,
+                    'msg': 'You do not have permission to manage orders in Dispatch Ready status.'
+                }, 403
+
             numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
             potential_order = PotentialOrder.get_by_id(numeric_id)
 
@@ -1484,13 +1528,23 @@ class InvoiceUpload(Resource):
     @rest_api.expect(invoice_upload_parser)
     @rest_api.response(200, 'Success', invoice_upload_response)
     @rest_api.response(400, 'Bad Request', invoice_upload_response)
-    def post(self):
+    @token_required
+    @active_required
+    @upload_permission_required('invoices')
+    def post(self, current_user):
         try:
-            # Parse the request arguments
             args = invoice_upload_parser.parse_args()
             uploaded_file = args['file']
             warehouse_id = args['warehouse_id']
             company_id = args['company_id']
+
+            # Check warehouse+company access for non-admin users
+            from .permissions import has_all_warehouse_access
+            if not has_all_warehouse_access(current_user.role):
+                from .models import UserWarehouseCompany
+                if not UserWarehouseCompany.user_can_access(current_user.id, warehouse_id, company_id):
+                    return {'success': False, 'msg': 'You do not have access to this warehouse/company combination.',
+                            'invoices_processed': 0, 'orders_completed': 0, 'errors': [], 'has_errors': True}, 403
 
             # Validate that warehouse and company exist
             warehouse = Warehouse.get_by_id(warehouse_id)
@@ -1520,7 +1574,7 @@ class InvoiceUpload(Resource):
                 uploaded_file,
                 warehouse_id,
                 company_id,
-                123  # Default user ID - in real app, use authenticated user
+                current_user.id
             )
 
             # Prepare the response

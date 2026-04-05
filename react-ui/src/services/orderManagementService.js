@@ -1,4 +1,5 @@
 // Order Management Service - Cleaned version with unused functions removed
+import axios from 'axios';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
@@ -13,9 +14,8 @@ class OrderManagementService {
    */
   async getWarehouses() {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/warehouses`);
-      const data = await response.json();
-      return data;
+      const response = await axios.get(`${API_BASE_URL}/api/warehouses`);
+      return response.data;
     } catch (error) {
       console.error('Error fetching warehouses:', error);
       return { success: false, msg: error.message };
@@ -28,9 +28,8 @@ class OrderManagementService {
    */
   async getCompanies() {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/companies`);
-      const data = await response.json();
-      return data;
+      const response = await axios.get(`${API_BASE_URL}/api/companies`);
+      return response.data;
     } catch (error) {
       console.error('Error fetching companies:', error);
       return { success: false, msg: error.message };
@@ -46,14 +45,13 @@ class OrderManagementService {
    */
   async getOrders(warehouseId, companyId, status = null) {
     try {
-      const params = new URLSearchParams();
+      const params = {};
+      if (warehouseId) params.warehouse_id = warehouseId;
+      if (companyId) params.company_id = companyId;
+      if (status && status !== 'all') params.status = status;
 
-      if (warehouseId) params.append('warehouse_id', warehouseId);
-      if (companyId) params.append('company_id', companyId);
-      if (status && status !== 'all') params.append('status', status);
-
-      const response = await fetch(`${API_BASE_URL}/api/orders?${params.toString()}`);
-      const data = await response.json();
+      const response = await axios.get(`${API_BASE_URL}/api/orders`, { params });
+      const data = response.data;
 
       if (data.success && data.orders) {
         data.orders = data.orders.map(order => ({
@@ -76,8 +74,8 @@ class OrderManagementService {
    */
   async getOrderDetailsWithProducts(orderId) {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/orders/${orderId}/details`);
-      const data = await response.json();
+      const response = await axios.get(`${API_BASE_URL}/api/orders/${orderId}/details`);
+      const data = response.data;
 
       if (data.success && data.order) {
         data.order = {
@@ -102,31 +100,16 @@ class OrderManagementService {
    */
   async updateOrderStatus(orderId, newStatus, additionalData = null) {
     try {
-      // Only allow regular status transitions
       const allowedStatuses = ['open', 'picking', 'packing'];
-
       if (!allowedStatuses.includes(newStatus.toLowerCase())) {
         throw new Error(`Use specific methods for ${newStatus} transitions`);
       }
 
-      const requestBody = {
-        new_status: newStatus
-      };
+      const requestBody = { new_status: newStatus };
+      if (additionalData) Object.assign(requestBody, additionalData);
 
-      if (additionalData) {
-        Object.assign(requestBody, additionalData);
-      }
-
-      const response = await fetch(`${API_BASE_URL}/api/orders/${orderId}/status`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestBody)
-      });
-
-      const data = await response.json();
-      return data;
+      const response = await axios.post(`${API_BASE_URL}/api/orders/${orderId}/status`, requestBody);
+      return response.data;
     } catch (error) {
       console.error('Error updating order status:', error);
       return { success: false, msg: error.message };
@@ -142,21 +125,11 @@ class OrderManagementService {
    */
   async moveToDispatchReady(orderId, products, boxes) {
     try {
-      const requestBody = {
-        products: products,
-        boxes: boxes
-      };
-
-      const response = await fetch(`${API_BASE_URL}/api/orders/${orderId}/move-to-dispatch-ready`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestBody)
+      const response = await axios.post(`${API_BASE_URL}/api/orders/${orderId}/move-to-dispatch-ready`, {
+        products,
+        boxes
       });
-
-      const data = await response.json();
-      return data;
+      return response.data;
     } catch (error) {
       console.error('Error moving to dispatch ready:', error);
       return { success: false, msg: error.message };
@@ -170,15 +143,8 @@ class OrderManagementService {
    */
   async completeDispatch(orderId) {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/orders/${orderId}/complete-dispatch`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        }
-      });
-
-      const data = await response.json();
-      return data;
+      const response = await axios.post(`${API_BASE_URL}/api/orders/${orderId}/complete-dispatch`);
+      return response.data;
     } catch (error) {
       console.error('Error completing dispatch:', error);
       return { success: false, msg: error.message };
@@ -228,14 +194,12 @@ class OrderManagementService {
    */
   async getOrderStatusCounts(warehouseId, companyId) {
     try {
-      const params = new URLSearchParams();
+      const params = {};
+      if (warehouseId) params.warehouse_id = warehouseId;
+      if (companyId) params.company_id = companyId;
 
-      if (warehouseId) params.append('warehouse_id', warehouseId);
-      if (companyId) params.append('company_id', companyId);
-
-      const response = await fetch(`${API_BASE_URL}/api/orders/status?${params.toString()}`);
-      const data = await response.json();
-      return data;
+      const response = await axios.get(`${API_BASE_URL}/api/orders/status`, { params });
+      return response.data;
     } catch (error) {
       console.error('Error fetching order status counts:', error);
       return { success: false, msg: error.message };

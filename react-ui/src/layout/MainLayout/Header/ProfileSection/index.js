@@ -131,20 +131,13 @@ const ProfileSection = () => {
     const [open, setOpen] = React.useState(false);
     const anchorRef = React.useRef(null);
     const handleLogout = () => {
-        console.log(account.token);
         axios
-            .post( configData.API_SERVER + 'users/logout', {token: `${account.token}`}, { headers: { Authorization: `${account.token}` } })
-            .then(function (response) {
-                
-                // Force the LOGOUT
-                //if (response.data.success) {
-                    dispatcher({ type: LOGOUT });
-                //} else {
-                //    console.log('response - ', response.data.msg);
-                //}
-            })
+            .post(configData.API_SERVER + 'users/logout', {}, { headers: { Authorization: `${account.token}` } })
             .catch(function (error) {
-                console.log('error - ', error);
+                console.log('Logout API error - ', error);
+            })
+            .finally(function () {
+                dispatcher({ type: LOGOUT });
             });
     };
     const handleToggle = () => {
@@ -216,11 +209,11 @@ const ProfileSection = () => {
                                             <Grid item className={classes.flex}>
                                                 <Typography variant="h4">Good Morning,</Typography>
                                                 <Typography component="span" variant="h4" className={classes.name}>
-                                                    John
+                                                    {account?.user?.username || account?.user?.email || 'User'}
                                                 </Typography>
                                             </Grid>
                                             <Grid item>
-                                                <Typography variant="subtitle2">Project Admin</Typography>
+                                                <Typography variant="subtitle2">{account?.user?.role || ''}</Typography>
                                             </Grid>
                                         </Grid>
                                         <OutlinedInput

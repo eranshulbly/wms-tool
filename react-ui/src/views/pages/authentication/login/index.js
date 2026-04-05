@@ -1,9 +1,9 @@
 import React from 'react';
-import { Link as RouterLink } from 'react-router-dom';
+import { Link as RouterLink, useLocation } from 'react-router-dom';
 
 // material-ui
 import { useTheme } from '@material-ui/core';
-import { Divider, Grid, Stack, Typography, useMediaQuery } from '@material-ui/core';
+import { Alert, Divider, Grid, Stack, Typography, useMediaQuery } from '@material-ui/core';
 
 // project imports
 import AuthWrapper1 from './../AuthWrapper1';
@@ -19,6 +19,8 @@ import AuthFooter from './../../../../ui-component/cards/AuthFooter';
 const Login = () => {
     const theme = useTheme();
     const matchDownSM = useMediaQuery(theme.breakpoints.down('sm'));
+    const location = useLocation();
+    const justRegistered = new URLSearchParams(location.search).get('registered') === '1';
 
     return (
         <AuthWrapper1>
@@ -56,6 +58,13 @@ const Login = () => {
                                             </Grid>
                                         </Grid>
                                     </Grid>
+                                    {justRegistered && (
+                                        <Grid item xs={12}>
+                                            <Alert severity="success">
+                                                Registration successful! Your account is pending admin approval. You will be able to log in once approved.
+                                            </Alert>
+                                        </Grid>
+                                    )}
                                     <Grid item xs={12}>
                                         <RestLogin />
                                     </Grid>
