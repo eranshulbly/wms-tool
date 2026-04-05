@@ -1,7 +1,6 @@
 ### 👉 Eway Bill Feature Video
 [![Watch the video](https://img.youtube.com/vi/cge8V7_PM40/maxresdefault.jpg)](https://www.youtube.com/watch?v=cge8V7_PM40)
-### 👉 Start the Frontend 
-
+### 👉 Start the Frontend
 > **Step 1** - Once the project is downloaded, change the directory to `react-ui`. 
 
 ```bash
