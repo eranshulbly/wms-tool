@@ -6,10 +6,9 @@ from datetime import datetime
 import pandas as pd
 import openpyxl
 import io
-import json
 
 from .models import (
-    TransportRoute, RouteCity, CustomerCityMapping,
+    TransportRoute, CustomerRouteMapping,
     DailyRouteManifest, CompanySchemaMapping
 )
 from .routes import rest_api, token_required, active_required
@@ -46,14 +45,14 @@ def eway_filling_required(f):
     return decorator
 
 # ─────────────────────────────────────────────────────────────
-# ROUTES  (with embedded cities)
+# ROUTES
 # ─────────────────────────────────────────────────────────────
 
 @rest_api.route('/api/eway/routes')
 class EwayRoutes(Resource):
     @token_required
     @active_required
-    @eway_admin_required
+    @eway_filling_required
     def get(self, current_user):
         try:
             routes = TransportRoute.get_all()
@@ -65,81 +64,33 @@ class EwayRoutes(Resource):
     @active_required
     @eway_admin_required
     def post(self, current_user):
-        """Create a route; optionally seed cities in one call."""
+        """Create a route."""
         try:
             data = request.json
             route = TransportRoute(name=data['name'], description=data.get('description', ''))
             route.save()
-            # Optionally seed cities immediately
-            for city_name in data.get('cities', []):
-                city_name = city_name.strip()
-                if city_name:
-                    RouteCity(route_id=route.route_id, city_name=city_name).save()
             return {'success': True, 'msg': 'Route created', 'route_id': route.route_id}, 200
         except Exception as e:
             return {'success': False, 'msg': str(e)}, 400
 
 
 # ─────────────────────────────────────────────────────────────
-# ROUTE CITIES  (add / list / remove individual cities)
+# CUSTOMER → ROUTE MAPPINGS
 # ─────────────────────────────────────────────────────────────
 
-@rest_api.route('/api/eway/route-cities')
-class EwayRouteCities(Resource):
+@rest_api.route('/api/eway/customer-route-mappings')
+class EwayCustomerRouteMappings(Resource):
     @token_required
     @active_required
-    @eway_admin_required
+    @eway_filling_required
     def get(self, current_user):
-        """Return all cities across all routes."""
+        """Get all mappings, or filter by route_id for popup."""
         try:
-            cities = RouteCity.get_all_cities()
-            return {'success': True, 'cities': cities}, 200
-        except Exception as e:
-            return {'success': False, 'msg': str(e)}, 400
-
-    @token_required
-    @active_required
-    @eway_admin_required
-    def post(self, current_user):
-        """Add a single city to a route."""
-        try:
-            data = request.json
-            city = RouteCity(route_id=data['route_id'], city_name=data['city_name'].strip())
-            city.save()
-            return {'success': True, 'msg': f"City '{data['city_name']}' added to route"}, 200
-        except Exception as e:
-            return {'success': False, 'msg': str(e)}, 400
-
-
-@rest_api.route('/api/eway/route-cities/delete')
-class EwayRouteCityDelete(Resource):
-    @token_required
-    @active_required
-    @eway_admin_required
-    def post(self, current_user):
-        """Remove a city from a route by route_id + city_name."""
-        try:
-            data = request.json
-            city = RouteCity(route_id=data['route_id'], city_name=data['city_name'])
-            city.delete()
-            return {'success': True, 'msg': 'City removed'}, 200
-        except Exception as e:
-            return {'success': False, 'msg': str(e)}, 400
-
-
-# ─────────────────────────────────────────────────────────────
-# CUSTOMER → CITY MAPPINGS
-# ─────────────────────────────────────────────────────────────
-
-@rest_api.route('/api/eway/customer-city-mappings')
-class EwayCustomerCityMappings(Resource):
-    @token_required
-    @active_required
-    @eway_admin_required
-    def get(self, current_user):
-        try:
-            mappings = CustomerCityMapping.get_all()
-            # Strip unserializable datetime fields before returning JSON
+            route_id = request.args.get('route_id', type=int)
+            if route_id:
+                mappings = CustomerRouteMapping.get_for_route(route_id)
+            else:
+                mappings = CustomerRouteMapping.get_all()
             clean = [
                 {k: v for k, v in m.items() if not hasattr(v, 'isoformat')}
                 for m in mappings
@@ -152,13 +103,13 @@ class EwayCustomerCityMappings(Resource):
     @active_required
     @eway_admin_required
     def post(self, current_user):
-        """Add / update a single customer-city mapping (upsert)."""
+        """Add / update a single customer-route mapping (upsert by customer_code)."""
         try:
             data = request.json
-            m = CustomerCityMapping(
+            m = CustomerRouteMapping(
                 customer_code=data['customer_code'].strip(),
                 customer_name=data.get('customer_name', '').strip(),
-                city_name=data['city_name'].strip(),
+                route_id=int(data['route_id']),
                 distance=int(data['distance'])
             )
             m.save()
@@ -167,16 +118,17 @@ class EwayCustomerCityMappings(Resource):
             return {'success': False, 'msg': str(e)}, 400
 
 
-@rest_api.route('/api/eway/customer-city-mappings/bulk')
-class EwayCustomerCityMappingsBulk(Resource):
+@rest_api.route('/api/eway/customer-route-mappings/bulk')
+class EwayCustomerRouteMappingsBulk(Resource):
     @token_required
     @active_required
     @eway_admin_required
     def post(self, current_user):
         """
-        Bulk-import customer→city mappings from an Excel file.
+        Bulk-import customer→route mappings from an Excel file.
         Expected columns (case-insensitive):
-          Customer Code | Customer Name | City | Distance (km)
+          Customer Code | Customer Name | Route Name | Distance (km)
+        Route Name is matched case-insensitively to existing routes.
         """
         try:
             if 'file' not in request.files:
@@ -185,7 +137,6 @@ class EwayCustomerCityMappingsBulk(Resource):
             wb = openpyxl.load_workbook(f, read_only=True, data_only=True)
             ws = wb.active
 
-            # Read header row
             rows = list(ws.iter_rows(values_only=True))
             if not rows:
                 return {'success': False, 'msg': 'Empty file'}, 400
@@ -196,39 +147,49 @@ class EwayCustomerCityMappingsBulk(Resource):
                 aliases = {
                     'customer code': ['customer code', 'customer_code', 'code', 'cust code'],
                     'customer name': ['customer name', 'customer_name', 'name', 'account name'],
-                    'city': ['city', 'city name', 'city_name', 'town'],
-                    'distance': ['distance (km)', 'distance', 'dist km', 'dist', 'km'],
+                    'route name':   ['route name', 'route_name', 'route'],
+                    'distance':     ['distance (km)', 'distance', 'dist km', 'dist', 'km'],
                 }
                 for a in aliases.get(name, [name]):
                     if a in headers:
                         return headers.index(a)
                 return None
 
-            ci_code = col('customer code')
-            ci_name = col('customer name')
-            ci_city = col('city')
-            ci_dist = col('distance')
+            ci_code  = col('customer code')
+            ci_name  = col('customer name')
+            ci_route = col('route name')
+            ci_dist  = col('distance')
 
-            if ci_code is None or ci_city is None or ci_dist is None:
+            if ci_code is None or ci_route is None or ci_dist is None:
                 return {
                     'success': False,
-                    'msg': 'Could not find required columns. Expected: Customer Code, City, Distance (km)'
+                    'msg': 'Could not find required columns. Expected: Customer Code, Route Name, Distance (km)'
                 }, 400
+
+            # Pre-load all routes for case-insensitive name lookup
+            all_routes = TransportRoute.get_all()
+            route_map = {r.name.lower(): r.route_id for r in all_routes}
 
             imported = 0
             errors = []
             for i, row in enumerate(rows[1:], start=2):
                 try:
-                    code = str(row[ci_code]).strip() if row[ci_code] else ''
-                    city = str(row[ci_city]).strip() if row[ci_city] else ''
-                    dist = row[ci_dist]
-                    if not code or not city or dist is None:
+                    code       = str(row[ci_code]).strip()  if row[ci_code]  else ''
+                    route_name = str(row[ci_route]).strip() if row[ci_route] else ''
+                    dist       = row[ci_dist]
+                    if not code or not route_name or dist is None:
                         continue
-                    name = str(row[ci_name]).strip() if (ci_name is not None and row[ci_name]) else ''
-                    m = CustomerCityMapping(
+
+                    route_id = route_map.get(route_name.lower())
+                    if not route_id:
+                        errors.append(f"Row {i}: Route '{route_name}' not found")
+                        continue
+
+                    cust_name = str(row[ci_name]).strip() if (ci_name is not None and row[ci_name]) else ''
+                    m = CustomerRouteMapping(
                         customer_code=code,
-                        customer_name=name,
-                        city_name=city,
+                        customer_name=cust_name,
+                        route_id=route_id,
                         distance=int(float(str(dist)))
                     )
                     m.save()
@@ -246,8 +207,8 @@ class EwayCustomerCityMappingsBulk(Resource):
             return {'success': False, 'msg': str(e)}, 400
 
 
-@rest_api.route('/api/eway/customer-city-mappings/template')
-class EwayCustomerCityTemplate(Resource):
+@rest_api.route('/api/eway/customer-route-mappings/template')
+class EwayCustomerRouteMappingsTemplate(Resource):
     @token_required
     @active_required
     @eway_admin_required
@@ -256,10 +217,10 @@ class EwayCustomerCityTemplate(Resource):
         try:
             wb = openpyxl.Workbook()
             ws = wb.active
-            ws.title = "Customer City Mapping"
-            ws.append(['Customer Code', 'Customer Name', 'City', 'Distance (km)'])
-            ws.append(['HMC001', 'Hero Moto Corp - Delhi', 'Pilibhit', 120])
-            ws.append(['HMC002', 'Hero Moto Corp - UP', 'Badaun', 85])
+            ws.title = "Customer Route Mapping"
+            ws.append(['Customer Code', 'Customer Name', 'Route Name', 'Distance (km)'])
+            ws.append(['HMC001', 'Hero Moto Corp - Delhi', 'UP Route A', 120])
+            ws.append(['HMC002', 'Hero Moto Corp - UP', 'UP Route B', 85])
             ws.column_dimensions['A'].width = 18
             ws.column_dimensions['B'].width = 35
             ws.column_dimensions['C'].width = 20
@@ -268,8 +229,58 @@ class EwayCustomerCityTemplate(Resource):
             buf = io.BytesIO()
             wb.save(buf)
             buf.seek(0)
-            return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                             as_attachment=True, download_name='customer_city_mapping_template.xlsx')
+            return send_file(buf,
+                             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                             as_attachment=True,
+                             download_name='customer_route_mapping_template.xlsx')
+        except Exception as e:
+            return {'success': False, 'msg': str(e)}, 400
+
+
+@rest_api.route('/api/eway/customer-route-mappings/delete')
+class EwayCustomerRouteMappingDelete(Resource):
+    @token_required
+    @active_required
+    @eway_admin_required
+    def post(self, current_user):
+        """Remove a customer-route mapping by customer_code."""
+        try:
+            data = request.json
+            CustomerRouteMapping.delete_by_customer_code(data['customer_code'].strip())
+            return {'success': True, 'msg': 'Customer removed from route'}, 200
+        except Exception as e:
+            return {'success': False, 'msg': str(e)}, 400
+
+
+# ─────────────────────────────────────────────────────────────
+# ROUTE CUSTOMERS  (admin-only: view & remove customers per route)
+# ─────────────────────────────────────────────────────────────
+
+@rest_api.route('/api/eway/route-customers/<int:route_id>')
+class EwayRouteCustomers(Resource):
+    @token_required
+    @active_required
+    @eway_admin_required
+    def get(self, current_user, route_id):
+        """List all customers assigned to a specific route. Admin only."""
+        try:
+            customers = CustomerRouteMapping.get_for_route(route_id)
+            return {'success': True, 'customers': customers}, 200
+        except Exception as e:
+            return {'success': False, 'msg': str(e)}, 400
+
+
+@rest_api.route('/api/eway/route-customers/remove')
+class EwayRouteCustomerRemove(Resource):
+    @token_required
+    @active_required
+    @eway_admin_required
+    def post(self, current_user):
+        """Remove a customer from their route by customer_code. Admin only."""
+        try:
+            data = request.json
+            CustomerRouteMapping.delete_by_customer_code(data['customer_code'].strip())
+            return {'success': True, 'msg': 'Customer removed from route'}, 200
         except Exception as e:
             return {'success': False, 'msg': str(e)}, 400
 
@@ -287,11 +298,10 @@ class EwayManifest(Resource):
         try:
             date_str = request.args.get('date', datetime.utcnow().strftime('%Y-%m-%d'))
             manifests = DailyRouteManifest.get_for_date(date_str)
-            # Enrich each manifest with its cities and customer count
             enriched = []
             for m in (manifests or []):
-                cities = RouteCity.get_for_route(m['route_id'])
-                enriched.append({**m, 'cities': cities, 'city_count': len(cities)})
+                customers = CustomerRouteMapping.get_for_route(m['route_id'])
+                enriched.append({**m, 'customer_count': len(customers)})
             return {'success': True, 'manifests': enriched}, 200
         except Exception as e:
             return {'success': False, 'msg': str(e)}, 400
@@ -315,7 +325,7 @@ class EwayManifest(Resource):
 
 
 # ─────────────────────────────────────────────────────────────
-# CSV UPLOAD  — enriches rows via Customer → City → Route → Vehicle
+# CSV UPLOAD  — enriches rows via Customer → Route → Vehicle
 # ─────────────────────────────────────────────────────────────
 
 @rest_api.route('/api/eway/upload')
@@ -344,10 +354,10 @@ class EwayUpload(Resource):
             sep = '\t' if b'\t' in raw[:500] else ','
             df = pd.read_csv(io.BytesIO(raw), sep=sep)
 
-            irn_col          = schema['irn_col']
-            ccode_col        = schema['customer_code_col']
-            cname_col        = schema['customer_name_col']
-            invoice_col      = schema['invoice_no_col']
+            irn_col     = schema['irn_col']
+            ccode_col   = schema['customer_code_col']
+            cname_col   = schema['customer_name_col']
+            invoice_col = schema['invoice_no_col']
 
             missing = [c for c in [irn_col, ccode_col, cname_col, invoice_col] if c not in df.columns]
             if missing:
@@ -361,22 +371,19 @@ class EwayUpload(Resource):
                 if not irn or irn.lower() == 'nan':
                     continue  # Only rows with an IRN are e-invoices
 
-                c_code   = str(row.get(ccode_col,   '') or '').strip()
-                c_name   = str(row.get(cname_col,   '') or '').strip()
-                inv_no   = str(row.get(invoice_col, '') or '').strip()
+                c_code  = str(row.get(ccode_col,   '') or '').strip()
+                c_name  = str(row.get(cname_col,   '') or '').strip()
+                inv_no  = str(row.get(invoice_col, '') or '').strip()
 
-                city_name     = None
-                route_id      = None
-                vehicle_no    = None
-                distance      = None
+                route_id   = None
+                vehicle_no = None
+                distance   = None
 
-                # Lookup: Customer Code → city + distance
-                cm = CustomerCityMapping.find_by_customer_code(c_code)
+                # Lookup: Customer Code → route + distance
+                cm = CustomerRouteMapping.find_by_customer_code(c_code)
                 if cm:
-                    city_name = cm.city_name
-                    distance  = cm.distance
-                    # Lookup: city → route_id
-                    route_id = RouteCity.find_route_by_city(city_name)
+                    route_id = cm.route_id
+                    distance = cm.distance
                     if route_id:
                         # Lookup: route + date → vehicle
                         vehicle_no = DailyRouteManifest.get_vehicle_for_route_date(route_id, today)
@@ -387,14 +394,13 @@ class EwayUpload(Resource):
                     'customer_code': c_code,
                     'customer_name': c_name,
                     'irn':           irn,
-                    'city':          city_name,
                     'distance':      distance,
                     'vehicle_no':    vehicle_no,
                     'route_id':      route_id,
                     'status':        status
                 })
 
-            # ── Extract date from filename for Layer 4 date warning ────────────
+            # ── Extract date from filename ────────────────────────────────────
             import re as _re
             file_date = None
             fname = getattr(file, 'filename', '') or ''

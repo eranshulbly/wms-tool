@@ -567,28 +567,6 @@ def create_all_tables():
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
 
-    route_cities_sql = """
-    CREATE TABLE IF NOT EXISTS route_cities (
-        city_id   INT AUTO_INCREMENT PRIMARY KEY,
-        route_id  INT NOT NULL,
-        city_name VARCHAR(200) NOT NULL,
-        UNIQUE KEY unique_route_city (route_id, city_name),
-        FOREIGN KEY (route_id) REFERENCES transport_routes(route_id) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-    """
-
-    customer_city_mappings_sql = """
-    CREATE TABLE IF NOT EXISTS customer_city_mappings (
-        mapping_id    INT AUTO_INCREMENT PRIMARY KEY,
-        customer_code VARCHAR(100) NOT NULL UNIQUE,
-        customer_name VARCHAR(500),
-        city_name     VARCHAR(200) NOT NULL,
-        distance      INT NOT NULL,
-        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-    """
-
     daily_route_manifests_sql = """
     CREATE TABLE IF NOT EXISTS daily_route_manifests (
         manifest_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -625,8 +603,7 @@ def create_all_tables():
         order_state_history_sql, order_box_sql, order_product_sql,
         box_product_sql, invoice_sql, user_warehouse_company_sql,
         roles_sql, role_order_states_sql, role_uploads_sql, upload_batches_sql,
-        transport_routes_sql, customer_route_mappings_sql, daily_route_manifests_sql, company_schema_mappings_sql,
-        route_cities_sql, customer_city_mappings_sql
+        transport_routes_sql, customer_route_mappings_sql, daily_route_manifests_sql, company_schema_mappings_sql
     ]
 
     for table_sql in tables:
@@ -635,6 +612,7 @@ def create_all_tables():
     # Migrate existing tables
     _migrate_users_table()
     _migrate_potential_order_table()
+    _drop_city_tables()
 
     # Insert default order states
     insert_default_states()
@@ -660,6 +638,15 @@ def _migrate_users_table():
         )
     except Exception:
         pass  # Column already exists
+
+
+def _drop_city_tables():
+    """Drop legacy city-based tables — replaced by direct customer-route mappings."""
+    for table in ('customer_city_mappings', 'route_cities'):
+        try:
+            mysql_manager.execute_query(f"DROP TABLE IF EXISTS {table}", fetch=False)
+        except Exception:
+            pass
 
 
 def _migrate_potential_order_table():

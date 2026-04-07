@@ -976,11 +976,11 @@ class TransportRoute(MySQLModel):
         result = []
         for row in routes:
             r = cls(**row)
-            cities = mysql_manager.execute_query(
-                "SELECT city_name FROM route_cities WHERE route_id = %s ORDER BY city_name",
+            count_result = mysql_manager.execute_query(
+                "SELECT COUNT(*) as cnt FROM customer_route_mappings WHERE route_id = %s",
                 (r.route_id,)
             )
-            r._cities = [c['city_name'] for c in (cities or [])]
+            r._customer_count = count_result[0]['cnt'] if count_result else 0
             result.append(r)
         return result
 
@@ -989,109 +989,8 @@ class TransportRoute(MySQLModel):
             'route_id': self.route_id,
             'name': self.name,
             'description': self.description,
-            'cities': getattr(self, '_cities', [])
+            'customer_count': getattr(self, '_customer_count', 0)
         }
-
-
-class RouteCity(MySQLModel):
-    """City belonging to a transport route"""
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.city_id = kwargs.get('city_id')
-        self.route_id = kwargs.get('route_id')
-        self.city_name = kwargs.get('city_name')
-
-    def save(self):
-        with mysql_manager.get_cursor() as cursor:
-            cursor.execute(
-                """INSERT IGNORE INTO route_cities (route_id, city_name) VALUES (%s, %s)""",
-                (self.route_id, self.city_name)
-            )
-            self.city_id = cursor.lastrowid
-
-    def delete(self):
-        mysql_manager.execute_query(
-            "DELETE FROM route_cities WHERE route_id = %s AND city_name = %s",
-            (self.route_id, self.city_name), fetch=False
-        )
-
-    @classmethod
-    def get_for_route(cls, route_id):
-        results = mysql_manager.execute_query(
-            "SELECT city_name FROM route_cities WHERE route_id = %s ORDER BY city_name",
-            (route_id,)
-        )
-        return [row['city_name'] for row in (results or [])]
-
-    @classmethod
-    def get_all_cities(cls):
-        """Return list of distinct cities with their route info"""
-        results = mysql_manager.execute_query(
-            """SELECT rc.city_name, rc.route_id, tr.name as route_name
-               FROM route_cities rc
-               JOIN transport_routes tr ON rc.route_id = tr.route_id
-               ORDER BY rc.city_name"""
-        )
-        return results or []
-
-    @classmethod
-    def find_route_by_city(cls, city_name):
-        """Given a city name, return its route_id"""
-        result = mysql_manager.execute_query(
-            "SELECT route_id FROM route_cities WHERE city_name = %s LIMIT 1",
-            (city_name,)
-        )
-        return result[0]['route_id'] if result else None
-
-
-class CustomerCityMapping(MySQLModel):
-    """Maps a customer code to a city and distance"""
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.mapping_id = kwargs.get('mapping_id')
-        self.customer_code = kwargs.get('customer_code')
-        self.customer_name = kwargs.get('customer_name')
-        self.city_name = kwargs.get('city_name')
-        self.distance = kwargs.get('distance')
-        self.created_at = kwargs.get('created_at')
-        self.updated_at = kwargs.get('updated_at')
-
-    def save(self):
-        with mysql_manager.get_cursor() as cursor:
-            cursor.execute(
-                """INSERT INTO customer_city_mappings
-                   (customer_code, customer_name, city_name, distance, created_at, updated_at)
-                   VALUES (%s, %s, %s, %s, %s, %s)
-                   ON DUPLICATE KEY UPDATE
-                   customer_name=VALUES(customer_name), city_name=VALUES(city_name),
-                   distance=VALUES(distance), updated_at=VALUES(updated_at)""",
-                (self.customer_code, self.customer_name, self.city_name,
-                 self.distance, datetime.utcnow(), datetime.utcnow())
-            )
-            if cursor.lastrowid:
-                self.mapping_id = cursor.lastrowid
-
-    @classmethod
-    def get_all(cls):
-        results = mysql_manager.execute_query(
-            """SELECT m.*, rc.route_id,
-                      COALESCE(tr.name, 'Unmapped City') as route_name
-               FROM customer_city_mappings m
-               LEFT JOIN route_cities rc ON m.city_name = rc.city_name
-               LEFT JOIN transport_routes tr ON rc.route_id = tr.route_id
-               ORDER BY m.city_name, m.customer_code"""
-        )
-        return results or []
-
-    @classmethod
-    def find_by_customer_code(cls, customer_code):
-        result = mysql_manager.execute_query(
-            "SELECT * FROM customer_city_mappings WHERE customer_code = %s",
-            (customer_code,)
-        )
-        return cls(**result[0]) if result else None
 
 
 class CustomerRouteMapping(MySQLModel):
@@ -1108,31 +1007,39 @@ class CustomerRouteMapping(MySQLModel):
         self.updated_at = kwargs.get('updated_at')
 
     def save(self):
-        if self.mapping_id:
-            mysql_manager.execute_query(
-                """UPDATE customer_route_mappings SET customer_code=%s, customer_name=%s, 
-                   route_id=%s, distance=%s, updated_at=%s WHERE mapping_id=%s""",
-                (self.customer_code, self.customer_name, self.route_id, self.distance, 
-                 datetime.utcnow(), self.mapping_id), fetch=False
+        with mysql_manager.get_cursor() as cursor:
+            cursor.execute(
+                """INSERT INTO customer_route_mappings
+                   (customer_code, customer_name, route_id, distance, created_at, updated_at)
+                   VALUES (%s, %s, %s, %s, %s, %s)
+                   ON DUPLICATE KEY UPDATE
+                   customer_name=VALUES(customer_name), route_id=VALUES(route_id),
+                   distance=VALUES(distance), updated_at=VALUES(updated_at)""",
+                (self.customer_code, self.customer_name, self.route_id, self.distance,
+                 datetime.utcnow(), datetime.utcnow())
             )
-        else:
-            with mysql_manager.get_cursor() as cursor:
-                cursor.execute(
-                    """INSERT INTO customer_route_mappings (customer_code, customer_name, route_id, 
-                       distance, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s)""",
-                    (self.customer_code, self.customer_name, self.route_id, self.distance, 
-                     datetime.utcnow(), datetime.utcnow())
-                )
+            if cursor.lastrowid:
                 self.mapping_id = cursor.lastrowid
 
     @classmethod
     def get_all(cls):
         results = mysql_manager.execute_query(
-            """SELECT m.*, r.name as route_name 
-               FROM customer_route_mappings m 
-               LEFT JOIN transport_routes r ON m.route_id = r.route_id"""
+            """SELECT m.mapping_id, m.customer_code, m.customer_name, m.route_id,
+                      m.distance, r.name as route_name
+               FROM customer_route_mappings m
+               LEFT JOIN transport_routes r ON m.route_id = r.route_id
+               ORDER BY r.name, m.customer_code"""
         )
-        return results
+        return results or []
+
+    @classmethod
+    def get_for_route(cls, route_id):
+        results = mysql_manager.execute_query(
+            """SELECT mapping_id, customer_code, customer_name, distance
+               FROM customer_route_mappings WHERE route_id = %s ORDER BY customer_code""",
+            (route_id,)
+        )
+        return results or []
 
     @classmethod
     def find_by_customer_code(cls, customer_code):
@@ -1140,6 +1047,13 @@ class CustomerRouteMapping(MySQLModel):
             "SELECT * FROM customer_route_mappings WHERE customer_code = %s", (customer_code,)
         )
         return cls(**result[0]) if result else None
+
+    @classmethod
+    def delete_by_customer_code(cls, customer_code):
+        mysql_manager.execute_query(
+            "DELETE FROM customer_route_mappings WHERE customer_code = %s",
+            (customer_code,), fetch=False
+        )
 
 
 class DailyRouteManifest(MySQLModel):
