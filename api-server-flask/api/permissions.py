@@ -12,10 +12,10 @@ ALL_UPLOAD_TYPES = ['orders', 'invoices']
 def get_permissions(role_name):
     """Fetch role permissions from DB. Returns safe empty defaults if role not found."""
     role = mysql_manager.execute_query(
-        "SELECT role_id, all_warehouses FROM roles WHERE name = %s", (role_name,)
+        "SELECT role_id, all_warehouses, eway_bill_admin, eway_bill_filling FROM roles WHERE name = %s", (role_name,)
     )
     if not role:
-        return {'order_states': [], 'uploads': [], 'all_warehouses': False}
+        return {'order_states': [], 'uploads': [], 'all_warehouses': False, 'eway_bill_admin': False, 'eway_bill_filling': False}
 
     role_id = role[0]['role_id']
     all_warehouses = bool(role[0]['all_warehouses'])
@@ -31,6 +31,8 @@ def get_permissions(role_name):
         'order_states': [r['state_name'] for r in order_states],
         'uploads': [r['upload_type'] for r in uploads],
         'all_warehouses': all_warehouses,
+        'eway_bill_admin': bool(role[0]['eway_bill_admin']),
+        'eway_bill_filling': bool(role[0]['eway_bill_filling']),
     }
 
 

@@ -30,6 +30,9 @@ const MenuList = () => {
             filteredItem = {
                 ...item,
                 children: item.children.filter((child) => {
+                    if (child.id === 'eway-bills') {
+                        return user?.permissions?.eway_bill_admin || user?.permissions?.eway_bill_filling || user?.role === 'admin';
+                    }
                     const requiredPerm = UPLOAD_PERMISSION_MAP[child.id];
                     // If item doesn't require an upload permission, always show it
                     if (!requiredPerm) return true;

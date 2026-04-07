@@ -26,6 +26,15 @@
         <div class="card-body">
           <p class="text-muted small">{{ role.description or '—' }}</p>
 
+          <div class="mb-2">
+            {% if role.eway_bill_admin %}
+            <span class="badge badge-info mr-1">E-Way Bill Admin</span>
+            {% endif %}
+            {% if role.eway_bill_filling %}
+            <span class="badge badge-warning mr-1">E-Way Bill Filling</span>
+            {% endif %}
+          </div>
+
           <p class="mb-1"><strong>Order States:</strong></p>
           <div class="mb-2">
             {% for state in all_order_states %}

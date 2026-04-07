@@ -40,6 +40,28 @@
           </div>
         </div>
 
+        <div class="form-group">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="eway_bill_admin" value="1" id="ewayAdmin"
+                   {{ 'checked' if role and role.eway_bill_admin else '' }}>
+            <label class="form-check-label" for="ewayAdmin">
+              <strong>E-way Bill Admin</strong>
+              <small class="text-muted d-block">If checked, user can configure e-way bill routes, mappings, and view all tabs.</small>
+            </label>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="eway_bill_filling" value="1" id="ewayFill"
+                   {{ 'checked' if role and role.eway_bill_filling else '' }}>
+            <label class="form-check-label" for="ewayFill">
+              <strong>E-way Bill Filling</strong>
+              <small class="text-muted d-block">If checked, user can input vehicle numbers and generate bulk excel/JSON files.</small>
+            </label>
+          </div>
+        </div>
+
         <hr>
         <div class="form-group">
           <label><strong>Order States Visible</strong></label>

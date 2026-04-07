@@ -8,6 +8,7 @@ import { store, persister } from './store';
 import * as serviceWorker from './serviceWorker';
 import App from './App';
 import config from './config';
+import { LOGOUT } from './store/actions';
 import './assets/scss/style.scss';
 
 // Attach JWT token to every axios request automatically
@@ -20,13 +21,13 @@ axios.interceptors.request.use((cfg) => {
 });
 
 // Auto-logout on 401 (token expired or invalid)
+// Dispatch LOGOUT to Redux so both localStorage keys AND redux-persist storage
+// are cleared together, preventing stale rehydration on the next page load.
 axios.interceptors.response.use(
     (response) => response,
     (error) => {
         if (error.response && error.response.status === 401) {
-            localStorage.removeItem('wms_token');
-            localStorage.removeItem('wms_user');
-            window.location.href = '/login';
+            store.dispatch({ type: LOGOUT });
         }
         return Promise.reject(error);
     }

@@ -372,6 +372,8 @@ class Login(Resource):
                         "order_states": perms['order_states'],
                         "uploads": perms['uploads'],
                         "all_warehouses": perms['all_warehouses'],
+                        "eway_bill_admin": perms.get('eway_bill_admin', False),
+                        "eway_bill_filling": perms.get('eway_bill_filling', False),
                         "warehouse_company_access": wh_access
                     }
                 }}, 200

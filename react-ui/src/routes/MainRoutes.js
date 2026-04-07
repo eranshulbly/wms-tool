@@ -7,6 +7,7 @@ import { Route, Switch, useLocation } from 'react-router-dom';
 import MainLayout from './../layout/MainLayout';
 import Loadable from '../ui-component/Loadable';
 import AuthGuard from './../utils/route-guard/AuthGuard';
+import EwayFillingGuard from './../utils/route-guard/EwayFillingGuard';
 
 // warehouse management routing
 const OrderUpload = Loadable(lazy(() => import('../views/warehouse/OrderUpload')));
@@ -50,7 +51,9 @@ const MainRoutes = () => {
                         <Route path="/warehouse/manage-orders" component={OrderManagement} />
                         <Route path="/warehouse/upload-invoices" component={InvoiceUpload} />
                         <Route path="/warehouse/supply-sheet" component={SupplySheetDownload} />
-                        <Route path="/warehouse/eway-bill" component={EwayBillGenerator} />
+                        <EwayFillingGuard>
+                            <Route path="/warehouse/eway-bill" component={EwayBillGenerator} />
+                        </EwayFillingGuard>
                     </AuthGuard>
                 </Switch>
             </MainLayout>

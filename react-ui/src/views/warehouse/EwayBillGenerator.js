@@ -6,6 +6,7 @@ import {
   DialogContentText, CircularProgress, MenuItem, Select, InputLabel,
   FormControl, Chip, IconButton, Tooltip, Collapse, Divider
 } from '@material-ui/core';
+import { useSelector } from 'react-redux';
 import { gridSpacing } from '../../store/constant';
 import config from '../../config';
 import axios from 'axios';
@@ -19,21 +20,29 @@ function TabPanel({ children, value, index }) {
   );
 }
 
+// All tabs in order — component is defined alongside the tab config
+const ALL_TABS = [
+  { label: 'Route Administration',   adminOnly: true,  Component: (props) => <RouteAdmin {...props} /> },
+  { label: 'Customer City Mapping',  adminOnly: true,  Component: (props) => <CustomerCityMapping {...props} /> },
+  { label: 'Company Schema Config',  adminOnly: true,  Component: (props) => <CompanySchemaConfig {...props} /> },
+  { label: 'Daily Dispatch Manifest',adminOnly: false, Component: (props) => <DailyManifest {...props} /> },
+  { label: 'Generate Bulk JSON',     adminOnly: false, Component: (props) => <GenerateBulkJson {...props} /> },
+];
+
 // ─── Root component ──────────────────────────────────────────────────────────
 const EwayBillGenerator = () => {
   const [tab, setTab] = useState(0);
   const [snack, setSnack] = useState({ open: false, msg: '', sev: 'info' });
+  const user = useSelector((state) => state.account.user);
+
+  const isAdmin = user?.permissions?.eway_bill_admin === true;
+  const visibleTabs = ALL_TABS.filter(t => isAdmin || !t.adminOnly);
 
   const showSnack = useCallback((msg, sev = 'success') => setSnack({ open: true, msg, sev }), []);
   const closeSnack = () => setSnack(s => ({ ...s, open: false }));
 
-  const tabs = [
-    'Route Administration',
-    'Customer City Mapping',
-    'Company Schema Config',
-    'Daily Dispatch Manifest',
-    'Generate Bulk JSON',
-  ];
+  // Reset to first tab if current tab index is out of range after permission change
+  const safeTab = tab < visibleTabs.length ? tab : 0;
 
   return (
     <Grid container spacing={gridSpacing}>
@@ -46,19 +55,19 @@ const EwayBillGenerator = () => {
 
       <Grid item xs={12}>
         <Paper>
-          <Tabs value={tab} onChange={(_, v) => setTab(v)} indicatorColor="primary" textColor="primary" variant="scrollable" scrollButtons="auto">
-            {tabs.map((t, i) => <Tab key={i} label={t} />)}
+          <Tabs value={safeTab} onChange={(_, v) => setTab(v)} indicatorColor="primary" textColor="primary" variant="scrollable" scrollButtons="auto">
+            {visibleTabs.map((t, i) => <Tab key={i} label={t.label} />)}
           </Tabs>
         </Paper>
       </Grid>
 
       <Grid item xs={12}>
         <Paper>
-          <TabPanel value={tab} index={0}><RouteAdmin showSnack={showSnack} /></TabPanel>
-          <TabPanel value={tab} index={1}><CustomerCityMapping showSnack={showSnack} /></TabPanel>
-          <TabPanel value={tab} index={2}><CompanySchemaConfig showSnack={showSnack} /></TabPanel>
-          <TabPanel value={tab} index={3}><DailyManifest showSnack={showSnack} /></TabPanel>
-          <TabPanel value={tab} index={4}><GenerateBulkJson showSnack={showSnack} /></TabPanel>
+          {visibleTabs.map((t, i) => (
+            <TabPanel key={i} value={safeTab} index={i}>
+              <t.Component showSnack={showSnack} />
+            </TabPanel>
+          ))}
         </Paper>
       </Grid>
 
@@ -573,23 +582,48 @@ const DailyManifest = ({ showSnack }) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TAB 5 — Generate Bulk JSON
+// TAB 5 — Generate Bulk JSON  (Layer 1: preview modal, Layer 3: clear/retry, Layer 4: date warning)
 // ─────────────────────────────────────────────────────────────────────────────
 const GenerateBulkJson = ({ showSnack }) => {
   const [companies, setCompanies] = useState([]);
   const [company, setCompany] = useState('');
   const [file, setFile] = useState(null);
   const [rows, setRows] = useState([]);
+  const [meta, setMeta] = useState(null);          // {filename, row_count, file_date, today}
   const [loading, setLoading] = useState(false);
   const [instructionsOpen, setInstructionsOpen] = useState(false);
+
+  // ── Layer 1: preview/confirm modal ──────────────────────────────────────
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewInfo, setPreviewInfo] = useState({ name: '', estimatedRows: 0 });
 
   useEffect(() => {
     axios.get(config.API_SERVER + 'companies').then(r => { if (r.data.success) setCompanies(r.data.companies); }).catch(() => {});
   }, []);
 
-  const upload = async () => {
+  // ── Count CSV rows client-side (fast, just read first 100KB) ────────────
+  const countCsvRows = (f) => new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const text = e.target.result || '';
+      const lines = text.split('\n').filter(l => l.trim()).length;
+      resolve(Math.max(0, lines - 1)); // minus header
+    };
+    reader.readAsText(f.slice(0, 102400)); // first 100 KB is enough
+  });
+
+  // ── Layer 1: clicking "Process CSV" opens the preview modal first ────────
+  const handleProcessClick = async () => {
     if (!company) return showSnack('Select a company first', 'warning');
-    if (!file) return showSnack('Select a CSV file first', 'warning');
+    if (!file)    return showSnack('Select a CSV file first', 'warning');
+    const estimated = await countCsvRows(file);
+    setPreviewInfo({ name: file.name, estimatedRows: estimated });
+    setPreviewOpen(true);
+  };
+
+  // ── Actual backend upload (called after user confirms in modal) ──────────
+  const upload = async () => {
+    setPreviewOpen(false);
     setLoading(true);
     const fd = new FormData();
     fd.append('file', file);
@@ -598,10 +632,21 @@ const GenerateBulkJson = ({ showSnack }) => {
       const r = await axios.post(config.API_SERVER + 'eway/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
       if (r.data.success) {
         setRows(r.data.data);
+        setMeta(r.data.meta || null);
         showSnack(`Loaded ${r.data.data.length} e-invoice rows`);
       } else showSnack(r.data.msg, 'error');
     } catch (e) { showSnack(e.response?.data?.msg || 'Upload failed', 'error'); }
     finally { setLoading(false); }
+  };
+
+  // ── Layer 3: clear everything and let user pick a new file ───────────────
+  const clearAndRetry = () => {
+    setRows([]);
+    setMeta(null);
+    setFile(null);
+    // Reset file input by clearing its value via ref trick
+    const inp = document.getElementById('eway-csv-input');
+    if (inp) inp.value = '';
   };
 
   const updateRow = (i, field, val) => {
@@ -617,12 +662,28 @@ const GenerateBulkJson = ({ showSnack }) => {
         const blob = new Blob([JSON.stringify(r.data.json_payload, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = url; a.download = `EWay_Bulk_${Date.now()}.json`;
+        a.href = url;
+        a.download = `EWay_Bulk_${Date.now()}.json`;
         document.body.appendChild(a); a.click();
         document.body.removeChild(a); URL.revokeObjectURL(url);
         setInstructionsOpen(true);
       } else showSnack(r.data.msg, 'error');
     } catch (e) { showSnack(e.response?.data?.msg || 'Export failed', 'error'); }
+  };
+
+  // ── Layer 4: date warning logic ─────────────────────────────────────────
+  const fileDate = meta?.file_date;
+  const today    = meta?.today;
+  const dateWarn = fileDate && today && fileDate !== today;
+
+  // Format a YYYY-MM-DD string to DD MMM YYYY for display
+  const fmtDate = (d) => {
+    if (!d) return d;
+    try {
+      const [y, m, day] = d.split('-');
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      return `${day} ${months[parseInt(m,10)-1]} ${y}`;
+    } catch { return d; }
   };
 
   const incomplete = rows.filter(r => r.status === 'Incomplete').length;
@@ -632,35 +693,79 @@ const GenerateBulkJson = ({ showSnack }) => {
       <Grid item xs={12}>
         <Typography variant="h5">Generate Bulk E-Way JSON</Typography>
         <Typography variant="body2" color="textSecondary" style={{ marginTop: 4 }}>
-          Select the source company, upload their invoice CSV. The system will auto-fill city, route, vehicle, and distance using configured mappings.
+          Select the source company and upload their invoice CSV. The system auto-fills city, route, vehicle, and distance from configured mappings.
         </Typography>
       </Grid>
 
-      {/* Controls */}
-      <Grid item xs={12} sm={4}>
-        <FormControl fullWidth variant="outlined">
-          <InputLabel>Company *</InputLabel>
-          <Select label="Company *" value={company} onChange={e => { setCompany(e.target.value); setRows([]); }}>
-            {companies.map(c => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}
-          </Select>
-        </FormControl>
-      </Grid>
-      <Grid item xs={12} sm={8} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <input type="file" accept=".csv" onChange={e => setFile(e.target.files[0] || null)} />
-        <Button variant="contained" color="primary" onClick={upload} disabled={loading || !file || !company}>
-          {loading ? <CircularProgress size={24} /> : 'Process CSV'}
-        </Button>
-      </Grid>
+      {/* ── Controls (hidden once rows are loaded) ── */}
+      {rows.length === 0 && (
+        <>
+          <Grid item xs={12} sm={4}>
+            <FormControl fullWidth variant="outlined">
+              <InputLabel>Company *</InputLabel>
+              <Select label="Company *" value={company} onChange={e => setCompany(e.target.value)}>
+                {companies.map(c => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}
+              </Select>
+            </FormControl>
+          </Grid>
 
-      {/* Data Grid */}
+          <Grid item xs={12} sm={8} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <input id="eway-csv-input" type="file" accept=".csv"
+              onChange={e => setFile(e.target.files[0] || null)} />
+            <Button variant="contained" color="primary"
+              onClick={handleProcessClick} disabled={loading || !file || !company}>
+              {loading ? <CircularProgress size={24} /> : 'Process CSV'}
+            </Button>
+          </Grid>
+        </>
+      )}
+
+      {/* ── Post-upload header with file info + Layer 3 reset button ── */}
+      {rows.length > 0 && (
+        <Grid item xs={12}>
+          <Paper variant="outlined" style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#f9f9f9' }}>
+            <Box>
+              <Typography variant="subtitle2" style={{ fontWeight: 600 }}>
+                📄 {meta?.filename || 'Uploaded file'}
+              </Typography>
+              <Typography variant="caption" color="textSecondary">
+                {rows.length} e-invoice rows loaded
+                {meta?.file_date ? ` · File date: ${fmtDate(meta.file_date)}` : ''}
+                {meta?.today     ? ` · Today: ${fmtDate(meta.today)}`         : ''}
+              </Typography>
+            </Box>
+            <Button variant="outlined" color="secondary" size="small" onClick={clearAndRetry}
+              style={{ whiteSpace: 'nowrap', marginLeft: 16 }}>
+              ✕ Upload Different File
+            </Button>
+          </Paper>
+        </Grid>
+      )}
+
+      {/* ── Layer 4: Date warning banner ── */}
+      {dateWarn && (
+        <Grid item xs={12}>
+          <Alert severity="warning">
+            <b>⚠ Possible wrong file!</b> — The filename suggests this invoice is from{' '}
+            <b>{fmtDate(fileDate)}</b>, but today is <b>{fmtDate(today)}</b>.
+            If you intended to upload today's invoice, click <b>"✕ Upload Different File"</b> above.
+          </Alert>
+        </Grid>
+      )}
+
+      {/* ── Incomplete rows warning ── */}
+      {rows.length > 0 && incomplete > 0 && (
+        <Grid item xs={12}>
+          <Alert severity="info">
+            <b>{incomplete} rows</b> are missing city/vehicle mapping and highlighted below. You can fill them in manually before exporting.
+          </Alert>
+        </Grid>
+      )}
+
+      {/* ── Review Data Grid ── */}
       {rows.length > 0 && (
         <>
           <Grid item xs={12}>
-            {incomplete > 0 && (
-              <Alert severity="warning" style={{ marginBottom: 8 }}>
-                <b>{incomplete} rows are incomplete</b> — city/vehicle mapping is missing. You can fill them manually below.
-              </Alert>
-            )}
             <TableContainer component={Paper} variant="outlined" style={{ maxHeight: 420 }}>
               <Table stickyHeader size="small">
                 <TableHead>
@@ -679,24 +784,28 @@ const GenerateBulkJson = ({ showSnack }) => {
                     <TableRow key={i} style={{ backgroundColor: row.status === 'Incomplete' ? '#fff8e1' : undefined }}>
                       <TableCell>
                         <Chip label={row.status} size="small"
-                          style={{ backgroundColor: row.status === 'Complete' ? '#e8f5e9' : '#fff3e0',
-                                   color: row.status === 'Complete' ? '#2e7d32' : '#e65100' }} />
+                          style={{
+                            backgroundColor: row.status === 'Complete' ? '#e8f5e9' : '#fff3e0',
+                            color:           row.status === 'Complete' ? '#2e7d32' : '#e65100'
+                          }} />
                       </TableCell>
                       <TableCell>{row.invoice_no}</TableCell>
                       <TableCell>{row.customer_code}</TableCell>
                       <TableCell>{row.customer_name}</TableCell>
-                      <TableCell>{row.city || <Typography variant="caption" color="error">Not mapped</Typography>}</TableCell>
+                      <TableCell>
+                        {row.city || <Typography variant="caption" color="error">Not mapped</Typography>}
+                      </TableCell>
                       <TableCell>
                         <TextField size="small" type="number" variant="outlined"
-                          value={row.distance || ''}
+                          value={row.distance || ''} error={!row.distance}
                           onChange={e => updateRow(i, 'distance', e.target.value)}
-                          error={!row.distance} style={{ width: 80 }} />
+                          style={{ width: 80 }} />
                       </TableCell>
                       <TableCell>
                         <TextField size="small" variant="outlined"
-                          value={row.vehicle_no || ''}
+                          value={row.vehicle_no || ''} error={!row.vehicle_no}
                           onChange={e => updateRow(i, 'vehicle_no', e.target.value)}
-                          error={!row.vehicle_no} style={{ width: 150 }} />
+                          style={{ width: 150 }} />
                       </TableCell>
                     </TableRow>
                   ))}
@@ -704,6 +813,7 @@ const GenerateBulkJson = ({ showSnack }) => {
               </Table>
             </TableContainer>
           </Grid>
+
           <Grid item xs={12} style={{ display: 'flex', justifyContent: 'flex-end' }}>
             <Button variant="contained" style={{ backgroundColor: '#2e7d32', color: '#fff' }} onClick={exportJson}>
               Export Bulk JSON ({rows.length} records)
@@ -712,7 +822,41 @@ const GenerateBulkJson = ({ showSnack }) => {
         </>
       )}
 
-      {/* Instructions Dialog */}
+      {/* ── Layer 1: File Preview / Confirm Dialog ── */}
+      <Dialog open={previewOpen} onClose={() => setPreviewOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle style={{ backgroundColor: '#e3f2fd', color: '#1565c0' }}>
+          📋 Confirm File Upload
+        </DialogTitle>
+        <DialogContent style={{ marginTop: 16 }}>
+          <DialogContentText component="div">
+            <Box mb={1}>
+              <Typography variant="body2" color="textSecondary">File name</Typography>
+              <Typography variant="body1" style={{ fontWeight: 600, wordBreak: 'break-all' }}>
+                {previewInfo.name}
+              </Typography>
+            </Box>
+            <Box mb={2}>
+              <Typography variant="body2" color="textSecondary">Estimated rows (approx.)</Typography>
+              <Typography variant="body1" style={{ fontWeight: 600 }}>
+                ~{previewInfo.estimatedRows} invoice rows
+              </Typography>
+            </Box>
+            <Typography variant="body2" style={{ color: '#555' }}>
+              Please verify this is <b>today's invoice file</b> before proceeding. Wrong files can generate incorrect E-Way bills.
+            </Typography>
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions style={{ padding: '12px 16px' }}>
+          <Button onClick={() => setPreviewOpen(false)} variant="outlined">
+            Cancel — Wrong File
+          </Button>
+          <Button onClick={upload} color="primary" variant="contained">
+            ✓ Looks Correct — Process
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ── Filing Instructions Dialog ── */}
       <Dialog open={instructionsOpen} onClose={() => setInstructionsOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle style={{ backgroundColor: '#e8f5e9', color: '#2e7d32' }}>✅ JSON Generated Successfully!</DialogTitle>
         <DialogContent style={{ marginTop: 12 }}>

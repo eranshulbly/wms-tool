@@ -20,6 +20,31 @@ basic_response = rest_api.model('EwayBasicResponse', {
     'msg': fields.String
 })
 
+from functools import wraps
+from .permissions import get_permissions
+
+def eway_admin_required(f):
+    @wraps(f)
+    def decorator(*args, **kwargs):
+        current_user = args[1] if len(args) > 1 else kwargs.get('current_user')
+        if current_user:
+            perms = get_permissions(current_user.role)
+            if not perms.get('eway_bill_admin'):
+                return {'success': False, 'msg': 'E-way Bill Admin permission required'}, 403
+        return f(*args, **kwargs)
+    return decorator
+
+def eway_filling_required(f):
+    @wraps(f)
+    def decorator(*args, **kwargs):
+        current_user = args[1] if len(args) > 1 else kwargs.get('current_user')
+        if current_user:
+            perms = get_permissions(current_user.role)
+            if not (perms.get('eway_bill_admin') or perms.get('eway_bill_filling')):
+                return {'success': False, 'msg': 'E-way Bill Filling permission required'}, 403
+        return f(*args, **kwargs)
+    return decorator
+
 # ─────────────────────────────────────────────────────────────
 # ROUTES  (with embedded cities)
 # ─────────────────────────────────────────────────────────────
@@ -28,6 +53,7 @@ basic_response = rest_api.model('EwayBasicResponse', {
 class EwayRoutes(Resource):
     @token_required
     @active_required
+    @eway_admin_required
     def get(self, current_user):
         try:
             routes = TransportRoute.get_all()
@@ -37,6 +63,7 @@ class EwayRoutes(Resource):
 
     @token_required
     @active_required
+    @eway_admin_required
     def post(self, current_user):
         """Create a route; optionally seed cities in one call."""
         try:
@@ -61,6 +88,7 @@ class EwayRoutes(Resource):
 class EwayRouteCities(Resource):
     @token_required
     @active_required
+    @eway_admin_required
     def get(self, current_user):
         """Return all cities across all routes."""
         try:
@@ -71,6 +99,7 @@ class EwayRouteCities(Resource):
 
     @token_required
     @active_required
+    @eway_admin_required
     def post(self, current_user):
         """Add a single city to a route."""
         try:
@@ -86,6 +115,7 @@ class EwayRouteCities(Resource):
 class EwayRouteCityDelete(Resource):
     @token_required
     @active_required
+    @eway_admin_required
     def post(self, current_user):
         """Remove a city from a route by route_id + city_name."""
         try:
@@ -105,6 +135,7 @@ class EwayRouteCityDelete(Resource):
 class EwayCustomerCityMappings(Resource):
     @token_required
     @active_required
+    @eway_admin_required
     def get(self, current_user):
         try:
             mappings = CustomerCityMapping.get_all()
@@ -119,6 +150,7 @@ class EwayCustomerCityMappings(Resource):
 
     @token_required
     @active_required
+    @eway_admin_required
     def post(self, current_user):
         """Add / update a single customer-city mapping (upsert)."""
         try:
@@ -139,6 +171,7 @@ class EwayCustomerCityMappings(Resource):
 class EwayCustomerCityMappingsBulk(Resource):
     @token_required
     @active_required
+    @eway_admin_required
     def post(self, current_user):
         """
         Bulk-import customer→city mappings from an Excel file.
@@ -217,6 +250,7 @@ class EwayCustomerCityMappingsBulk(Resource):
 class EwayCustomerCityTemplate(Resource):
     @token_required
     @active_required
+    @eway_admin_required
     def get(self, current_user):
         """Download a sample Excel template for bulk upload."""
         try:
@@ -248,6 +282,7 @@ class EwayCustomerCityTemplate(Resource):
 class EwayManifest(Resource):
     @token_required
     @active_required
+    @eway_filling_required
     def get(self, current_user):
         try:
             date_str = request.args.get('date', datetime.utcnow().strftime('%Y-%m-%d'))
@@ -263,6 +298,7 @@ class EwayManifest(Resource):
 
     @token_required
     @active_required
+    @eway_filling_required
     def post(self, current_user):
         try:
             data = request.json
@@ -286,6 +322,7 @@ class EwayManifest(Resource):
 class EwayUpload(Resource):
     @token_required
     @active_required
+    @eway_filling_required
     def post(self, current_user):
         try:
             if 'file' not in request.files:
@@ -357,7 +394,38 @@ class EwayUpload(Resource):
                     'status':        status
                 })
 
-            return {'success': True, 'data': results}, 200
+            # ── Extract date from filename for Layer 4 date warning ────────────
+            import re as _re
+            file_date = None
+            fname = getattr(file, 'filename', '') or ''
+            for pattern, fmt in [
+                (r'(\d{2}-\d{2}-\d{4})', 'dmy'),   # 24-03-2026
+                (r'(\d{2}_\d{2}_\d{4})', 'dmy'),   # 24_03_2026
+                (r'(\d{4}-\d{2}-\d{2})', 'ymd'),   # 2026-03-24
+            ]:
+                m = _re.search(pattern, fname)
+                if m:
+                    try:
+                        s = m.group(1).replace('_', '-')
+                        parts = s.split('-')
+                        if fmt == 'dmy':
+                            file_date = f"{parts[2]}-{parts[1]}-{parts[0]}"
+                        else:
+                            file_date = s
+                    except Exception:
+                        pass
+                    break
+
+            return {
+                'success': True,
+                'data': results,
+                'meta': {
+                    'filename': fname,
+                    'row_count': len(results),
+                    'file_date': file_date,
+                    'today': today
+                }
+            }, 200
         except Exception as e:
             return {'success': False, 'msg': str(e)}, 400
 
@@ -370,6 +438,7 @@ class EwayUpload(Resource):
 class EwayGenerateJson(Resource):
     @token_required
     @active_required
+    @eway_filling_required
     def post(self, current_user):
         try:
             data = request.json
@@ -399,6 +468,7 @@ class EwayGenerateJson(Resource):
 class EwaySchemaMappings(Resource):
     @token_required
     @active_required
+    @eway_filling_required
     def get(self, current_user):
         try:
             company_id = request.args.get('company_id', type=int)
@@ -411,6 +481,7 @@ class EwaySchemaMappings(Resource):
 
     @token_required
     @active_required
+    @eway_filling_required
     def post(self, current_user):
         try:
             data = request.json

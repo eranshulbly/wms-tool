@@ -494,6 +494,8 @@ def create_all_tables():
         name VARCHAR(50) NOT NULL UNIQUE,
         description TEXT,
         all_warehouses BOOLEAN DEFAULT FALSE,
+        eway_bill_admin BOOLEAN DEFAULT FALSE,
+        eway_bill_filling BOOLEAN DEFAULT FALSE,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
@@ -704,6 +706,8 @@ def seed_default_roles():
             'name': 'admin',
             'description': 'Full access to everything. All warehouses.',
             'all_warehouses': True,
+            'eway_bill_admin': True,
+            'eway_bill_filling': True,
             'order_states': ALL_ORDER_STATES,
             'uploads': ALL_UPLOAD_TYPES,
         },
@@ -747,8 +751,8 @@ def seed_default_roles():
 
         with mysql_manager.get_cursor() as cursor:
             cursor.execute(
-                "INSERT INTO roles (name, description, all_warehouses) VALUES (%s, %s, %s)",
-                (role['name'], role['description'], role['all_warehouses'])
+                "INSERT INTO roles (name, description, all_warehouses, eway_bill_admin, eway_bill_filling) VALUES (%s, %s, %s, %s, %s)",
+                (role['name'], role['description'], role['all_warehouses'], role.get('eway_bill_admin', False), role.get('eway_bill_filling', False))
             )
             role_id = cursor.lastrowid
 

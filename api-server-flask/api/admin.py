@@ -232,7 +232,7 @@ class RoleManagementView(SecureView):
     @expose('/')
     def index(self):
         roles = mysql_manager.execute_query(
-            "SELECT role_id, name, description, all_warehouses FROM roles ORDER BY name"
+            "SELECT role_id, name, description, all_warehouses, eway_bill_admin, eway_bill_filling FROM roles ORDER BY name"
         )
         # Attach permissions to each role
         from .db_manager import ALL_ORDER_STATES, ALL_UPLOAD_TYPES
@@ -256,6 +256,8 @@ class RoleManagementView(SecureView):
             name = request.form.get('name', '').strip().lower().replace(' ', '_')
             description = request.form.get('description', '').strip()
             all_warehouses = request.form.get('all_warehouses') == '1'
+            eway_bill_admin = request.form.get('eway_bill_admin') == '1'
+            eway_bill_filling = request.form.get('eway_bill_filling') == '1'
             order_states = request.form.getlist('order_states')
             uploads = request.form.getlist('uploads')
 
@@ -276,8 +278,8 @@ class RoleManagementView(SecureView):
 
             with mysql_manager.get_cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO roles (name, description, all_warehouses) VALUES (%s,%s,%s)",
-                    (name, description, all_warehouses)
+                    "INSERT INTO roles (name, description, all_warehouses, eway_bill_admin, eway_bill_filling) VALUES (%s,%s,%s,%s,%s)",
+                    (name, description, all_warehouses, eway_bill_admin, eway_bill_filling)
                 )
                 role_id = cursor.lastrowid
 
@@ -302,7 +304,7 @@ class RoleManagementView(SecureView):
     def edit(self, role_id):
         from .db_manager import ALL_ORDER_STATES, ALL_UPLOAD_TYPES
         role = mysql_manager.execute_query(
-            "SELECT role_id, name, description, all_warehouses FROM roles WHERE role_id=%s", (role_id,)
+            "SELECT role_id, name, description, all_warehouses, eway_bill_admin, eway_bill_filling FROM roles WHERE role_id=%s", (role_id,)
         )
         if not role:
             flash('Role not found.', 'danger')
@@ -312,12 +314,14 @@ class RoleManagementView(SecureView):
         if request.method == 'POST':
             description = request.form.get('description', '').strip()
             all_warehouses = request.form.get('all_warehouses') == '1'
+            eway_bill_admin = request.form.get('eway_bill_admin') == '1'
+            eway_bill_filling = request.form.get('eway_bill_filling') == '1'
             order_states = request.form.getlist('order_states')
             uploads = request.form.getlist('uploads')
 
             mysql_manager.execute_query(
-                "UPDATE roles SET description=%s, all_warehouses=%s WHERE role_id=%s",
-                (description, all_warehouses, role_id), fetch=False
+                "UPDATE roles SET description=%s, all_warehouses=%s, eway_bill_admin=%s, eway_bill_filling=%s WHERE role_id=%s",
+                (description, all_warehouses, eway_bill_admin, eway_bill_filling, role_id), fetch=False
             )
             # Replace permissions
             mysql_manager.execute_query(
