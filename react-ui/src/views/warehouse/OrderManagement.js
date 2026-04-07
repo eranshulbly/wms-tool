@@ -14,7 +14,9 @@ import { filterOrdersByStatus } from './utils/orderManagement.utils';
 import {
   FilterControls,
   OrdersTable,
-  OrderDetailsDialog
+  OrderDetailsDialog,
+  BulkActionsBar,
+  BulkResultsDialog
 } from './components/orderManagement.components';
 import orderManagementService from '../../services/orderManagementService';
 
@@ -45,6 +47,10 @@ const OrderManagement = () => {
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState('');
   const [snackbarSeverity, setSnackbarSeverity] = useState('success');
+
+  // Bulk results dialog state
+  const [bulkResultsOpen, setBulkResultsOpen] = useState(false);
+  const [bulkResults, setBulkResults] = useState(null);
 
   // Fetch warehouses and companies on component mount
   useEffect(() => {
@@ -186,32 +192,25 @@ const OrderManagement = () => {
           successMessage = `Order ${order.order_request_id} moved to ${action}`;
           break;
 
-        case 'packing-to-dispatch':
-          // This should open the dialog for packing configuration
+        case 'packing-to-invoice':
+          // Open the dialog for packing configuration
           handleOrderClick(order);
           return; // Don't proceed with API call, let dialog handle it
 
-        case 'dispatch-ready':
-          // Move from packing to dispatch ready (creates final order)
-          if (!additionalData || !additionalData.products || !additionalData.boxes) {
-            showSnackbar('Missing product and box data for dispatch ready', 'error');
+        case 'invoice-ready':
+          // Move from packing to invoice ready (creates final order)
+          if (!additionalData || !additionalData.number_of_boxes) {
+            showSnackbar('Missing number of boxes for invoice ready', 'error');
             return;
           }
 
-          response = await orderManagementService.moveToDispatchReady(
+          response = await orderManagementService.moveToInvoiceReady(
             order.order_request_id,
-            additionalData.products,
-            additionalData.boxes
+            additionalData.number_of_boxes
           );
 
           if (response.success) {
-            successMessage = [
-              `Order moved to Dispatch Ready!`,
-              `Final Order: ${response.final_order_number}`,
-              `Packed: ${response.total_packed} items`,
-              response.total_remaining > 0 ? `Remaining: ${response.total_remaining} items` : '',
-              response.has_remaining_items ? 'Status: Partially Completed' : 'Status: Dispatch Ready'
-            ].filter(Boolean).join('\n');
+            successMessage = `Order moved to Invoice Ready! Final Order: ${response.final_order_number}`;
           }
           break;
 
@@ -252,8 +251,8 @@ const OrderManagement = () => {
 
         showSnackbar(successMessage, 'success');
 
-        // FIXED: Close dialog and clear selected order for completed actions
-        if (action === 'completed' || action === 'complete-dispatch') {
+        // Close dialog after terminal actions
+        if (action === 'completed' || action === 'complete-dispatch' || action === 'invoice-ready') {
           handleOrderDetailsClose();
         }
       } else if (response) {
@@ -277,21 +276,14 @@ const OrderManagement = () => {
 
       // Handle the action
       switch (action) {
-        case 'dispatch-ready':
-          response = await orderManagementService.moveToDispatchReady(
+        case 'invoice-ready':
+          response = await orderManagementService.moveToInvoiceReady(
             order.order_request_id,
-            additionalData.products,
-            additionalData.boxes
+            additionalData.number_of_boxes
           );
 
           if (response.success) {
-            successMessage = [
-              `Order moved to Dispatch Ready!`,
-              `Final Order: ${response.final_order_number}`,
-              `Packed: ${response.total_packed} items`,
-              response.total_remaining > 0 ? `Remaining: ${response.total_remaining} items` : '',
-              response.has_remaining_items ? 'Status: Partially Completed' : 'Status: Dispatch Ready'
-            ].filter(Boolean).join('\n');
+            successMessage = `Order moved to Invoice Ready! Final Order: ${response.final_order_number}`;
           }
           break;
 
@@ -360,10 +352,26 @@ const OrderManagement = () => {
   };
 
   const handleSnackbarClose = (event, reason) => {
-    if (reason === 'clickaway') {
-      return;
-    }
+    if (reason === 'clickaway') return;
     setSnackbarOpen(false);
+  };
+
+  const handleBulkUploadComplete = async (result) => {
+    setBulkResults(result);
+    setBulkResultsOpen(true);
+    // Refresh orders list after bulk update
+    if (result.summary.moved > 0 && warehouse && company) {
+      const updatedOrders = await orderManagementService.getOrders(warehouse, company);
+      if (updatedOrders.success) {
+        setOrders((updatedOrders.orders || []).map(ord => ({
+          ...ord,
+          status: ord.status || 'open',
+          current_state_time: ord.current_state_time || new Date().toISOString(),
+          dealer_name: ord.dealer_name || 'Unknown Dealer',
+          assigned_to: ord.assigned_to || 'Unassigned'
+        })));
+      }
+    }
   };
 
   return (
@@ -372,7 +380,7 @@ const OrderManagement = () => {
       <Grid item xs={12}>
         <Typography variant="h3" gutterBottom>Order Management</Typography>
         <Typography variant="subtitle1" color="textSecondary" gutterBottom>
-          Manage orders through their lifecycle: Open → Picking → Packing → Dispatch Ready → Completed
+          Manage orders through their lifecycle: Open → Picking → Packing → Invoice Ready → Dispatch Ready → Completed
         </Typography>
       </Grid>
 
@@ -387,6 +395,15 @@ const OrderManagement = () => {
         onCompanyChange={handleCompanyChange}
         onStatusFilterChange={handleStatusFilterChange}
         allowedStatuses={allowedStatuses}
+        classes={classes}
+      />
+
+      {/* Bulk Actions */}
+      <BulkActionsBar
+        statusFilter={statusFilter}
+        warehouse={warehouse}
+        company={company}
+        onUploadComplete={handleBulkUploadComplete}
         classes={classes}
       />
 
@@ -409,6 +426,13 @@ const OrderManagement = () => {
         onStatusUpdate={handleDialogStatusUpdate}
         allowedStatuses={allowedStatuses}
         classes={classes}
+      />
+
+      {/* Bulk Results Dialog */}
+      <BulkResultsDialog
+        open={bulkResultsOpen}
+        results={bulkResults}
+        onClose={() => setBulkResultsOpen(false)}
       />
 
       {/* Snackbar for notifications */}

@@ -13,7 +13,6 @@ from flask import current_app
 from ..models import Warehouse, Company, mysql_manager
 from ..business.order_business import process_order_dataframe
 from ..business.dealer_business import clear_dealer_cache
-from ..business.product_business import clear_product_cache
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 
 
@@ -65,62 +64,49 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
         # Read the file based on its extension with robust error handling
         if file_extension == '.csv':
             try:
-                # First attempt - standard CSV parsing
-                df = pd.read_csv(
-                    temp_path,
-                    encoding=encoding,
-                    sep=",",
-                    quotechar='"',
-                    doublequote=True,
-                    escapechar='\\',
-                    engine='python',
-                    quoting=csv.QUOTE_MINIMAL,
-                    on_bad_lines='warn',
-                    dtype=str  # Read everything as strings initially
-                )
-                print("Successfully read CSV file with standard method")
+                # UTF-16 files (new format: tab-separated, UTF-16 LE with BOM)
+                if encoding and 'utf-16' in encoding.lower():
+                    df = pd.read_csv(
+                        temp_path,
+                        encoding='utf-16',
+                        sep='\t',
+                        engine='python',
+                        dtype=str,
+                        index_col=False,
+                        on_bad_lines='warn'
+                    )
+                    print("Successfully read CSV file as UTF-16 tab-separated")
+                else:
+                    # Legacy format: comma-separated
+                    df = pd.read_csv(
+                        temp_path,
+                        encoding=encoding,
+                        sep=",",
+                        quotechar='"',
+                        doublequote=True,
+                        escapechar='\\',
+                        engine='python',
+                        quoting=csv.QUOTE_MINIMAL,
+                        on_bad_lines='warn',
+                        dtype=str
+                    )
+                    print("Successfully read CSV file with standard method")
             except Exception as e:
-                print(f"Standard CSV parsing failed: {str(e)}")
-                # Fallback method - clean the file first
+                print(f"Primary CSV parsing failed: {str(e)}")
+                # Fallback: auto-detect separator
                 try:
-                    # Read the raw file and clean headers
-                    with open(temp_path, 'r', encoding=encoding, errors='ignore') as f:
-                        content = f.read()
-
-                    # Clean the content - remove newlines from headers and fix common issues
-                    lines = content.split('\n')
-                    if lines:
-                        # Clean the header line - remove newlines and extra whitespace
-                        header_line = lines[0].replace('\r', '').replace('\n', '').strip()
-                        cleaned_lines = [header_line] + lines[1:]
-                        cleaned_content = '\n'.join(cleaned_lines)
-
-                        # Write cleaned content to a temporary file
-                        import tempfile
-                        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False,
-                                                         encoding='utf-8') as temp_csv:
-                            temp_csv.write(cleaned_content)
-                            temp_csv_path = temp_csv.name
-
-                        # Try parsing the cleaned file
-                        df = pd.read_csv(
-                            temp_csv_path,
-                            encoding='utf-8',
-                            sep=',',
-                            engine='python',
-                            dtype=str,
-                            on_bad_lines='skip'  # Skip problematic lines
-                        )
-
-                        # Clean up temporary file
-                        os.remove(temp_csv_path)
-                        print("Successfully read CSV with cleaned headers")
-                    else:
-                        raise Exception("CSV file appears to be empty")
-
+                    df = pd.read_csv(
+                        temp_path,
+                        encoding='utf-16',
+                        sep=None,
+                        engine='python',
+                        dtype=str,
+                        index_col=False,
+                        on_bad_lines='skip'
+                    )
+                    print("Successfully read CSV with UTF-16 auto-separator fallback")
                 except Exception as inner_e:
-                    print(f"Cleaned CSV parsing also failed: {str(inner_e)}")
-                    # Final fallback - try with different encoding and separators
+                    print(f"UTF-16 fallback failed: {str(inner_e)}")
                     try:
                         df = pd.read_csv(
                             temp_path,
@@ -130,7 +116,7 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
                             dtype=str,
                             on_bad_lines='skip'
                         )
-                        print("Successfully read CSV with fallback encoding")
+                        print("Successfully read CSV with cp1252 fallback")
                     except Exception as final_e:
                         raise Exception(
                             f"All CSV parsing methods failed. Original error: {str(e)}. Final error: {str(final_e)}")
@@ -163,7 +149,7 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
         print(f"First few rows:\n{df.head()}")
 
         # Validate required columns with fuzzy matching
-        required_columns = ['Order #', 'Part #', 'Order Quantity']
+        required_columns = ['Sales Order #']
         missing_columns = []
         column_mapping = {}
 
@@ -215,7 +201,6 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
 
         # Clear caches to ensure fresh data
         clear_dealer_cache()
-        clear_product_cache()
 
         # Create upload batch record before processing
         upload_batch_id = None
@@ -260,9 +245,8 @@ def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
 
                     return {
                         'success': True,
-                        'msg': f'Orders uploaded successfully. Processed {result["orders_processed"]} orders and {result["products_processed"]} products.',
+                        'msg': f'Orders uploaded successfully. Processed {result["orders_processed"]} orders.',
                         'orders_processed': result['orders_processed'],
-                        'products_processed': result['products_processed'],
                         'errors': result['errors'],
                         'upload_batch_id': upload_batch_id
                     }, 200
@@ -327,37 +311,19 @@ def validate_order_data(df):
     """
     errors = []
 
-    # Check if dataframe is empty
     if df.empty:
         errors.append("File contains no data")
         return False, errors
 
-    # Check for required columns
-    required_cols = ['Order #', 'Part #', 'Order Quantity']
+    required_cols = ['Sales Order #']
     missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
         errors.append(f"Missing required columns: {', '.join(missing_cols)}")
 
-    # Check for empty critical fields
-    if 'Order #' in df.columns:
-        empty_orders = df[df['Order #'].isnull() | (df['Order #'] == '')].shape[0]
+    if 'Sales Order #' in df.columns:
+        empty_orders = df[df['Sales Order #'].isnull() | (df['Sales Order #'] == '')].shape[0]
         if empty_orders > 0:
-            errors.append(f"{empty_orders} rows have empty Order # field")
-
-    if 'Part #' in df.columns:
-        empty_parts = df[df['Part #'].isnull() | (df['Part #'] == '')].shape[0]
-        if empty_parts > 0:
-            errors.append(f"{empty_parts} rows have empty Part # field")
-
-    if 'Order Quantity' in df.columns:
-        # Check for non-numeric quantities
-        try:
-            pd.to_numeric(df['Order Quantity'], errors='coerce')
-            invalid_quantities = df[pd.to_numeric(df['Order Quantity'], errors='coerce').isnull()].shape[0]
-            if invalid_quantities > 0:
-                errors.append(f"{invalid_quantities} rows have invalid Order Quantity values")
-        except Exception:
-            errors.append("Unable to validate Order Quantity column")
+            errors.append(f"{empty_orders} rows have empty Sales Order # field")
 
     return len(errors) == 0, errors
 

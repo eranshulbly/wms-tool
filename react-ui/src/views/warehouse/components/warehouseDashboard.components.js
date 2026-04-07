@@ -224,12 +224,24 @@ export const StatusCard = ({ status, count, loading, classes }) => {
 /**
  * Status Chip Component
  */
+const STATUS_LABELS = {
+  'open': 'Open',
+  'picking': 'Picking',
+  'packing': 'Packing',
+  'invoice-ready': 'Invoice Ready',
+  'dispatch-ready': 'Dispatch Ready',
+  'completed': 'Completed',
+  'partially-completed': 'Partially Completed',
+};
+
 export const StatusChip = ({ status, classes }) => {
-  const className = classes[getStatusChipClass(status)];
+  const normalized = String(status).toLowerCase().replace(/\s+/g, '-');
+  const className = classes[getStatusChipClass(normalized)];
+  const label = STATUS_LABELS[normalized] || status;
 
   return (
     <Chip
-      label={status.charAt(0).toUpperCase() + status.slice(1)}
+      label={label}
       className={className}
       size="small"
     />

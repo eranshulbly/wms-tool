@@ -1,8 +1,11 @@
 # -*- encoding: utf-8 -*-
 
-from flask import request
+from flask import request, send_file
 from flask_restx import Resource, fields
 from datetime import datetime, timedelta
+import io
+import openpyxl
+from openpyxl.styles import PatternFill, Font, Alignment
 
 from .models import (
     Users, JWTTokenBlocklist, Warehouse, Company, PotentialOrder,
@@ -44,6 +47,7 @@ status_counts_model = rest_api.model('StatusCounts', {
     'open': fields.Nested(status_count_model),
     'picking': fields.Nested(status_count_model),
     'packing': fields.Nested(status_count_model),
+    'invoice-ready': fields.Nested(status_count_model),
     'dispatch-ready': fields.Nested(status_count_model),
     'completed': fields.Nested(status_count_model),
     'partially-completed': fields.Nested(status_count_model)
@@ -154,6 +158,7 @@ class OrderStatusCount(Resource):
                 ('open',                'Open',               'Open Orders'),
                 ('picking',             'Picking',            'Picking'),
                 ('packing',             'Packing',            'Packing'),
+                ('invoice-ready',       'Invoice Ready',      'Invoice Ready'),
                 ('dispatch-ready',      'Dispatch Ready',     'Dispatch Ready'),
                 ('completed',           'Completed',          'Completed'),
                 ('partially-completed', 'Partially Completed','Partially Completed'),
@@ -197,6 +202,7 @@ class OrdersList(Resource):
                 'open': 'Open',
                 'picking': 'Picking',
                 'packing': 'Packing',
+                'invoice-ready': 'Invoice Ready',
                 'dispatch-ready': 'Dispatch Ready',
                 'completed': 'Completed',
                 'partially-completed': 'Partially Completed'
@@ -241,11 +247,12 @@ class OrdersList(Resource):
                     'Open': 'open',
                     'Picking': 'picking',
                     'Packing': 'packing',
+                    'Invoice Ready': 'invoice-ready',
                     'Dispatch Ready': 'dispatch-ready',
                     'Completed': 'completed',
                     'Partially Completed': 'partially-completed'
                 }
-                frontend_status = frontend_status_map.get(order_data['status'], 'open')
+                frontend_status = frontend_status_map.get(order_data['status'], order_data['status'].lower().replace(' ', '-'))
 
                 # Format the order
                 order_result = {
@@ -274,6 +281,329 @@ class OrdersList(Resource):
                 'success': False,
                 'msg': f'Error retrieving orders: {str(e)}'
             }, 400
+
+FRONTEND_TO_DB_STATUS = {
+    'open': 'Open',
+    'picking': 'Picking',
+    'packing': 'Packing',
+    'invoice-ready': 'Invoice Ready',
+    'dispatch-ready': 'Dispatch Ready',
+    'completed': 'Completed',
+}
+
+DB_TO_FRONTEND_STATUS = {v: k for k, v in FRONTEND_TO_DB_STATUS.items()}
+
+# open→picking, picking→packing, packing→invoice-ready, dispatch-ready→completed
+VALID_BULK_TRANSITIONS = {
+    'open': 'picking',
+    'picking': 'packing',
+    'packing': 'invoice-ready',
+    'dispatch-ready': 'completed',
+}
+
+
+@rest_api.route('/api/orders/bulk-export')
+class BulkOrderExport(Resource):
+    """Download orders as Excel template for bulk status update"""
+
+    @token_required
+    @active_required
+    def get(self, current_user):
+        """Generate and return Excel file for bulk order status update"""
+        try:
+            status = request.args.get('status', '')
+            warehouse_id = request.args.get('warehouse_id', type=int)
+            company_id = request.args.get('company_id', type=int)
+
+            db_status = FRONTEND_TO_DB_STATUS.get(status.lower(), '') if status else ''
+
+            potential_orders = PotentialOrder.find_by_filters(
+                status=db_status,
+                warehouse_id=warehouse_id,
+                company_id=company_id,
+                limit=1000
+            )
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = 'Orders'
+
+            # --- Header row ---
+            header_fill = PatternFill(start_color='1565C0', end_color='1565C0', fill_type='solid')
+            header_font = Font(color='FFFFFF', bold=True)
+            headers = ['Order ID', 'Customer Name', 'Current Status', 'Expected Status', 'Number of Boxes']
+            for col, h in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col, value=h)
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+
+            # --- Instructions row ---
+            note_fill = PatternFill(start_color='FFF9C4', end_color='FFF9C4', fill_type='solid')
+            note_font = Font(italic=True, color='5D4037')
+            notes = [
+                '(do not edit)',
+                '(do not edit)',
+                '(do not edit)',
+                'Fill: picking / packing / invoice-ready / completed',
+                'Fill only when moving packing → invoice-ready',
+            ]
+            for col, note in enumerate(notes, 1):
+                cell = ws.cell(row=2, column=col, value=note)
+                cell.fill = note_fill
+                cell.font = note_font
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+
+            # --- Blocked note row ---
+            blocked_fill = PatternFill(start_color='FFCDD2', end_color='FFCDD2', fill_type='solid')
+            ws.cell(row=3, column=1, value='NOTE').fill = blocked_fill
+            note_cell = ws.cell(
+                row=3, column=2,
+                value='invoice-ready → dispatch-ready is NOT allowed here. Use the Invoice Upload tab.'
+            )
+            note_cell.fill = blocked_fill
+            note_cell.font = Font(bold=True, color='B71C1C')
+            ws.merge_cells('B3:E3')
+
+            # --- Data rows (starting row 4) ---
+            readonly_fill = PatternFill(start_color='F5F5F5', end_color='F5F5F5', fill_type='solid')
+            for row_idx, order_data in enumerate(potential_orders, 4):
+                current_fe_status = DB_TO_FRONTEND_STATUS.get(order_data['status'],
+                                                               order_data['status'].lower().replace(' ', '-'))
+                dealer_name = order_data.get('dealer_name', 'Unknown')
+
+                for col, val in enumerate([
+                    f"PO{order_data['potential_order_id']}",
+                    dealer_name,
+                    current_fe_status,
+                    '',   # Expected Status — user fills
+                    '',   # Number of Boxes — user fills if needed
+                ], 1):
+                    cell = ws.cell(row=row_idx, column=col, value=val)
+                    if col <= 3:
+                        cell.fill = readonly_fill
+
+            # --- Column widths ---
+            ws.column_dimensions['A'].width = 14
+            ws.column_dimensions['B'].width = 32
+            ws.column_dimensions['C'].width = 20
+            ws.column_dimensions['D'].width = 30
+            ws.column_dimensions['E'].width = 22
+            ws.row_dimensions[1].height = 20
+            ws.row_dimensions[2].height = 18
+
+            output = io.BytesIO()
+            wb.save(output)
+            output.seek(0)
+
+            filename = f'orders_bulk_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
+            return send_file(
+                output,
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                as_attachment=True,
+                download_name=filename
+            )
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {'success': False, 'msg': f'Error generating export: {str(e)}'}, 400
+
+
+@rest_api.route('/api/orders/bulk-import')
+class BulkOrderImport(Resource):
+    """Upload filled Excel template to perform bulk order status transitions"""
+
+    @token_required
+    @active_required
+    def post(self, current_user):
+        """Process bulk order status updates from uploaded Excel"""
+        try:
+            if 'file' not in request.files:
+                return {'success': False, 'msg': 'No file uploaded'}, 400
+
+            file = request.files['file']
+            try:
+                wb = openpyxl.load_workbook(io.BytesIO(file.read()))
+                ws = wb.active
+            except Exception as e:
+                return {'success': False, 'msg': f'Invalid Excel file: {str(e)}'}, 400
+
+            moved, skipped, errors = [], [], []
+
+            # Data starts at row 4 (rows 1-3 are header / notes)
+            for row in ws.iter_rows(min_row=4, values_only=True):
+                order_id = str(row[0] or '').strip() if row[0] else ''
+                current_status = str(row[2] or '').strip().lower()
+                expected_status = str(row[3] or '').strip().lower()
+                raw_boxes = row[4]
+
+                if not order_id:
+                    continue
+
+                if not expected_status:
+                    skipped.append({'order_id': order_id, 'reason': 'No expected status provided'})
+                    continue
+
+                if current_status == expected_status:
+                    skipped.append({'order_id': order_id, 'reason': 'Status unchanged'})
+                    continue
+
+                # Block invoice-ready → dispatch-ready
+                if current_status == 'invoice-ready' and expected_status == 'dispatch-ready':
+                    errors.append({
+                        'order_id': order_id,
+                        'reason': 'invoice-ready → dispatch-ready is not allowed here. Use the Invoice Upload tab.'
+                    })
+                    continue
+
+                # Validate transition
+                if VALID_BULK_TRANSITIONS.get(current_status) != expected_status:
+                    valid_next = VALID_BULK_TRANSITIONS.get(current_status, 'none')
+                    errors.append({
+                        'order_id': order_id,
+                        'reason': f'Invalid transition: {current_status} → {expected_status}. Valid next: {valid_next}'
+                    })
+                    continue
+
+                # Parse order numeric ID
+                try:
+                    numeric_id = int(order_id.replace('PO', ''))
+                except ValueError:
+                    errors.append({'order_id': order_id, 'reason': 'Invalid order ID format'})
+                    continue
+
+                potential_order = PotentialOrder.get_by_id(numeric_id)
+                if not potential_order:
+                    errors.append({'order_id': order_id, 'reason': 'Order not found'})
+                    continue
+
+                # Verify current status matches DB
+                db_current = DB_TO_FRONTEND_STATUS.get(potential_order.status,
+                                                        potential_order.status.lower().replace(' ', '-'))
+                if db_current != current_status:
+                    errors.append({
+                        'order_id': order_id,
+                        'reason': f'Status mismatch: DB has "{db_current}", Excel shows "{current_status}"'
+                    })
+                    continue
+
+                try:
+                    current_time = datetime.utcnow()
+
+                    if expected_status == 'invoice-ready':
+                        # Packing → Invoice Ready
+                        try:
+                            number_of_boxes = max(1, int(raw_boxes or 1))
+                        except (ValueError, TypeError):
+                            number_of_boxes = 1
+
+                        final_order = Order(
+                            potential_order_id=numeric_id,
+                            order_number=f"ORD-{numeric_id}-{current_time.strftime('%Y%m%d%H%M')}",
+                            status='Dispatch Ready',
+                            created_at=current_time,
+                            updated_at=current_time
+                        )
+                        final_order.save()
+
+                        for i in range(number_of_boxes):
+                            OrderBox(
+                                order_id=final_order.order_id,
+                                name=f'Box-{i + 1}',
+                                created_at=current_time,
+                                updated_at=current_time
+                            ).save()
+
+                        potential_order.status = 'Invoice Ready'
+                        potential_order.updated_at = current_time
+                        potential_order.save()
+
+                        state = OrderState.find_by_name('Invoice Ready') or _ensure_state('Invoice Ready', 'Order packed and ready for invoice upload')
+                        OrderStateHistory(
+                            potential_order_id=numeric_id,
+                            state_id=state.state_id,
+                            changed_by=current_user.id,
+                            changed_at=current_time
+                        ).save()
+
+                        moved.append({
+                            'order_id': order_id,
+                            'from': current_status,
+                            'to': expected_status,
+                            'boxes': number_of_boxes
+                        })
+
+                    elif expected_status == 'completed':
+                        # Dispatch Ready → Completed
+                        final_order = Order.find_by_potential_order_id(numeric_id)
+                        if not final_order:
+                            errors.append({'order_id': order_id, 'reason': 'No final order found for dispatch-ready order'})
+                            continue
+
+                        final_order.status = 'Completed'
+                        final_order.dispatched_date = current_time
+                        final_order.updated_at = current_time
+                        final_order.save()
+
+                        potential_order.status = 'Completed'
+                        potential_order.updated_at = current_time
+                        potential_order.save()
+
+                        state = OrderState.find_by_name('Completed') or _ensure_state('Completed', 'Order completed and dispatched')
+                        OrderStateHistory(
+                            potential_order_id=numeric_id,
+                            state_id=state.state_id,
+                            changed_by=current_user.id,
+                            changed_at=current_time
+                        ).save()
+
+                        moved.append({'order_id': order_id, 'from': current_status, 'to': expected_status})
+
+                    else:
+                        # Simple transitions: open→picking, picking→packing
+                        new_db_status = FRONTEND_TO_DB_STATUS[expected_status]
+                        potential_order.status = new_db_status
+                        potential_order.updated_at = current_time
+                        potential_order.save()
+
+                        state = OrderState.find_by_name(new_db_status) or _ensure_state(new_db_status, f'Order moved to {new_db_status}')
+                        OrderStateHistory(
+                            potential_order_id=numeric_id,
+                            state_id=state.state_id,
+                            changed_by=current_user.id,
+                            changed_at=current_time
+                        ).save()
+
+                        moved.append({'order_id': order_id, 'from': current_status, 'to': expected_status})
+
+                except Exception as e:
+                    errors.append({'order_id': order_id, 'reason': f'Error processing: {str(e)}'})
+
+            return {
+                'success': True,
+                'summary': {
+                    'moved': len(moved),
+                    'skipped': len(skipped),
+                    'errors': len(errors)
+                },
+                'details': {'moved': moved, 'skipped': skipped, 'errors': errors}
+            }, 200
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {'success': False, 'msg': f'Error processing import: {str(e)}'}, 400
+
+
+def _ensure_state(name, description):
+    """Get or create an OrderState by name."""
+    state = OrderState.find_by_name(name)
+    if not state:
+        state = OrderState(state_name=name, description=description)
+        state.save()
+    return state
+
 
 @rest_api.route('/api/orders/<string:order_id>')
 class OrderDetail(Resource):
@@ -329,6 +659,7 @@ class OrderDetail(Resource):
                 'Open': 'open',
                 'Picking': 'picking',
                 'Packing': 'packing',
+                'Invoice Ready': 'invoice-ready',
                 'Dispatch Ready': 'dispatch-ready',
                 'Completed': 'completed',
                 'Partially Completed': 'partially-completed'
@@ -408,6 +739,7 @@ class RecentOrders(Resource):
                     'Open': 'open',
                     'Picking': 'picking',
                     'Packing': 'packing',
+                    'Invoice Ready': 'invoice-ready',
                     'Dispatch Ready': 'dispatch-ready',
                     'Completed': 'completed',
                     'Partially Completed': 'partially-completed'

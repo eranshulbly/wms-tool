@@ -221,6 +221,7 @@ class Dealer(MySQLModel):
         super().__init__(**kwargs)
         self.dealer_id = kwargs.get('dealer_id')
         self.name = kwargs.get('name')
+        self.dealer_code = kwargs.get('dealer_code')
         self.created_at = kwargs.get('created_at')
         self.updated_at = kwargs.get('updated_at')
 
@@ -228,15 +229,15 @@ class Dealer(MySQLModel):
         """Save dealer"""
         if self.dealer_id:
             mysql_manager.execute_query(
-                "UPDATE dealer SET name=%s, updated_at=%s WHERE dealer_id=%s",
-                (self.name, datetime.utcnow(), self.dealer_id),
+                "UPDATE dealer SET name=%s, dealer_code=%s, updated_at=%s WHERE dealer_id=%s",
+                (self.name, self.dealer_code, datetime.utcnow(), self.dealer_id),
                 fetch=False
             )
         else:
             with mysql_manager.get_cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO dealer (name, created_at, updated_at) VALUES (%s, %s, %s)",
-                    (self.name, datetime.utcnow(), datetime.utcnow())
+                    "INSERT INTO dealer (name, dealer_code, created_at, updated_at) VALUES (%s, %s, %s, %s)",
+                    (self.name, self.dealer_code, datetime.utcnow(), datetime.utcnow())
                 )
                 self.dealer_id = cursor.lastrowid
 
@@ -255,6 +256,16 @@ class Dealer(MySQLModel):
         """Find dealer by name (case insensitive)"""
         result = mysql_manager.execute_query(
             "SELECT * FROM dealer WHERE LOWER(name) = LOWER(%s)", (name,)
+        )
+        if result:
+            return cls(**result[0])
+        return None
+
+    @classmethod
+    def find_by_code(cls, dealer_code):
+        """Find dealer by eway bill dealer code"""
+        result = mysql_manager.execute_query(
+            "SELECT * FROM dealer WHERE dealer_code = %s", (dealer_code,)
         )
         if result:
             return cls(**result[0])
@@ -406,6 +417,13 @@ class PotentialOrder(MySQLModel):
         super().__init__(**kwargs)
         self.potential_order_id = kwargs.get('potential_order_id')
         self.original_order_id = kwargs.get('original_order_id')
+        self.b2b_po_number = kwargs.get('b2b_po_number')
+        self.order_type = kwargs.get('order_type')
+        self.vin_number = kwargs.get('vin_number')
+        self.shipping_address = kwargs.get('shipping_address')
+        self.source_created_by = kwargs.get('source_created_by')
+        self.purchaser_sap_code = kwargs.get('purchaser_sap_code')
+        self.purchaser_name = kwargs.get('purchaser_name')
         self.warehouse_id = kwargs.get('warehouse_id')
         self.company_id = kwargs.get('company_id')
         self.dealer_id = kwargs.get('dealer_id')
@@ -420,24 +438,36 @@ class PotentialOrder(MySQLModel):
         """Save potential order"""
         if self.potential_order_id:
             mysql_manager.execute_query(
-                """UPDATE potential_order SET original_order_id=%s, warehouse_id=%s,
-                   company_id=%s, dealer_id=%s, order_date=%s, requested_by=%s,
-                   status=%s, updated_at=%s WHERE potential_order_id=%s""",
-                (self.original_order_id, self.warehouse_id, self.company_id,
-                 self.dealer_id, self.order_date, self.requested_by, self.status,
+                """UPDATE potential_order SET original_order_id=%s, b2b_po_number=%s,
+                   order_type=%s, vin_number=%s, shipping_address=%s,
+                   source_created_by=%s, purchaser_sap_code=%s, purchaser_name=%s,
+                   warehouse_id=%s, company_id=%s, dealer_id=%s, order_date=%s,
+                   requested_by=%s, status=%s, updated_at=%s
+                   WHERE potential_order_id=%s""",
+                (self.original_order_id, self.b2b_po_number,
+                 self.order_type, self.vin_number, self.shipping_address,
+                 self.source_created_by, self.purchaser_sap_code, self.purchaser_name,
+                 self.warehouse_id, self.company_id, self.dealer_id, self.order_date,
+                 self.requested_by, self.status,
                  datetime.utcnow(), self.potential_order_id),
                 fetch=False
             )
         else:
             with mysql_manager.get_cursor() as cursor:
                 cursor.execute(
-                    """INSERT INTO potential_order (original_order_id, warehouse_id,
-                       company_id, dealer_id, order_date, requested_by, status,
-                       upload_batch_id, created_at, updated_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                    (self.original_order_id, self.warehouse_id, self.company_id,
-                     self.dealer_id, self.order_date, self.requested_by, self.status,
-                     self.upload_batch_id, datetime.utcnow(), datetime.utcnow())
+                    """INSERT INTO potential_order (original_order_id, b2b_po_number,
+                       order_type, vin_number, shipping_address, source_created_by,
+                       purchaser_sap_code, purchaser_name, warehouse_id, company_id,
+                       dealer_id, order_date, requested_by, status, upload_batch_id,
+                       created_at, updated_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                               %s, %s, %s, %s, %s, %s, %s)""",
+                    (self.original_order_id, self.b2b_po_number,
+                     self.order_type, self.vin_number, self.shipping_address,
+                     self.source_created_by, self.purchaser_sap_code, self.purchaser_name,
+                     self.warehouse_id, self.company_id, self.dealer_id, self.order_date,
+                     self.requested_by, self.status, self.upload_batch_id,
+                     datetime.utcnow(), datetime.utcnow())
                 )
                 self.potential_order_id = cursor.lastrowid
 
@@ -499,12 +529,18 @@ class PotentialOrder(MySQLModel):
         return results
 
     @classmethod
-    def find_by_original_order_id(cls, original_order_id, warehouse_id, company_id):
-        """Find potential order by original order ID"""
+    def find_by_original_order_id(cls, original_order_id, warehouse_id=None, company_id=None):
+        """Find potential order by original order ID.
+
+        Searches by original_order_id only — the ID already encodes the warehouse
+        (e.g. '30305-02-PSAO-0426-200'), so strict warehouse/company FK filtering
+        caused legitimate orders to be missed when their upload recorded a different
+        warehouse_id or company_id. warehouse_id/company_id args are kept for
+        backwards-compatibility but are no longer used in the query.
+        """
         result = mysql_manager.execute_query(
-            """SELECT * FROM potential_order 
-               WHERE original_order_id = %s AND warehouse_id = %s AND company_id = %s""",
-            (original_order_id, warehouse_id, company_id)
+            "SELECT * FROM potential_order WHERE original_order_id = %s",
+            (original_order_id,)
         )
         if result:
             return cls(**result[0])
@@ -803,8 +839,9 @@ class Invoice(MySQLModel):
         super().__init__(**kwargs)
         # Set all invoice fields from kwargs
         for field in ['invoice_id', 'potential_order_id', 'warehouse_id', 'company_id',
-                      'invoice_number', 'dealer_code', 'original_order_id', 'customer_name',
-                      'customer_code', 'customer_category', 'invoice_date', 'invoice_status',
+                      'dealer_id', 'invoice_number', 'original_order_id', 'order_date',
+                      'account_tin', 'cash_customer_name', 'contact_first_name',
+                      'contact_last_name', 'customer_category', 'invoice_date', 'invoice_status',
                       'invoice_type', 'invoice_format', 'part_no', 'part_name', 'uom',
                       'hsn_number', 'product_type', 'product_category', 'quantity',
                       'unit_price', 'line_item_discount_percent', 'line_item_discount',
@@ -817,11 +854,17 @@ class Invoice(MySQLModel):
                       'frt_pkg_cgst_amount', 'frt_pkg_sgst_percent', 'frt_pkg_sgst_amount',
                       'frt_pkg_igst_percent', 'frt_pkg_igst_amount', 'frt_pkg_cess_percent',
                       'frt_pkg_cess_amount', 'total_invoice_amount', 'additional_discount_percent',
-                      'cash_discount_percent', 'credit_days', 'location_code', 'state',
-                      'state_code', 'gstin', 'record_updated_dt', 'login', 'voucher',
-                      'type_field', 'parent', 'sale_return_date', 'narration',
-                      'cancellation_date', 'executive_name', 'uploaded_by', 'upload_batch_id',
-                      'created_at', 'updated_at']:
+                      'cash_discount_percent', 'credit_days', 'state', 'state_code', 'gstin',
+                      'record_updated_dt', 'login', 'voucher', 'type_field', 'parent',
+                      'sale_return_date', 'narration', 'cancellation_date', 'executive_name',
+                      'round_off_amount', 'invoice_round_off_amount', 'short_amount',
+                      'realized_amount', 'hmcgl_card_no', 'campaign',
+                      'b2b_purchase_order_number', 'b2b_order_type', 'invoice_header_type',
+                      'packaging_forwarding_charges', 'tax_on_pf', 'type_of_tax_pf',
+                      'irn_number', 'irn_status', 'ack_number', 'ack_date',
+                      'credit_note_number', 'irn_cancel', 'irn_status_cancel',
+                      'ack_number_cancel', 'ack_date_cancel',
+                      'uploaded_by', 'upload_batch_id', 'created_at', 'updated_at']:
             setattr(self, field, kwargs.get(field))
 
     def save(self):
@@ -994,13 +1037,12 @@ class TransportRoute(MySQLModel):
 
 
 class CustomerRouteMapping(MySQLModel):
-    """Customer to Route Mapping model"""
+    """Customer to Route Mapping model — keyed by dealer_id FK"""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.mapping_id = kwargs.get('mapping_id')
-        self.customer_code = kwargs.get('customer_code')
-        self.customer_name = kwargs.get('customer_name')
+        self.dealer_id = kwargs.get('dealer_id')
         self.route_id = kwargs.get('route_id')
         self.distance = kwargs.get('distance')
         self.created_at = kwargs.get('created_at')
@@ -1010,12 +1052,12 @@ class CustomerRouteMapping(MySQLModel):
         with mysql_manager.get_cursor() as cursor:
             cursor.execute(
                 """INSERT INTO customer_route_mappings
-                   (customer_code, customer_name, route_id, distance, created_at, updated_at)
-                   VALUES (%s, %s, %s, %s, %s, %s)
+                   (dealer_id, route_id, distance, created_at, updated_at)
+                   VALUES (%s, %s, %s, %s, %s)
                    ON DUPLICATE KEY UPDATE
-                   customer_name=VALUES(customer_name), route_id=VALUES(route_id),
+                   route_id=VALUES(route_id),
                    distance=VALUES(distance), updated_at=VALUES(updated_at)""",
-                (self.customer_code, self.customer_name, self.route_id, self.distance,
+                (self.dealer_id, self.route_id, self.distance,
                  datetime.utcnow(), datetime.utcnow())
             )
             if cursor.lastrowid:
@@ -1024,35 +1066,61 @@ class CustomerRouteMapping(MySQLModel):
     @classmethod
     def get_all(cls):
         results = mysql_manager.execute_query(
-            """SELECT m.mapping_id, m.customer_code, m.customer_name, m.route_id,
-                      m.distance, r.name as route_name
+            """SELECT m.mapping_id, m.dealer_id, d.dealer_code as customer_code,
+                      d.name as customer_name, m.route_id, m.distance,
+                      r.name as route_name
                FROM customer_route_mappings m
+               JOIN dealer d ON m.dealer_id = d.dealer_id
                LEFT JOIN transport_routes r ON m.route_id = r.route_id
-               ORDER BY r.name, m.customer_code"""
+               ORDER BY r.name, d.dealer_code"""
         )
         return results or []
 
     @classmethod
     def get_for_route(cls, route_id):
         results = mysql_manager.execute_query(
-            """SELECT mapping_id, customer_code, customer_name, distance
-               FROM customer_route_mappings WHERE route_id = %s ORDER BY customer_code""",
+            """SELECT m.mapping_id, m.dealer_id, d.dealer_code as customer_code,
+                      d.name as customer_name, m.distance
+               FROM customer_route_mappings m
+               JOIN dealer d ON m.dealer_id = d.dealer_id
+               WHERE m.route_id = %s ORDER BY d.dealer_code""",
             (route_id,)
         )
         return results or []
 
     @classmethod
-    def find_by_customer_code(cls, customer_code):
+    def find_by_dealer_code(cls, dealer_code):
+        """Find mapping by eway bill dealer code (joins dealer table)."""
         result = mysql_manager.execute_query(
-            "SELECT * FROM customer_route_mappings WHERE customer_code = %s", (customer_code,)
+            """SELECT m.* FROM customer_route_mappings m
+               JOIN dealer d ON m.dealer_id = d.dealer_id
+               WHERE d.dealer_code = %s""",
+            (dealer_code,)
         )
         return cls(**result[0]) if result else None
 
     @classmethod
-    def delete_by_customer_code(cls, customer_code):
+    def find_by_dealer_id(cls, dealer_id):
+        result = mysql_manager.execute_query(
+            "SELECT * FROM customer_route_mappings WHERE dealer_id = %s", (dealer_id,)
+        )
+        return cls(**result[0]) if result else None
+
+    @classmethod
+    def delete_by_dealer_code(cls, dealer_code):
+        """Delete mapping by eway bill dealer code."""
         mysql_manager.execute_query(
-            "DELETE FROM customer_route_mappings WHERE customer_code = %s",
-            (customer_code,), fetch=False
+            """DELETE crm FROM customer_route_mappings crm
+               JOIN dealer d ON crm.dealer_id = d.dealer_id
+               WHERE d.dealer_code = %s""",
+            (dealer_code,), fetch=False
+        )
+
+    @classmethod
+    def delete_by_dealer_id(cls, dealer_id):
+        mysql_manager.execute_query(
+            "DELETE FROM customer_route_mappings WHERE dealer_id = %s",
+            (dealer_id,), fetch=False
         )
 
 

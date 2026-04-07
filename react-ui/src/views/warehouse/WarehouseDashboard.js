@@ -1,11 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useSelector } from 'react-redux';
 import {
   Grid,
   Card,
   CardContent,
-  Typography
+  Typography,
+  Button,
+  IconButton,
+  Tooltip
 } from '@material-ui/core';
+import RefreshIcon from '@material-ui/icons/Refresh';
 import { gridSpacing } from '../../store/constant';
 import dashboardService from '../../services/dashboardService';
 
@@ -51,6 +55,11 @@ const WarehouseDashboard = () => {
 
   // New state for UI preference (you can make this a user setting)
   const [compactView, setCompactView] = useState(true); // Set to true for compact view
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  const handleRefresh = useCallback(() => {
+    setRefreshTick((t) => t + 1);
+  }, []);
 
   // Fetch warehouses and companies on component mount
   useEffect(() => {
@@ -112,7 +121,7 @@ const WarehouseDashboard = () => {
     };
 
     fetchOrderData();
-  }, [warehouse, company]);
+  }, [warehouse, company, refreshTick]);
 
   // Filter orders based on status filter
   useEffect(() => {
@@ -209,18 +218,25 @@ const WarehouseDashboard = () => {
       <Grid item xs={12}>
         <Card>
           <CardContent style={{ padding: '16px' }}>
-            <Typography variant="h4" gutterBottom>
-              Recent Activity
-              {statusFilter !== 'all' && (
-                <Typography
-                  variant="subtitle1"
-                  component="span"
-                  className={classes.filterTitle}
-                >
-                  - Showing {ORDER_STATUS_DATA[statusFilter]?.label || statusFilter} ({filteredOrders.length} orders)
-                </Typography>
-              )}
-            </Typography>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+              <Typography variant="h4">
+                Recent Activity
+                {statusFilter !== 'all' && (
+                  <Typography
+                    variant="subtitle1"
+                    component="span"
+                    className={classes.filterTitle}
+                  >
+                    &nbsp;- Showing {ORDER_STATUS_DATA[statusFilter]?.label || statusFilter} ({filteredOrders.length} orders)
+                  </Typography>
+                )}
+              </Typography>
+              <Tooltip title="Refresh data">
+                <IconButton size="small" onClick={handleRefresh} disabled={loading}>
+                  <RefreshIcon />
+                </IconButton>
+              </Tooltip>
+            </div>
 
             <OrdersTable
               filteredOrders={filteredOrders}

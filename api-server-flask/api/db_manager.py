@@ -223,9 +223,11 @@ def create_all_tables():
     CREATE TABLE IF NOT EXISTS dealer (
         dealer_id INT AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
+        dealer_code VARCHAR(50) NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX idx_dealer_name (name)
+        INDEX idx_dealer_name (name),
+        UNIQUE INDEX idx_dealer_code (dealer_code)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
 
@@ -269,12 +271,20 @@ def create_all_tables():
     CREATE TABLE IF NOT EXISTS potential_order (
         potential_order_id INT AUTO_INCREMENT PRIMARY KEY,
         original_order_id VARCHAR(100) NOT NULL,
+        b2b_po_number VARCHAR(100) NULL,
+        order_type VARCHAR(20) NULL,
+        vin_number VARCHAR(100) NULL,
+        shipping_address TEXT NULL,
+        source_created_by VARCHAR(100) NULL,
+        purchaser_sap_code VARCHAR(50) NULL,
+        purchaser_name VARCHAR(255) NULL,
         warehouse_id INT,
         company_id INT,
         dealer_id INT,
         order_date DATETIME DEFAULT CURRENT_TIMESTAMP,
         requested_by INT,
         status VARCHAR(50) DEFAULT 'Open',
+        upload_batch_id INT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         INDEX idx_potential_order_status (status),
@@ -385,78 +395,47 @@ def create_all_tables():
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
 
-    # Invoice table
+    # Invoice table — new format (one record per invoice header, no line items)
     invoice_sql = """
     CREATE TABLE IF NOT EXISTS invoice (
         invoice_id INT AUTO_INCREMENT PRIMARY KEY,
         potential_order_id INT,
         warehouse_id INT,
         company_id INT,
+        dealer_id INT NULL,
         invoice_number VARCHAR(255) NOT NULL,
-        dealer_code VARCHAR(100),
         original_order_id VARCHAR(255) NOT NULL,
-        customer_name VARCHAR(500),
-        customer_code VARCHAR(100),
-        customer_category VARCHAR(100),
         invoice_date DATETIME,
-        invoice_status VARCHAR(50),
         invoice_type VARCHAR(50),
-        invoice_format VARCHAR(50),
-        part_no VARCHAR(255),
-        part_name VARCHAR(500),
-        uom VARCHAR(50),
-        hsn_number VARCHAR(100),
-        product_type VARCHAR(100),
-        product_category VARCHAR(100),
-        quantity INT,
-        unit_price DECIMAL(10,2),
-        line_item_discount_percent DECIMAL(5,2),
-        line_item_discount DECIMAL(10,2),
-        net_selling_price DECIMAL(10,2),
-        assessable_value DECIMAL(10,2),
-        vat_amount DECIMAL(10,2),
-        cgst_percent DECIMAL(5,2),
-        cgst_amount DECIMAL(10,2),
-        sgst_percent DECIMAL(5,2),
-        sgst_amount DECIMAL(10,2),
-        utgst_percent DECIMAL(5,2),
-        utgst_amount DECIMAL(10,2),
-        igst_percent DECIMAL(5,2),
-        igst_amount DECIMAL(10,2),
-        cess_percent DECIMAL(5,2),
-        cess_amount DECIMAL(10,2),
-        additional_tax_amt DECIMAL(10,2),
-        additional_tax_amt2 DECIMAL(10,2),
-        additional_tax_amt3 DECIMAL(10,2),
-        additional_tax_amt4 DECIMAL(10,2),
-        additional_tax_amt5 DECIMAL(10,2),
-        freight_amount DECIMAL(10,2),
-        packaging_charges DECIMAL(10,2),
-        frt_pkg_cgst_percent DECIMAL(5,2),
-        frt_pkg_cgst_amount DECIMAL(10,2),
-        frt_pkg_sgst_percent DECIMAL(5,2),
-        frt_pkg_sgst_amount DECIMAL(10,2),
-        frt_pkg_igst_percent DECIMAL(5,2),
-        frt_pkg_igst_amount DECIMAL(10,2),
-        frt_pkg_cess_percent DECIMAL(5,2),
-        frt_pkg_cess_amount DECIMAL(10,2),
-        total_invoice_amount DECIMAL(12,2),
-        additional_discount_percent DECIMAL(5,2),
-        cash_discount_percent DECIMAL(5,2),
-        credit_days INT,
-        location_code VARCHAR(50),
-        state VARCHAR(100),
-        state_code VARCHAR(10),
-        gstin VARCHAR(50),
-        record_updated_dt DATETIME,
-        login VARCHAR(100),
-        voucher VARCHAR(100),
-        type_field VARCHAR(100),
-        parent VARCHAR(100),
-        sale_return_date DATETIME,
-        narration TEXT,
         cancellation_date DATETIME,
-        executive_name VARCHAR(255),
+        total_invoice_amount DECIMAL(12,2),
+        invoice_header_type VARCHAR(50),
+        order_date DATETIME NULL,
+        b2b_purchase_order_number VARCHAR(100),
+        b2b_order_type VARCHAR(50),
+        account_tin VARCHAR(50),
+        cash_customer_name VARCHAR(255),
+        contact_first_name VARCHAR(100),
+        contact_last_name VARCHAR(100),
+        customer_category VARCHAR(100),
+        round_off_amount DECIMAL(10,2),
+        invoice_round_off_amount DECIMAL(10,2),
+        short_amount DECIMAL(10,2),
+        realized_amount DECIMAL(10,2),
+        hmcgl_card_no VARCHAR(100),
+        campaign VARCHAR(100),
+        packaging_forwarding_charges DECIMAL(10,2),
+        tax_on_pf DECIMAL(10,2),
+        type_of_tax_pf VARCHAR(50),
+        irn_number VARCHAR(100),
+        irn_status VARCHAR(50),
+        ack_number VARCHAR(100),
+        ack_date DATETIME,
+        credit_note_number VARCHAR(100),
+        irn_cancel VARCHAR(100),
+        irn_status_cancel VARCHAR(50),
+        ack_number_cancel VARCHAR(100),
+        ack_date_cancel DATETIME,
         uploaded_by INT,
         upload_batch_id VARCHAR(100),
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -468,7 +447,8 @@ def create_all_tables():
         INDEX idx_invoice_composite (warehouse_id, company_id, invoice_date),
         FOREIGN KEY (potential_order_id) REFERENCES potential_order(potential_order_id),
         FOREIGN KEY (warehouse_id) REFERENCES warehouse(warehouse_id),
-        FOREIGN KEY (company_id) REFERENCES company(company_id)
+        FOREIGN KEY (company_id) REFERENCES company(company_id),
+        FOREIGN KEY (dealer_id) REFERENCES dealer(dealer_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
 
@@ -557,12 +537,12 @@ def create_all_tables():
     customer_route_mappings_sql = """
     CREATE TABLE IF NOT EXISTS customer_route_mappings (
         mapping_id INT AUTO_INCREMENT PRIMARY KEY,
-        customer_code VARCHAR(100) NOT NULL UNIQUE,
-        customer_name VARCHAR(500),
+        dealer_id INT NOT NULL UNIQUE,
         route_id INT,
         distance INT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (dealer_id) REFERENCES dealer(dealer_id) ON DELETE CASCADE,
         FOREIGN KEY (route_id) REFERENCES transport_routes(route_id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
@@ -666,8 +646,9 @@ def insert_default_states():
         ('Open', 'Order is open and ready for processing'),
         ('Picking', 'Order is being picked from inventory'),
         ('Packing', 'Order items are being packed'),
-        ('Dispatch Ready', 'Order is ready for dispatch'),
-        ('Completed', 'Order has been fully processed and dispatched'),
+        ('Invoice Ready', 'Order packed and ready for invoice upload'),
+        ('Dispatch Ready', 'Invoices uploaded, order ready for physical dispatch'),
+        ('Completed', 'Order has been fully dispatched from warehouse'),
         ('Partially Completed', 'Order has been partially completed with remaining items')
     ]
 
@@ -682,7 +663,7 @@ def insert_default_states():
             print(f"Error inserting state {state_name}: {e}")
 
 
-ALL_ORDER_STATES = ['Open', 'Picking', 'Packing', 'Dispatch Ready', 'Completed', 'Partially Completed']
+ALL_ORDER_STATES = ['Open', 'Picking', 'Packing', 'Invoice Ready', 'Dispatch Ready', 'Completed', 'Partially Completed']
 ALL_UPLOAD_TYPES = ['orders', 'invoices']
 
 
@@ -714,9 +695,9 @@ def seed_default_roles():
         },
         {
             'name': 'dispatcher',
-            'description': 'Dispatch Ready/Completed states. Invoice uploads only.',
+            'description': 'Invoice Ready/Dispatch Ready/Completed states. Invoice uploads only.',
             'all_warehouses': False,
-            'order_states': ['Dispatch Ready', 'Completed', 'Partially Completed'],
+            'order_states': ['Invoice Ready', 'Dispatch Ready', 'Completed', 'Partially Completed'],
             'uploads': ['invoices'],
         },
         {

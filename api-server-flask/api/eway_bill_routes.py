@@ -8,9 +8,10 @@ import openpyxl
 import io
 
 from .models import (
-    TransportRoute, CustomerRouteMapping,
+    TransportRoute, CustomerRouteMapping, Dealer,
     DailyRouteManifest, CompanySchemaMapping
 )
+from .business.dealer_business import get_or_create_dealer
 from .routes import rest_api, token_required, active_required
 
 # --- Basic response models ---
@@ -103,12 +104,14 @@ class EwayCustomerRouteMappings(Resource):
     @active_required
     @eway_admin_required
     def post(self, current_user):
-        """Add / update a single customer-route mapping (upsert by customer_code)."""
+        """Add / update a single customer-route mapping (upsert by dealer)."""
         try:
             data = request.json
+            dealer_code = data['customer_code'].strip()
+            dealer_name = data.get('customer_name', '').strip() or dealer_code
+            dealer_id = get_or_create_dealer(dealer_name=dealer_name, dealer_code=dealer_code)
             m = CustomerRouteMapping(
-                customer_code=data['customer_code'].strip(),
-                customer_name=data.get('customer_name', '').strip(),
+                dealer_id=dealer_id,
                 route_id=int(data['route_id']),
                 distance=int(data['distance'])
             )
@@ -185,10 +188,10 @@ class EwayCustomerRouteMappingsBulk(Resource):
                         errors.append(f"Row {i}: Route '{route_name}' not found")
                         continue
 
-                    cust_name = str(row[ci_name]).strip() if (ci_name is not None and row[ci_name]) else ''
+                    cust_name = str(row[ci_name]).strip() if (ci_name is not None and row[ci_name]) else code
+                    dealer_id = get_or_create_dealer(dealer_name=cust_name, dealer_code=code)
                     m = CustomerRouteMapping(
-                        customer_code=code,
-                        customer_name=cust_name,
+                        dealer_id=dealer_id,
                         route_id=route_id,
                         distance=int(float(str(dist)))
                     )
@@ -243,10 +246,10 @@ class EwayCustomerRouteMappingDelete(Resource):
     @active_required
     @eway_admin_required
     def post(self, current_user):
-        """Remove a customer-route mapping by customer_code."""
+        """Remove a customer-route mapping by dealer code."""
         try:
             data = request.json
-            CustomerRouteMapping.delete_by_customer_code(data['customer_code'].strip())
+            CustomerRouteMapping.delete_by_dealer_code(data['customer_code'].strip())
             return {'success': True, 'msg': 'Customer removed from route'}, 200
         except Exception as e:
             return {'success': False, 'msg': str(e)}, 400
@@ -276,10 +279,10 @@ class EwayRouteCustomerRemove(Resource):
     @active_required
     @eway_admin_required
     def post(self, current_user):
-        """Remove a customer from their route by customer_code. Admin only."""
+        """Remove a customer from their route by dealer code. Admin only."""
         try:
             data = request.json
-            CustomerRouteMapping.delete_by_customer_code(data['customer_code'].strip())
+            CustomerRouteMapping.delete_by_dealer_code(data['customer_code'].strip())
             return {'success': True, 'msg': 'Customer removed from route'}, 200
         except Exception as e:
             return {'success': False, 'msg': str(e)}, 400
@@ -379,8 +382,8 @@ class EwayUpload(Resource):
                 vehicle_no = None
                 distance   = None
 
-                # Lookup: Customer Code → route + distance
-                cm = CustomerRouteMapping.find_by_customer_code(c_code)
+                # Lookup: Customer Code (dealer_code) → route + distance
+                cm = CustomerRouteMapping.find_by_dealer_code(c_code)
                 if cm:
                     route_id = cm.route_id
                     distance = cm.distance

@@ -57,17 +57,18 @@ export const getNextStatus = (currentStatus) => {
  * @returns {string} CSS class name for the status chip
  */
 export const getStatusChipClass = (status) => {
-  const normalizedStatus = String(status).toLowerCase().replace(' ', '-');
+  const normalizedStatus = String(status).toLowerCase().replace(/\s+/g, '-');
   const statusClassMap = {
     'open': 'chipOpen',
     'picking': 'chipPicking',
     'packing': 'chipPacking',
-    'dispatch-ready': 'chipDispatch',
+    'invoice-ready': 'chipInvoiceReady',
+    'dispatch-ready': 'chipDispatchReady',
     'completed': 'chipCompleted',
     'partially-completed': 'chipPartiallyCompleted'
   };
 
-  return statusClassMap[normalizedStatus] || '';
+  return statusClassMap[normalizedStatus] || 'chipOpen';
 };
 
 /**

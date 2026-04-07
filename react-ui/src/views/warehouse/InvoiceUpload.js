@@ -402,8 +402,8 @@ const InvoiceUpload = () => {
                                                 Upload Invoice Excel/CSV File
                                             </Typography>
                                             <Typography variant="body2" color="textSecondary" gutterBottom>
-                                                Upload your invoice file to automatically complete orders that are in "Dispatch Ready" status.
-                                                The system will match invoices to orders using the narration field.
+                                                Upload your invoice file to automatically move orders from "Invoice Ready" to "Dispatch Ready" status.
+                                                The system will match invoices to orders using the Order # field.
                                             </Typography>
                                         </Grid>
 
@@ -672,7 +672,7 @@ const InvoiceUpload = () => {
 
                                         <Grid item xs={12} style={{ marginTop: '8px' }}>
                                             <Typography variant="caption" color="textSecondary">
-                                                Note: Only orders in "Dispatch Ready" status will be automatically moved to "Completed" status.
+                                                Note: Only orders in "Invoice Ready" status will be automatically moved to "Dispatch Ready" status.
                                                 Orders not found or in incorrect status will be listed in the error report.
                                             </Typography>
                                         </Grid>
@@ -685,9 +685,9 @@ const InvoiceUpload = () => {
                                                 <Typography variant="body2" component="div">
                                                     <ul style={{ paddingLeft: '20px', margin: '8px 0' }}>
                                                         <li>Narration field must contain valid Order ID</li>
-                                                        <li>Order must be in "Dispatch Ready" status</li>
+                                                        <li>Order must be in "Invoice Ready" status</li>
                                                         <li>Order must belong to selected warehouse/company</li>
-                                                        <li>Successfully matched orders will be marked "Completed"</li>
+                                                        <li>Successfully matched orders will be moved to "Dispatch Ready"</li>
                                                         <li>Errors will be provided in downloadable CSV</li>
                                                     </ul>
                                                 </Typography>

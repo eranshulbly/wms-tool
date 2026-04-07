@@ -578,6 +578,7 @@ class OrderDetailWithProducts(Resource):
                 'Open': 'open',
                 'Picking': 'picking',
                 'Packing': 'packing',
+                'Invoice Ready': 'invoice-ready',
                 'Dispatch Ready': 'dispatch-ready',
                 'Completed': 'completed',
                 'Partially Completed': 'partially-completed'
@@ -677,7 +678,7 @@ class OrderStatusUpdate(Resource):
             if new_status.lower() not in status_map:
                 return {
                     'success': False,
-                    'msg': f'Invalid status: {new_status}. Valid statuses are: {", ".join(status_map.keys())}. Use specific endpoints for dispatch ready/completed.'
+                    'msg': f'Invalid status: {new_status}. Valid statuses are: {", ".join(status_map.keys())}. Use specific endpoints for invoice ready/dispatch ready/completed.'
                 }, 400
 
             db_status = status_map[new_status.lower()]
@@ -687,6 +688,7 @@ class OrderStatusUpdate(Resource):
                 'Open': ['Picking'],
                 'Picking': ['Packing', 'Open'],  # Allow going back to Open
                 'Packing': ['Picking'],  # Allow going back to Picking
+                'Invoice Ready': [],  # Cannot change from Invoice Ready using this endpoint
                 'Dispatch Ready': [],  # Cannot change from Dispatch Ready using this endpoint
                 'Completed': [],  # Cannot change from Completed
                 'Partially Completed': []  # Cannot change from Partially Completed
@@ -757,6 +759,7 @@ class OrderStatusUpdate(Resource):
                     'Open': 'open',
                     'Picking': 'picking',
                     'Packing': 'packing',
+                    'Invoice Ready': 'invoice-ready',
                     'Dispatch Ready': 'dispatch-ready',
                     'Completed': 'completed',
                     'Partially Completed': 'partially-completed'
@@ -1240,10 +1243,10 @@ class OrderDispatchFinal(Resource):
                 'msg': f'Error dispatching order: {str(e)}'
             }, 400
 
-@rest_api.route('/api/orders/<string:order_id>/move-to-dispatch-ready')
-class MoveToDispatchReady(Resource):
+@rest_api.route('/api/orders/<string:order_id>/move-to-invoice-ready')
+class MoveToInvoiceReady(Resource):
     """
-    MySQL: Move from Packing to Dispatch Ready - Create Final Order Records
+    MySQL: Move from Packing to Invoice Ready - Create Final Order Records
     """
 
     @rest_api.expect(move_to_dispatch_model)
@@ -1252,7 +1255,7 @@ class MoveToDispatchReady(Resource):
     @token_required
     @active_required
     def post(self, current_user, order_id):
-        """Move order from packing to dispatch ready and create final order records - MySQL"""
+        """Move order from packing to invoice ready and create final order records - MySQL"""
         try:
             # Check that user has permission for Packing state
             from .permissions import can_see_order_state
@@ -1276,19 +1279,16 @@ class MoveToDispatchReady(Resource):
             if potential_order.status != 'Packing':
                 return {
                     'success': False,
-                    'msg': 'Order must be in Packing status to move to Dispatch Ready'
+                    'msg': 'Order must be in Packing status to move to Invoice Ready'
                 }, 400
 
             req_data = request.get_json()
-            products_data = req_data.get('products', [])
-            boxes_data = req_data.get('boxes', [])
+            number_of_boxes = req_data.get('number_of_boxes', 1)
 
-            # Validate that we have some packed products
-            total_packed_check = sum(p.get('quantity_packed', 0) for p in products_data)
-            if total_packed_check == 0:
+            if not isinstance(number_of_boxes, int) or number_of_boxes < 1:
                 return {
                     'success': False,
-                    'msg': 'No products have been packed. Please pack at least one product.'
+                    'msg': 'number_of_boxes must be a positive integer'
                 }, 400
 
             current_time = datetime.utcnow()
@@ -1303,120 +1303,44 @@ class MoveToDispatchReady(Resource):
             )
             final_order.save()
 
-            # STEP 2: PROCESS EACH PRODUCT
-            total_packed = 0
-            total_remaining = 0
-            has_remaining_items = False
+            # STEP 2: CREATE N BOXES
+            for i in range(number_of_boxes):
+                order_box = OrderBox(
+                    order_id=final_order.order_id,
+                    name=f'Box-{i + 1}',
+                    created_at=current_time,
+                    updated_at=current_time
+                )
+                order_box.save()
 
-            for product_data in products_data:
-                product_id = product_data.get('product_id')
-                quantity_packed = int(product_data.get('quantity_packed', 0))
-
-                if quantity_packed > 0:
-                    # Get the original potential order product
-                    potential_product = PotentialOrderProduct.find_by_order_and_product(numeric_id, product_id)
-
-                    if potential_product:
-                        original_quantity = potential_product.quantity
-                        quantity_remaining = original_quantity - quantity_packed
-
-                        # CREATE FINAL ORDER PRODUCT RECORD
-                        order_product = OrderProduct(
-                            order_id=final_order.order_id,
-                            product_id=product_id,
-                            quantity=quantity_packed,
-                            mrp=potential_product.mrp,
-                            total_price=potential_product.mrp * quantity_packed if potential_product.mrp else None,
-                            created_at=current_time,
-                            updated_at=current_time
-                        )
-                        order_product.save()
-                        total_packed += quantity_packed
-
-                        # HANDLE REMAINING QUANTITY
-                        if quantity_remaining > 0:
-                            # Update potential order product with remaining quantity
-                            potential_product.quantity = quantity_remaining
-                            potential_product.quantity_packed = 0
-                            potential_product.updated_at = current_time
-                            potential_product.save()
-                            has_remaining_items = True
-                            total_remaining += quantity_remaining
-                        else:
-                            # Remove the potential order product if fully packed
-                            mysql_manager.execute_query(
-                                "DELETE FROM potential_order_product WHERE potential_order_product_id = %s",
-                                (potential_product.potential_order_product_id,),
-                                fetch=False
-                            )
-
-            # STEP 3: CREATE ORDER BOXES
-            for box_data in boxes_data:
-                if box_data.get('products') and len(box_data.get('products', [])) > 0:
-                    order_box = OrderBox(
-                        order_id=final_order.order_id,
-                        name=box_data.get('box_name', 'Box'),
-                        created_at=current_time,
-                        updated_at=current_time
-                    )
-                    order_box.save()
-
-            # STEP 4: UPDATE POTENTIAL ORDER STATUS
-            if has_remaining_items:
-                potential_order.status = 'Partially Completed'
-                final_status_name = 'Partially Completed'
-            else:
-                potential_order.status = 'Dispatch Ready'
-                final_status_name = 'Dispatch Ready'
-
+            # STEP 3: UPDATE POTENTIAL ORDER STATUS
+            potential_order.status = 'Invoice Ready'
             potential_order.updated_at = current_time
             potential_order.save()
 
-            # STEP 5: CREATE STATE HISTORY
-            # Ensure states exist
-            dispatch_ready_state = OrderState.find_by_name('Dispatch Ready')
-            if not dispatch_ready_state:
-                dispatch_ready_state = OrderState(
-                    state_name='Dispatch Ready',
-                    description='Order ready for dispatch'
+            # STEP 4: CREATE STATE HISTORY
+            invoice_ready_state = OrderState.find_by_name('Invoice Ready')
+            if not invoice_ready_state:
+                invoice_ready_state = OrderState(
+                    state_name='Invoice Ready',
+                    description='Order packed and ready for invoice upload'
                 )
-                dispatch_ready_state.save()
+                invoice_ready_state.save()
 
-            # Add dispatch ready state history
-            dispatch_history = OrderStateHistory(
+            invoice_ready_history = OrderStateHistory(
                 potential_order_id=numeric_id,
-                state_id=dispatch_ready_state.state_id,
-                changed_by=1,
+                state_id=invoice_ready_state.state_id,
+                changed_by=current_user.id,
                 changed_at=current_time
             )
-            dispatch_history.save()
-
-            # If partial completion, add that state too
-            if has_remaining_items:
-                partial_state = OrderState.find_by_name('Partially Completed')
-                if not partial_state:
-                    partial_state = OrderState(
-                        state_name='Partially Completed',
-                        description='Order partially completed with remaining items'
-                    )
-                    partial_state.save()
-
-                partial_history = OrderStateHistory(
-                    potential_order_id=numeric_id,
-                    state_id=partial_state.state_id,
-                    changed_by=1,
-                    changed_at=current_time
-                )
-                partial_history.save()
+            invoice_ready_history.save()
 
             return {
                 'success': True,
-                'msg': 'Order moved to dispatch ready successfully',
+                'msg': 'Order moved to invoice ready successfully',
                 'final_order_id': final_order.order_id,
                 'final_order_number': final_order.order_number,
-                'total_packed': total_packed,
-                'total_remaining': total_remaining,
-                'has_remaining_items': has_remaining_items,
+                'number_of_boxes': number_of_boxes,
                 'potential_order_status': potential_order.status,
                 'final_order_status': final_order.status
             }, 200
@@ -1424,7 +1348,7 @@ class MoveToDispatchReady(Resource):
         except Exception as e:
             return {
                 'success': False,
-                'msg': f'Error moving to dispatch ready: {str(e)}'
+                'msg': f'Error moving to invoice ready: {str(e)}'
             }, 400
 
 @rest_api.route('/api/orders/<string:order_id>/complete-dispatch')

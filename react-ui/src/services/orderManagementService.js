@@ -117,23 +117,61 @@ class OrderManagementService {
   }
 
   /**
-   * Move order to dispatch ready status
+   * Move order to invoice ready status
    * @param {string} orderId - Order ID
-   * @param {Array} products - Products with packed quantities
-   * @param {Array} boxes - Box assignments
+   * @param {number} numberOfBoxes - Number of boxes used for packing
    * @returns {Promise<Object>} API response
    */
-  async moveToDispatchReady(orderId, products, boxes) {
+  async moveToInvoiceReady(orderId, numberOfBoxes) {
     try {
-      const response = await axios.post(`${API_BASE_URL}/api/orders/${orderId}/move-to-dispatch-ready`, {
-        products,
-        boxes
+      const response = await axios.post(`${API_BASE_URL}/api/orders/${orderId}/move-to-invoice-ready`, {
+        number_of_boxes: numberOfBoxes
       });
       return response.data;
     } catch (error) {
-      console.error('Error moving to dispatch ready:', error);
+      console.error('Error moving to invoice ready:', error);
       return { success: false, msg: error.message };
     }
+  }
+
+  /**
+   * Download bulk order Excel template filtered by current status/warehouse/company
+   * @param {Object} filters - { status, warehouseId, companyId }
+   */
+  async downloadBulkTemplate(filters = {}) {
+    const params = {};
+    if (filters.status && filters.status !== 'all') params.status = filters.status;
+    if (filters.warehouseId) params.warehouse_id = filters.warehouseId;
+    if (filters.companyId) params.company_id = filters.companyId;
+
+    const response = await axios.get(`${API_BASE_URL}/api/orders/bulk-export`, {
+      params,
+      responseType: 'blob'
+    });
+
+    const url = window.URL.createObjectURL(new Blob([response.data]));
+    const link = document.createElement('a');
+    link.href = url;
+    const filename = `orders_bulk_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  }
+
+  /**
+   * Upload filled bulk Excel file and process status transitions
+   * @param {File} file - The uploaded Excel file
+   * @returns {Promise<Object>} API response with summary and details
+   */
+  async uploadBulkFile(file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await axios.post(`${API_BASE_URL}/api/orders/bulk-import`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+    return response.data;
   }
 
   /**
@@ -166,12 +204,12 @@ class OrderManagementService {
         case 'packing':
           return await this.updateOrderStatus(orderId, action, additionalData);
 
-        case 'packing-to-dispatch':
-        case 'dispatch-ready':
-          if (!additionalData || !additionalData.products || !additionalData.boxes) {
-            throw new Error('Products and boxes data required for dispatch ready');
+        case 'packing-to-invoice':
+        case 'invoice-ready':
+          if (!additionalData || !additionalData.number_of_boxes) {
+            throw new Error('number_of_boxes required for invoice ready');
           }
-          return await this.moveToDispatchReady(orderId, additionalData.products, additionalData.boxes);
+          return await this.moveToInvoiceReady(orderId, additionalData.number_of_boxes);
 
         case 'complete-dispatch':
         case 'completed':
@@ -206,138 +244,6 @@ class OrderManagementService {
     }
   }
 
-  /**
-   * Validate packing data before submission
-   * @param {Array} products - Products with quantities
-   * @param {Object} productQuantities - Product quantities
-   * @param {Object} productBoxAssignments - Product to box mappings
-   * @param {Object} boxProductQuantities - Product quantities per box
-   * @returns {Object} Validation result
-   */
-  validatePackingData(products, productQuantities, productBoxAssignments, boxProductQuantities) {
-    const errors = [];
-    const warnings = [];
-    let hasRemainingItems = false;
-
-    products.forEach(product => {
-      const packedQty = productQuantities[product.product_id] || 0;
-      const orderedQty = product.quantity_ordered;
-      const availableQty = product.quantity_available;
-      const boxAssignment = productBoxAssignments[product.product_id];
-
-      // Check box assignment for packed items
-      if (packedQty > 0 && !boxAssignment) {
-        errors.push(`${product.name} has packed quantity but no box assignment`);
-      }
-
-      // Check quantity limits
-      if (packedQty > availableQty) {
-        errors.push(`${product.name} packed quantity (${packedQty}) exceeds available (${availableQty})`);
-      }
-
-      // Check for remaining items
-      if (packedQty < orderedQty) {
-        hasRemainingItems = true;
-        if (packedQty > 0) {
-          warnings.push(`${product.name} partially packed (${packedQty}/${orderedQty})`);
-        }
-      }
-
-      // Validate box quantities sum up correctly
-      if (boxProductQuantities[product.product_id]) {
-        const boxTotal = Object.values(boxProductQuantities[product.product_id])
-          .reduce((sum, qty) => sum + (parseInt(qty) || 0), 0);
-
-        if (boxTotal !== packedQty) {
-          errors.push(`${product.name} box quantities (${boxTotal}) don't match total packed (${packedQty})`);
-        }
-      }
-    });
-
-    // Check that at least one product is packed
-    const totalPacked = Object.values(productQuantities).reduce((sum, qty) => sum + (qty || 0), 0);
-    if (totalPacked === 0) {
-      errors.push('No products have been packed. Please pack at least one product.');
-    }
-
-    return {
-      isValid: errors.length === 0,
-      errors,
-      warnings,
-      hasRemainingItems,
-      totalPacked
-    };
-  }
-
-  /**
-   * Calculate packing summary
-   * @param {Array} products - Products with quantities
-   * @param {Object} productQuantities - Product quantities
-   * @returns {Object} Packing summary
-   */
-  calculatePackingSummary(products, productQuantities) {
-    const totalOrdered = products.reduce((sum, product) => sum + product.quantity_ordered, 0);
-    const totalPacked = Object.values(productQuantities).reduce((sum, qty) => sum + (qty || 0), 0);
-    const totalRemaining = totalOrdered - totalPacked;
-
-    const productsSummary = products.map(product => {
-      const packedQty = productQuantities[product.product_id] || 0;
-      return {
-        ...product,
-        quantity_packed: packedQty,
-        quantity_remaining: product.quantity_ordered - packedQty
-      };
-    });
-
-    return {
-      totalOrdered,
-      totalPacked,
-      totalRemaining,
-      products: productsSummary,
-      packingComplete: totalRemaining === 0,
-      partialPacking: totalPacked > 0 && totalRemaining > 0,
-      hasRemainingItems: totalRemaining > 0
-    };
-  }
-
-  /**
-   * Process box assignments for API submission
-   * @param {Array} boxes - Boxes array
-   * @param {Array} products - Products array
-   * @param {Object} productBoxAssignments - Product box assignments
-   * @param {Object} boxProductQuantities - Box product quantities
-   * @returns {Array} Processed box assignments
-   */
-  processBoxAssignments(boxes, products, productBoxAssignments, boxProductQuantities) {
-    return boxes.map(box => ({
-      box_id: box.box_id,
-      box_name: box.box_name,
-      products: products
-        .filter(product => {
-          const assignments = productBoxAssignments[product.product_id] || '';
-          return assignments.includes(box.box_id);
-        })
-        .map(product => ({
-          product_id: product.product_id,
-          quantity: boxProductQuantities[product.product_id]?.[box.box_id] || 0
-        }))
-        .filter(p => p.quantity > 0)
-    })).filter(box => box.products.length > 0);
-  }
-
-  /**
-   * Process products data for API submission
-   * @param {Array} products - Products array
-   * @param {Object} productQuantities - Product quantities
-   * @returns {Array} Processed products data
-   */
-  processProductsData(products, productQuantities) {
-    return products.map(product => ({
-      product_id: product.product_id,
-      quantity_packed: productQuantities[product.product_id] || 0,
-      quantity_remaining: product.quantity_ordered - (productQuantities[product.product_id] || 0)
-    })).filter(p => p.quantity_packed > 0 || p.quantity_remaining > 0);
-  }
 }
 
 // Export singleton instance
