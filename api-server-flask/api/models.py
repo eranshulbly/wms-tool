@@ -430,6 +430,7 @@ class PotentialOrder(MySQLModel):
         self.order_date = kwargs.get('order_date')
         self.requested_by = kwargs.get('requested_by')
         self.status = kwargs.get('status', 'Open')
+        self.invoice_submitted = bool(kwargs.get('invoice_submitted', False))
         self.upload_batch_id = kwargs.get('upload_batch_id')
         self.created_at = kwargs.get('created_at')
         self.updated_at = kwargs.get('updated_at')
@@ -442,13 +443,13 @@ class PotentialOrder(MySQLModel):
                    order_type=%s, vin_number=%s, shipping_address=%s,
                    source_created_by=%s, purchaser_sap_code=%s, purchaser_name=%s,
                    warehouse_id=%s, company_id=%s, dealer_id=%s, order_date=%s,
-                   requested_by=%s, status=%s, updated_at=%s
+                   requested_by=%s, status=%s, invoice_submitted=%s, updated_at=%s
                    WHERE potential_order_id=%s""",
                 (self.original_order_id, self.b2b_po_number,
                  self.order_type, self.vin_number, self.shipping_address,
                  self.source_created_by, self.purchaser_sap_code, self.purchaser_name,
                  self.warehouse_id, self.company_id, self.dealer_id, self.order_date,
-                 self.requested_by, self.status,
+                 self.requested_by, self.status, int(self.invoice_submitted),
                  datetime.utcnow(), self.potential_order_id),
                 fetch=False
             )
@@ -500,7 +501,7 @@ class PotentialOrder(MySQLModel):
         return result[0]['count'] if result else 0
 
     @classmethod
-    def find_by_filters(cls, status=None, warehouse_id=None, company_id=None, limit=100):
+    def find_by_filters(cls, status=None, warehouse_id=None, company_id=None, limit=1000):
         """Find orders by filters"""
         query = """
         SELECT po.*, d.name as dealer_name 
@@ -545,6 +546,25 @@ class PotentialOrder(MySQLModel):
         if result:
             return cls(**result[0])
         return None
+
+    @classmethod
+    def find_bulk_by_original_order_ids(cls, order_ids):
+        """Fetch multiple PotentialOrders in a single IN query.
+
+        Args:
+            order_ids: list of original_order_id strings
+
+        Returns:
+            dict mapping original_order_id → PotentialOrder instance
+        """
+        if not order_ids:
+            return {}
+        placeholders = ','.join(['%s'] * len(order_ids))
+        results = mysql_manager.execute_query(
+            f"SELECT * FROM potential_order WHERE original_order_id IN ({placeholders})",
+            tuple(order_ids)
+        )
+        return {r['original_order_id']: cls(**r) for r in results} if results else {}
 
 
 class PotentialOrderProduct(MySQLModel):
@@ -926,6 +946,57 @@ class Invoice(MySQLModel):
             'unique_orders': unique_orders,
             'total_amount': float(total_amount or 0)
         }
+
+
+class InvoiceProcessingConfig(MySQLModel):
+    """
+    Generic key-value configuration for invoice processing rules.
+
+    Current keys:
+      bypass_order_type — order_type values whose orders skip the Packed
+                          prerequisite and go directly to Invoiced on invoice
+                          upload (e.g. 'ZGOI').
+    """
+
+    # Simple in-process cache: {config_key -> [value, ...]}
+    _cache: dict = {}
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.id = kwargs.get('id')
+        self.config_key = kwargs.get('config_key')
+        self.config_value = kwargs.get('config_value')
+        self.description = kwargs.get('description')
+        self.is_active = bool(kwargs.get('is_active', True))
+
+    @classmethod
+    def get_values(cls, config_key: str) -> list:
+        """Return all active config_values for a given config_key.
+
+        Results are cached in-process for the lifetime of the worker.
+        Call invalidate_cache() if values are mutated at runtime.
+        """
+        if config_key not in cls._cache:
+            rows = mysql_manager.execute_query(
+                "SELECT config_value FROM invoice_processing_config "
+                "WHERE config_key = %s AND is_active = 1",
+                (config_key,)
+            )
+            cls._cache[config_key] = [r['config_value'] for r in rows] if rows else []
+        return cls._cache[config_key]
+
+    @classmethod
+    def get_bypass_order_types(cls) -> set:
+        """Return the set of order_type values that bypass the Packed prerequisite."""
+        return set(cls.get_values('bypass_order_type'))
+
+    @classmethod
+    def invalidate_cache(cls, config_key: str = None):
+        """Clear cached values (call after mutating config rows)."""
+        if config_key:
+            cls._cache.pop(config_key, None)
+        else:
+            cls._cache.clear()
 
 
 class UserWarehouseCompany(MySQLModel):

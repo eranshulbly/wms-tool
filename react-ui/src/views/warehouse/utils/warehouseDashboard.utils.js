@@ -61,8 +61,8 @@ export const getStatusChipClass = (status) => {
   const statusClassMap = {
     'open': 'chipOpen',
     'picking': 'chipPicking',
-    'packing': 'chipPacking',
-    'invoice-ready': 'chipInvoiceReady',
+    'packed': 'chipPacked',
+    'invoiced': 'chipInvoiced',
     'dispatch-ready': 'chipDispatchReady',
     'completed': 'chipCompleted',
     'partially-completed': 'chipPartiallyCompleted'

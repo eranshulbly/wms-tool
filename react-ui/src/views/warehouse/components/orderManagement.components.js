@@ -30,7 +30,8 @@ import {
   Divider,
   List,
   ListItem,
-  ListItemText
+  ListItemText,
+  Tooltip
 } from '@material-ui/core';
 import {
   IconArrowRight,
@@ -38,9 +39,11 @@ import {
   IconCheck,
   IconTruck,
   IconDownload,
-  IconUpload
+  IconUpload,
+  IconFileInvoice
 } from '@tabler/icons';
-import { STATUS_FILTER_OPTIONS, STATUS_LABELS, TABLE_COLUMNS } from '../constants/orderManagement.constants';
+import { STATUS_FILTER_OPTIONS, STATUS_LABELS, TABLE_COLUMNS, BULK_TARGET_STATUSES } from '../constants/orderManagement.constants';
+import UploadResultCard, { downloadErrorExcel } from '../../../components/UploadResultCard';
 import { formatDate, getTimeInCurrentStatus, getNextStatus, getStatusChipClass } from '../utils/orderManagement.utils';
 import orderManagementService from '../../../services/orderManagementService';
 
@@ -156,9 +159,9 @@ export const StatusChip = ({ status, classes }) => {
 // Correct Status Progression
 const CORRECT_STATUS_PROGRESSION = {
   'open': { next: 'picking', label: 'Start Picking' },
-  'picking': { next: 'packing', label: 'Start Packing' },
-  'packing': { next: 'invoice-ready', label: 'Move to Invoice Ready' },
-  'invoice-ready': null,   // Auto-transitions to Dispatch Ready via invoice upload
+  'picking': { next: 'packed', label: 'Move to Packed' },
+  'packed': null,          // No manual step — only via invoice upload
+  'invoiced': null,
   'dispatch-ready': { next: 'completed', label: 'Complete Dispatch' },
   'completed': null,
   'partially-completed': null
@@ -166,10 +169,12 @@ const CORRECT_STATUS_PROGRESSION = {
 
 /**
  * Status Action Button — shows next-status action for each order row.
- * Backend already filters orders to only those the user can see, so no
- * frontend allowedStatuses check is needed here.
+ * Picking → Packed prompts for number of boxes before proceeding.
  */
 export const StatusActionButton = ({ order, onStatusUpdate, classes }) => {
+  const [boxDialogOpen, setBoxDialogOpen] = useState(false);
+  const [boxCount, setBoxCount] = useState(1);
+
   const currentStatus = order.status?.toLowerCase().replace(/\s+/g, '-');
   const nextAction = CORRECT_STATUS_PROGRESSION[currentStatus];
 
@@ -177,29 +182,62 @@ export const StatusActionButton = ({ order, onStatusUpdate, classes }) => {
 
   const handleClick = (e) => {
     e.stopPropagation();
-
-    if (currentStatus === 'packing') {
-      // Opens dialog to configure packing before moving to invoice-ready
-      onStatusUpdate(order, 'packing-to-invoice');
+    if (currentStatus === 'picking') {
+      setBoxCount(1);
+      setBoxDialogOpen(true);
     } else if (currentStatus === 'dispatch-ready') {
-      // Complete dispatch directly from table
       onStatusUpdate(order, 'complete-dispatch');
     } else {
       onStatusUpdate(order, nextAction.next);
     }
   };
 
+  const handleBoxConfirm = (e) => {
+    e.stopPropagation();
+    const boxes = parseInt(boxCount, 10);
+    if (!boxes || boxes < 1) return;
+    setBoxDialogOpen(false);
+    onStatusUpdate(order, 'packed', { number_of_boxes: boxes });
+  };
+
   return (
-    <Button
-      variant="outlined"
-      color="primary"
-      size="small"
-      className={classes.statusActionButton}
-      onClick={handleClick}
-      startIcon={<IconArrowRight size={16} />}
-    >
-      {nextAction.label}
-    </Button>
+    <>
+      <Button
+        variant="outlined"
+        color="primary"
+        size="small"
+        className={classes.statusActionButton}
+        onClick={handleClick}
+        startIcon={<IconArrowRight size={16} />}
+      >
+        {nextAction.label}
+      </Button>
+
+      <Dialog open={boxDialogOpen} onClose={(e) => { e.stopPropagation(); setBoxDialogOpen(false); }} maxWidth="xs" fullWidth>
+        <DialogTitle>Number of Boxes</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="textSecondary" style={{ marginBottom: 12 }}>
+            Enter the number of boxes for packing order <strong>{order.order_request_id}</strong>.
+          </Typography>
+          <TextField
+            label="Number of Boxes"
+            type="number"
+            variant="outlined"
+            fullWidth
+            value={boxCount}
+            onChange={(e) => setBoxCount(e.target.value)}
+            inputProps={{ min: 1, step: 1 }}
+            autoFocus
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={(e) => { e.stopPropagation(); setBoxDialogOpen(false); }}>Cancel</Button>
+          <Button onClick={handleBoxConfirm} color="primary" variant="contained">
+            Move to Packed
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </>
   );
 };
 
@@ -262,7 +300,25 @@ export const OrdersTable = ({
                     >
                       <TableCell>{order.dealer_name}</TableCell>
                       <TableCell>
-                        <StatusChip status={order.status} classes={classes} />
+                        <Box display="flex" alignItems="center" style={{ gap: '6px', flexWrap: 'wrap' }}>
+                          <StatusChip status={order.status} classes={classes} />
+                          {order.invoice_submitted && (
+                            <Tooltip title="Invoice uploaded but order is not yet Packed. Will auto-transition to Invoiced when moved to Packed.">
+                              <Chip
+                                icon={<IconFileInvoice size={12} />}
+                                label="Invoice Submitted"
+                                size="small"
+                                style={{
+                                  backgroundColor: '#e65100',
+                                  color: '#fff',
+                                  fontSize: '0.6rem',
+                                  height: '20px',
+                                  cursor: 'default'
+                                }}
+                              />
+                            </Tooltip>
+                          )}
+                        </Box>
                       </TableCell>
                       <TableCell>{formatDate(order.order_date)}</TableCell>
                       <TableCell>{getTimeInCurrentStatus(order.current_state_time)}</TableCell>
@@ -305,11 +361,12 @@ export const OrderDetailsDialog = ({
   const [loading, setLoading] = useState(false);
 
   // Steps based on actual flow
-  const steps = ['Order Details', 'Packing', 'Invoice Ready', 'Dispatch Ready', 'Completed'];
+  const steps = ['Order Details', 'Packed', 'Invoiced', 'Dispatch Ready', 'Completed'];
 
   useEffect(() => {
     if (order) {
       setNumberOfBoxes(1);
+      // Reset to step 0 — correct step is set by status below
 
       // Set active step based on status
       switch (order.status?.toLowerCase().replace(/\s+/g, '-')) {
@@ -317,10 +374,10 @@ export const OrderDetailsDialog = ({
         case 'picking':
           setActiveStep(0);
           break;
-        case 'packing':
+        case 'packed':
           setActiveStep(1);
           break;
-        case 'invoice-ready':
+        case 'invoiced':
           setActiveStep(2);
           break;
         case 'dispatch-ready':
@@ -336,8 +393,8 @@ export const OrderDetailsDialog = ({
     }
   }, [order]);
 
-  // Move to Invoice Ready
-  const handleMoveToInvoiceReady = async () => {
+  // Move to Packed (from Picking state in dialog)
+  const handleMoveToPacked = async () => {
     const boxes = parseInt(numberOfBoxes, 10);
     if (!boxes || boxes < 1) {
       alert('Please enter a valid number of boxes (minimum 1).');
@@ -346,10 +403,10 @@ export const OrderDetailsDialog = ({
 
     setLoading(true);
     try {
-      await onStatusUpdate(order, 'invoice-ready', { number_of_boxes: boxes });
+      await onStatusUpdate(order, 'packed', { number_of_boxes: boxes });
     } catch (error) {
-      console.error('Error moving to invoice ready:', error);
-      alert('Error moving to invoice ready: ' + error.message);
+      console.error('Error moving to packed:', error);
+      alert('Error moving to packed: ' + error.message);
     } finally {
       setLoading(false);
     }
@@ -450,7 +507,7 @@ export const OrderDetailsDialog = ({
               </Table>
             </TableContainer>
 
-            {/* FIXED: Enhanced Timeline Display */}
+            {/* Timeline */}
             <Divider style={{ margin: '16px 0' }} />
             <Typography variant="h6" gutterBottom>Order Timeline</Typography>
             <Box>
@@ -473,32 +530,47 @@ export const OrderDetailsDialog = ({
                 </Box>
               ))}
             </Box>
+
+            {/* Box count input shown only when order is currently in Picking */}
+            {order?.status?.toLowerCase() === 'picking' && (
+              <>
+                <Divider style={{ margin: '16px 0' }} />
+                <Typography variant="h6" gutterBottom>Move to Packed</Typography>
+                <Typography variant="body2" color="textSecondary" style={{ marginBottom: 12 }}>
+                  Enter the number of boxes for packing this order.
+                </Typography>
+                <TextField
+                  label="Number of Boxes"
+                  type="number"
+                  variant="outlined"
+                  value={numberOfBoxes}
+                  onChange={(e) => setNumberOfBoxes(e.target.value)}
+                  inputProps={{ min: 1, step: 1 }}
+                  style={{ width: 200 }}
+                />
+              </>
+            )}
           </Box>
         );
 
-      case 1: // Packing
+      case 1: // Packed
         return (
-          <Box>
-            <Typography variant="h6" gutterBottom>Complete Packing</Typography>
-            <Typography variant="body2" color="textSecondary" style={{ marginBottom: 16 }}>
-              All available products will be packed. Enter the number of boxes used for this order.
+          <Box p={2} bgcolor="#fff8e1" borderRadius={1} border="1px solid #fbc02d">
+            <Typography variant="h6" gutterBottom>Packed</Typography>
+            <Typography variant="body1">
+              Order has been packed and is awaiting invoice upload.
             </Typography>
-            <TextField
-              label="Number of Boxes"
-              type="number"
-              variant="outlined"
-              value={numberOfBoxes}
-              onChange={(e) => setNumberOfBoxes(e.target.value)}
-              inputProps={{ min: 1, step: 1 }}
-              style={{ width: 200 }}
-            />
+            <Typography variant="body2" color="textSecondary" style={{ marginTop: 8 }}>
+              The order will automatically move to <strong>Invoiced</strong> once an invoice file is
+              uploaded via the Invoice Upload page.
+            </Typography>
           </Box>
         );
 
-      case 2: // Invoice Ready
+      case 2: // Invoiced
         return (
           <Box p={2} bgcolor="#e3f2fd" borderRadius={1} border="1px solid #0288d1">
-            <Typography variant="h6" gutterBottom>Invoice Ready</Typography>
+            <Typography variant="h6" gutterBottom>Invoiced</Typography>
             <Typography variant="body1">
               Order has been packed and is awaiting invoice upload.
             </Typography>
@@ -593,24 +665,13 @@ export const OrderDetailsDialog = ({
 
           {activeStep === 0 && order.status?.toLowerCase() === 'picking' && (
             <Button
-              onClick={() => setActiveStep(1)}
+              onClick={handleMoveToPacked}
               color="primary"
               variant="contained"
               disabled={loading}
+              startIcon={<IconPackage size={16} />}
             >
-              Start Packing
-            </Button>
-          )}
-
-          {activeStep === 1 && order.status?.toLowerCase() === 'packing' && (
-            <Button
-              onClick={handleMoveToInvoiceReady}
-              color="primary"
-              variant="contained"
-              disabled={loading}
-              startIcon={<IconTruck size={16} />}
-            >
-              {loading ? <CircularProgress size={20} /> : 'Move to Invoice Ready'}
+              {loading ? <CircularProgress size={20} /> : 'Move to Packed'}
             </Button>
           )}
 
@@ -632,35 +693,33 @@ export const OrderDetailsDialog = ({
 };
 
 /**
- * Bulk Actions Bar — download template and upload filled file
+ * Bulk Actions Bar — target status dropdown + Excel file upload.
+ * Excel must have an 'Order ID' column. For Packed target, also 'Number of Boxes'.
  */
-export const BulkActionsBar = ({ statusFilter, warehouse, company, onUploadComplete, classes }) => {
+export const BulkActionsBar = ({ warehouse, company, onUploadComplete, classes }) => {
+  const [targetStatus, setTargetStatus] = useState('');
   const [uploading, setUploading] = useState(false);
-  const [downloading, setDownloading] = useState(false);
+  const [uploadResult, setUploadResult] = useState(null);
 
-  const handleDownload = async () => {
-    setDownloading(true);
-    try {
-      await orderManagementService.downloadBulkTemplate({
-        status: statusFilter,
-        warehouseId: warehouse,
-        companyId: company
-      });
-    } catch (err) {
-      alert('Failed to download template: ' + err.message);
-    } finally {
-      setDownloading(false);
-    }
-  };
+  const selectedConfig = BULK_TARGET_STATUSES.find(s => s.value === targetStatus);
 
   const handleFileChange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     e.target.value = '';
+
+    if (!targetStatus) {
+      alert('Please select a target status before uploading.');
+      return;
+    }
+
     setUploading(true);
     try {
-      const result = await orderManagementService.uploadBulkFile(file);
-      onUploadComplete(result);
+      const result = await orderManagementService.bulkStatusUpdate(file, targetStatus, warehouse, company);
+      setUploadResult(result);
+      if (result.processed_count > 0) {
+        onUploadComplete(result);
+      }
     } catch (err) {
       alert('Failed to upload file: ' + (err.response?.data?.msg || err.message));
     } finally {
@@ -668,39 +727,64 @@ export const BulkActionsBar = ({ statusFilter, warehouse, company, onUploadCompl
     }
   };
 
+  const handleReset = () => {
+    setUploadResult(null);
+    setTargetStatus('');
+  };
+
+  if (uploadResult) {
+    return (
+      <Grid item xs={12}>
+        <UploadResultCard
+          result={uploadResult}
+          onReset={handleReset}
+          successLabel="Orders Moved"
+          errorFilename={`bulk_status_errors_${new Date().toISOString().slice(0, 10)}.xlsx`}
+        />
+      </Grid>
+    );
+  }
+
   return (
     <Grid item xs={12}>
       <Card>
         <CardContent>
-          <Box display="flex" alignItems="center" justifyContent="space-between" flexWrap="wrap" style={{ gap: 8 }}>
-            <Typography variant="subtitle1" style={{ fontWeight: 600 }}>
-              Bulk Actions
-            </Typography>
-            <Box display="flex" style={{ gap: 8 }}>
-              <Button
-                variant="outlined"
-                color="primary"
-                startIcon={downloading ? <CircularProgress size={16} /> : <IconDownload size={16} />}
-                onClick={handleDownload}
-                disabled={downloading || uploading}
+          <Typography variant="subtitle1" style={{ fontWeight: 600, marginBottom: 12 }}>
+            Bulk Status Update
+          </Typography>
+          <Box display="flex" alignItems="center" flexWrap="wrap" style={{ gap: 12 }}>
+            <FormControl variant="outlined" style={{ minWidth: 200 }}>
+              <InputLabel id="bulk-target-label">Target Status</InputLabel>
+              <Select
+                labelId="bulk-target-label"
+                value={targetStatus}
+                onChange={(e) => setTargetStatus(e.target.value)}
+                label="Target Status"
               >
-                {downloading ? 'Downloading…' : 'Download Template'}
-              </Button>
+                {BULK_TARGET_STATUSES.map((s) => (
+                  <MenuItem key={s.value} value={s.value}>{s.label}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
 
-              <Button
-                variant="contained"
-                color="primary"
-                component="label"
-                startIcon={uploading ? <CircularProgress size={16} color="inherit" /> : <IconUpload size={16} />}
-                disabled={uploading || downloading}
-              >
-                {uploading ? 'Uploading…' : 'Upload & Apply'}
-                <input type="file" accept=".xlsx,.xls" hidden onChange={handleFileChange} />
-              </Button>
-            </Box>
+            <Button
+              variant="contained"
+              color="primary"
+              component="label"
+              startIcon={uploading ? <CircularProgress size={16} color="inherit" /> : <IconUpload size={16} />}
+              disabled={uploading || !targetStatus}
+            >
+              {uploading ? 'Uploading…' : 'Upload Excel'}
+              <input type="file" accept=".xlsx,.xls,.csv" hidden onChange={handleFileChange} />
+            </Button>
           </Box>
-          <Typography variant="caption" color="textSecondary" style={{ marginTop: 4, display: 'block' }}>
-            Download orders for the current status filter, fill in "Expected Status" (and "Number of Boxes" for packing → invoice-ready), then upload to apply changes in bulk.
+
+          <Typography variant="caption" color="textSecondary" style={{ marginTop: 8, display: 'block' }}>
+            Upload an Excel with an <strong>Order ID</strong> column
+            {selectedConfig?.requiresBoxes && (
+              <> and a <strong>Number of Boxes</strong> column (required for Packed)</>
+            )}.
+            Only orders in the correct preceding state will be moved.
           </Typography>
         </CardContent>
       </Card>
@@ -709,90 +793,7 @@ export const BulkActionsBar = ({ statusFilter, warehouse, company, onUploadCompl
 };
 
 /**
- * Bulk Results Dialog — shows summary after upload
+ * BulkResultsDialog is no longer used — results are shown inline in BulkActionsBar.
+ * Kept as a no-op export for compatibility until OrderManagement.js is updated.
  */
-export const BulkResultsDialog = ({ open, results, onClose }) => {
-  if (!results) return null;
-  const { summary, details } = results;
-
-  return (
-    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
-      <DialogTitle>Bulk Update Results</DialogTitle>
-      <DialogContent>
-        {/* Summary chips */}
-        <Box display="flex" style={{ gap: 12, marginBottom: 16 }}>
-          <Chip label={`${summary.moved} Moved`} style={{ backgroundColor: '#4caf50', color: '#fff' }} />
-          <Chip label={`${summary.skipped} Skipped`} style={{ backgroundColor: '#ff9800', color: '#fff' }} />
-          <Chip label={`${summary.errors} Errors`} style={{ backgroundColor: '#f44336', color: '#fff' }} />
-        </Box>
-
-        {details.moved.length > 0 && (
-          <>
-            <Typography variant="subtitle2" style={{ color: '#2e7d32', marginBottom: 4 }}>
-              Successfully Moved ({details.moved.length})
-            </Typography>
-            <TableContainer component={Paper} style={{ marginBottom: 16, maxHeight: 200 }}>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Order ID</TableCell>
-                    <TableCell>From</TableCell>
-                    <TableCell>To</TableCell>
-                    <TableCell>Boxes</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {details.moved.map((r, i) => (
-                    <TableRow key={i}>
-                      <TableCell>{r.order_id}</TableCell>
-                      <TableCell>{r.from}</TableCell>
-                      <TableCell>{r.to}</TableCell>
-                      <TableCell>{r.boxes || '—'}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          </>
-        )}
-
-        {details.errors.length > 0 && (
-          <>
-            <Typography variant="subtitle2" style={{ color: '#c62828', marginBottom: 4 }}>
-              Errors ({details.errors.length})
-            </Typography>
-            <List dense style={{ marginBottom: 8 }}>
-              {details.errors.map((e, i) => (
-                <ListItem key={i} style={{ paddingTop: 2, paddingBottom: 2 }}>
-                  <ListItemText
-                    primary={<><strong>{e.order_id}</strong>: {e.reason}</>}
-                  />
-                </ListItem>
-              ))}
-            </List>
-          </>
-        )}
-
-        {details.skipped.length > 0 && (
-          <>
-            <Typography variant="subtitle2" style={{ color: '#e65100', marginBottom: 4 }}>
-              Skipped ({details.skipped.length})
-            </Typography>
-            <List dense>
-              {details.skipped.map((s, i) => (
-                <ListItem key={i} style={{ paddingTop: 2, paddingBottom: 2 }}>
-                  <ListItemText
-                    primary={<><strong>{s.order_id}</strong>: {s.reason}</>}
-                  />
-                </ListItem>
-              ))}
-            </List>
-          </>
-        )}
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} color="primary" variant="contained">Close</Button>
-      </DialogActions>
-    </Dialog>
-  );
-};
+export const BulkResultsDialog = () => null;

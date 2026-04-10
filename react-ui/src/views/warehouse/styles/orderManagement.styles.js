@@ -20,11 +20,11 @@ export const useOrderManagementStyles = makeStyles((theme) => ({
     backgroundColor: theme.palette.primary.light,
     color: theme.palette.primary.dark
   },
-  chipPacking: {
+  chipPacked: {
     backgroundColor: theme.palette.secondary.light,
     color: theme.palette.secondary.dark
   },
-  chipInvoiceReady: {
+  chipInvoiced: {
     backgroundColor: '#b3e5fc',
     color: '#01579b'
   },
@@ -79,8 +79,8 @@ export const useOrderManagementStyles = makeStyles((theme) => ({
     borderRadius: theme.shape.borderRadius
   },
 
-  // Product packing form styles
-  packingFormContainer: {
+  // Product packed form styles
+  packedFormContainer: {
     padding: theme.spacing(2)
   },
   productRow: {

@@ -12,7 +12,7 @@ from flask_cors import CORS
 from .routes import rest_api
 from .db_manager import initialize_database
 from . import dashboard_routes
-from . import upload_history_routes
+from . import admin_routes
 from . import eway_bill_routes
 
 app = Flask(__name__, template_folder='templates')
@@ -103,7 +103,7 @@ def api_status():
 
         # Get order counts by status
         status_counts = {}
-        for status in ['Open', 'Picking', 'Packing', 'Dispatch Ready', 'Completed', 'Partially Completed']:
+        for status in ['Open', 'Picking', 'Packed', 'Dispatch Ready', 'Completed', 'Partially Completed']:
             status_counts[status.lower().replace(' ', '_')] = PotentialOrder.count_by_status(status)
 
         return {

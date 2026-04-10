@@ -13,27 +13,17 @@ import {
     Select,
     Typography,
     useMediaQuery,
-    Dialog,
-    DialogTitle,
-    DialogContent,
-    DialogActions,
-    List,
-    ListItem,
-    ListItemText,
-    Chip
 } from '@material-ui/core';
 import { makeStyles, useTheme } from '@material-ui/styles';
 import CloudUploadIcon from '@material-ui/icons/CloudUpload';
 import DescriptionIcon from '@material-ui/icons/Description';
-import CheckCircleOutlineIcon from '@material-ui/icons/CheckCircleOutline';
 import ErrorOutlineIcon from '@material-ui/icons/ErrorOutline';
-import WarningIcon from '@material-ui/icons/Warning';
-import GetAppIcon from '@material-ui/icons/GetApp';
 import { Snackbar, Alert } from '@material-ui/core';
 import MainCard from '../../ui-component/cards/MainCard';
 import AnimateButton from '../../ui-component/extended/AnimateButton';
+import UploadResultCard from '../../components/UploadResultCard';
 import axios from 'axios';
-// Using fetch API instead of axios for compatibility
+import config from '../../config';
 
 const useStyles = makeStyles((theme) => ({
     uploadCard: {
@@ -87,11 +77,6 @@ const useStyles = makeStyles((theme) => ({
         color: theme.palette.error.main,
         marginBottom: '8px'
     },
-    warningIcon: {
-        fontSize: '3rem',
-        color: theme.palette.warning.main,
-        marginBottom: '8px'
-    },
     dropzoneActive: {
         borderColor: theme.palette.primary.main,
         background: theme.palette.primary.light
@@ -104,24 +89,7 @@ const useStyles = makeStyles((theme) => ({
         width: '100%',
         padding: '20px'
     },
-    resultsCard: {
-        marginTop: '16px',
-        padding: '16px'
-    },
-    summaryItem: {
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        padding: '8px 0'
-    },
-    errorList: {
-        maxHeight: '200px',
-        overflow: 'auto',
-        backgroundColor: theme.palette.background.default,
-        padding: '8px',
-        borderRadius: '4px',
-        marginTop: '8px'
-    }
+
 }));
 
 const InvoiceUpload = () => {
@@ -144,11 +112,6 @@ const InvoiceUpload = () => {
     const [uploadResults, setUploadResults] = useState(null);
     const [isLoading, setIsLoading] = useState(true);
     const [dataError, setDataError] = useState(null);
-    const [errorDialogOpen, setErrorDialogOpen] = useState(false);
-    const [errorCsvContent, setErrorCsvContent] = useState('');
-
-    // API base URL - should match your config
-    const API_BASE_URL = 'http://localhost:5000';
 
     // Fetch warehouses and companies from the API
     useEffect(() => {
@@ -158,7 +121,7 @@ const InvoiceUpload = () => {
 
             try {
                 // Fetch warehouses
-                const warehousesResponse = await axios.get(`${API_BASE_URL}/api/warehouses`);
+                const warehousesResponse = await axios.get(`${config.API_SERVER}warehouses`);
 
                 if (warehousesResponse.data.success) {
                     setWarehouses(warehousesResponse.data.warehouses);
@@ -167,7 +130,7 @@ const InvoiceUpload = () => {
                 }
 
                 // Fetch companies
-                const companiesResponse = await axios.get(`${API_BASE_URL}/api/companies`);
+                const companiesResponse = await axios.get(`${config.API_SERVER}companies`);
 
                 if (companiesResponse.data.success) {
                     setCompanies(companiesResponse.data.companies);
@@ -249,7 +212,6 @@ const InvoiceUpload = () => {
         setFile(file);
         setUploadStatus(null);
         setUploadResults(null);
-        setErrorCsvContent('');
     };
 
     const handleUpload = () => {
@@ -278,75 +240,39 @@ const InvoiceUpload = () => {
         formData.append('company_id', selectedCompany);
 
         // Send to API
-        axios.post(`${API_BASE_URL}/api/invoices/upload`, formData, {
-            headers: {
-                'Content-Type': 'multipart/form-data'
-            }
+        axios.post(`${config.API_SERVER}invoices/upload`, formData, {
+            headers: { 'Content-Type': 'multipart/form-data' }
         })
         .then(response => {
-            if (response.data.success) {
+            const data = response.data;
+            setUploadResults(data);
+            if (data.success) {
                 setUploadStatus('success');
-                setUploadResults(response.data);
-
-                // Check if there are errors
-                if (response.data.has_errors && response.headers['x-error-csv-content']) {
-                    setErrorCsvContent(response.headers['x-error-csv-content']);
-                }
-
-                showSnackbar('Invoice file processed successfully', 'success');
+                showSnackbar(
+                    `Processed ${data.processed_count} invoice(s)` +
+                    (data.error_count > 0 ? ` — ${data.error_count} row(s) failed` : ''),
+                    data.error_count > 0 ? 'warning' : 'success'
+                );
             } else {
                 setUploadStatus('error');
-                setUploadResults(response.data);
-
-                // Check for error CSV content
-                if (response.headers['x-error-csv-content']) {
-                    setErrorCsvContent(response.headers['x-error-csv-content']);
-                }
-
-                showSnackbar(response.data.msg || 'Processing completed with errors', 'warning');
+                showSnackbar(data.msg || 'Processing failed', 'error');
             }
         })
         .catch(error => {
             setUploadStatus('error');
-            const errorMessage = error.response?.data?.msg || 'Error processing invoice file';
-            showSnackbar(errorMessage, 'error');
+            setUploadResults(error.response?.data || null);
+            showSnackbar(error.response?.data?.msg || 'Error processing invoice file', 'error');
             console.error('Upload error:', error);
-
-            // Check for error CSV in error response
-            if (error.response?.headers['x-error-csv-content']) {
-                setErrorCsvContent(error.response.headers['x-error-csv-content']);
-            }
         })
         .finally(() => {
             setIsUploading(false);
         });
     };
 
-    const handleDownloadErrors = () => {
-        if (!errorCsvContent) {
-            showSnackbar('No error data available for download', 'warning');
-            return;
-        }
-
-        // Create and download the CSV file
-        const blob = new Blob([errorCsvContent], { type: 'text/csv' });
-        const url = window.URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `invoice_upload_errors_${new Date().toISOString().split('T')[0]}.csv`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        window.URL.revokeObjectURL(url);
-
-        showSnackbar('Error file downloaded successfully', 'success');
-    };
-
     const resetUpload = () => {
         setFile(null);
         setUploadStatus(null);
         setUploadResults(null);
-        setErrorCsvContent('');
     };
 
     // Show loading state while fetching warehouses and companies
@@ -402,8 +328,9 @@ const InvoiceUpload = () => {
                                                 Upload Invoice Excel/CSV File
                                             </Typography>
                                             <Typography variant="body2" color="textSecondary" gutterBottom>
-                                                Upload your invoice file to automatically move orders from "Invoice Ready" to "Dispatch Ready" status.
-                                                The system will match invoices to orders using the Order # field.
+                                                Upload your invoice file to move matched orders to <strong>Invoiced</strong> status.
+                                                Orders in <em>Packed</em> state (or bypass order types like ZGOI) are invoiced immediately.
+                                                Orders still in Open/Picking receive an <em>Invoice Submitted</em> flag and are auto-invoiced when moved to Packed.
                                             </Typography>
                                         </Grid>
 
@@ -462,135 +389,22 @@ const InvoiceUpload = () => {
                                             </Grid>
                                         )}
 
-                                        {uploadStatus === 'success' && (
+                                        {(uploadStatus === 'success' || uploadStatus === 'error') && uploadResults && (
                                             <Grid item xs={12}>
-                                                <Card className={classes.resultsCard}>
-                                                    <CardContent>
-                                                        <div style={{ textAlign: 'center', marginBottom: '16px' }}>
-                                                            {uploadResults?.has_errors ? (
-                                                                <WarningIcon className={classes.warningIcon} />
-                                                            ) : (
-                                                                <CheckCircleOutlineIcon className={classes.successIcon} />
-                                                            )}
-                                                            <Typography variant="h6" gutterBottom>
-                                                                {uploadResults?.has_errors ? 'Processing Completed with Warnings' : 'Processing Successful!'}
-                                                            </Typography>
-                                                        </div>
-
-                                                        <div className={classes.summaryItem}>
-                                                            <Typography variant="body1"><strong>Invoices Processed:</strong></Typography>
-                                                            <Chip label={uploadResults?.invoices_processed || 0} color="primary" />
-                                                        </div>
-                                                        <div className={classes.summaryItem}>
-                                                            <Typography variant="body1"><strong>Orders Completed:</strong></Typography>
-                                                            <Chip label={uploadResults?.orders_completed || 0} color="secondary" />
-                                                        </div>
-                                                        {uploadResults?.errors && uploadResults.errors.length > 0 && (
-                                                            <div className={classes.summaryItem}>
-                                                                <Typography variant="body1"><strong>Errors:</strong></Typography>
-                                                                <Chip label={uploadResults.errors.length} color="error" />
-                                                            </div>
-                                                        )}
-
-                                                        {uploadResults?.upload_batch_id && (
-                                                            <Typography variant="caption" color="textSecondary" style={{ marginTop: '8px', display: 'block' }}>
-                                                                Batch ID: {uploadResults.upload_batch_id}
-                                                            </Typography>
-                                                        )}
-
-                                                        <Box style={{ marginTop: '16px', display: 'flex', gap: '8px', justifyContent: 'center' }}>
-                                                            <Button
-                                                                variant="outlined"
-                                                                color="primary"
-                                                                onClick={resetUpload}
-                                                            >
-                                                                Upload Another File
-                                                            </Button>
-                                                            {uploadResults?.has_errors && errorCsvContent && (
-                                                                <Button
-                                                                    variant="contained"
-                                                                    color="secondary"
-                                                                    startIcon={<GetAppIcon />}
-                                                                    onClick={handleDownloadErrors}
-                                                                >
-                                                                    Download Error Report
-                                                                </Button>
-                                                            )}
-                                                            {uploadResults?.errors && uploadResults.errors.length > 0 && (
-                                                                <Button
-                                                                    variant="outlined"
-                                                                    onClick={() => setErrorDialogOpen(true)}
-                                                                >
-                                                                    View Errors
-                                                                </Button>
-                                                            )}
-                                                        </Box>
-                                                    </CardContent>
-                                                </Card>
-                                            </Grid>
-                                        )}
-
-                                        {uploadStatus === 'error' && (
-                                            <Grid item xs={12}>
-                                                <Card className={classes.resultsCard}>
-                                                    <CardContent>
-                                                        <div style={{ textAlign: 'center', marginBottom: '16px' }}>
-                                                            <ErrorOutlineIcon className={classes.errorIcon} />
-                                                            <Typography variant="h6" gutterBottom>
-                                                                Processing Failed
-                                                            </Typography>
-                                                            <Typography variant="body2" color="error" gutterBottom>
-                                                                {uploadResults?.msg || 'There was an error processing your file.'}
-                                                            </Typography>
-                                                        </div>
-
-                                                        {/* Show processing statistics even for failures */}
-                                                        {uploadResults && (
-                                                            <>
-                                                                <div className={classes.summaryItem}>
-                                                                    <Typography variant="body1"><strong>Total Rows:</strong></Typography>
-                                                                    <Chip label={uploadResults.total_rows || 'Unknown'} />
-                                                                </div>
-                                                                <div className={classes.summaryItem}>
-                                                                    <Typography variant="body1"><strong>Error Rows:</strong></Typography>
-                                                                    <Chip label={uploadResults.error_rows || uploadResults.errors?.length || 0} color="error" />
-                                                                </div>
-                                                                <div className={classes.summaryItem}>
-                                                                    <Typography variant="body1"><strong>Successful Rows:</strong></Typography>
-                                                                    <Chip label={uploadResults.invoices_processed || 0} color="primary" />
-                                                                </div>
-                                                            </>
-                                                        )}
-
-                                                        <Box style={{ marginTop: '16px', display: 'flex', gap: '8px', justifyContent: 'center' }}>
-                                                            <Button
-                                                                variant="outlined"
-                                                                color="primary"
-                                                                onClick={resetUpload}
-                                                            >
-                                                                Try Again
-                                                            </Button>
-                                                            {errorCsvContent && (
-                                                                <Button
-                                                                    variant="contained"
-                                                                    color="secondary"
-                                                                    startIcon={<GetAppIcon />}
-                                                                    onClick={handleDownloadErrors}
-                                                                >
-                                                                    Download Error Report
-                                                                </Button>
-                                                            )}
-                                                            {uploadResults?.errors && uploadResults.errors.length > 0 && (
-                                                                <Button
-                                                                    variant="outlined"
-                                                                    onClick={() => setErrorDialogOpen(true)}
-                                                                >
-                                                                    View Error Details
-                                                                </Button>
-                                                            )}
-                                                        </Box>
-                                                    </CardContent>
-                                                </Card>
+                                                <UploadResultCard
+                                                    result={uploadResults}
+                                                    onReset={resetUpload}
+                                                    successLabel="Invoices Processed"
+                                                    errorFilename={`invoice_upload_errors_${new Date().toISOString().split('T')[0]}.xlsx`}
+                                                    extraStats={[
+                                                        ...(uploadResults.orders_invoiced != null
+                                                            ? [{ label: 'Orders Invoiced', value: uploadResults.orders_invoiced, color: 'secondary' }]
+                                                            : []),
+                                                        ...(uploadResults.orders_flagged != null && uploadResults.orders_flagged > 0
+                                                            ? [{ label: 'Invoice Submitted (pending pack)', value: uploadResults.orders_flagged, color: 'default' }]
+                                                            : []),
+                                                    ]}
+                                                />
                                             </Grid>
                                         )}
                                     </Grid>
@@ -670,13 +484,6 @@ const InvoiceUpload = () => {
                                             </AnimateButton>
                                         </Grid>
 
-                                        <Grid item xs={12} style={{ marginTop: '8px' }}>
-                                            <Typography variant="caption" color="textSecondary">
-                                                Note: Only orders in "Invoice Ready" status will be automatically moved to "Dispatch Ready" status.
-                                                Orders not found or in incorrect status will be listed in the error report.
-                                            </Typography>
-                                        </Grid>
-
                                         <Grid item xs={12} style={{ marginTop: '16px' }}>
                                             <Box p={2} bgcolor={theme.palette.primary.light} borderRadius="8px">
                                                 <Typography variant="subtitle2" gutterBottom>
@@ -684,11 +491,12 @@ const InvoiceUpload = () => {
                                                 </Typography>
                                                 <Typography variant="body2" component="div">
                                                     <ul style={{ paddingLeft: '20px', margin: '8px 0' }}>
-                                                        <li>Narration field must contain valid Order ID</li>
-                                                        <li>Order must be in "Invoice Ready" status</li>
-                                                        <li>Order must belong to selected warehouse/company</li>
-                                                        <li>Successfully matched orders will be moved to "Dispatch Ready"</li>
-                                                        <li>Errors will be provided in downloadable CSV</li>
+                                                        <li>File must have <strong>Invoice #</strong> and <strong>Order #</strong> columns</li>
+                                                        <li><strong>Bypass types (e.g. ZGOI):</strong> moved to Invoiced regardless of current state</li>
+                                                        <li><strong>Packed orders:</strong> moved to Invoiced immediately</li>
+                                                        <li><strong>Open / Picking orders:</strong> flagged as "Invoice Submitted" — auto-transition to Invoiced when moved to Packed</li>
+                                                        <li>Already Invoiced / Dispatch Ready orders are reported as duplicates</li>
+                                                        <li>Errors are provided in a downloadable report</li>
                                                     </ul>
                                                 </Typography>
                                             </Box>
@@ -700,51 +508,6 @@ const InvoiceUpload = () => {
                     </Grid>
                 </Grid>
             </Grid>
-
-            {/* Error Details Dialog */}
-            <Dialog
-                open={errorDialogOpen}
-                onClose={() => setErrorDialogOpen(false)}
-                maxWidth="md"
-                fullWidth
-            >
-                <DialogTitle>
-                    Error Details
-                </DialogTitle>
-                <DialogContent>
-                    <Typography variant="body2" gutterBottom>
-                        The following errors occurred during processing:
-                    </Typography>
-                    <div className={classes.errorList}>
-                        <List dense>
-                            {uploadResults?.errors?.map((error, index) => (
-                                <ListItem key={index}>
-                                    <ListItemText primary={error} />
-                                </ListItem>
-                            ))}
-                        </List>
-                    </div>
-                    {errorCsvContent && (
-                        <Typography variant="body2" style={{ marginTop: '16px' }}>
-                            <strong>Tip:</strong> Download the error report for detailed information including row numbers and specific error messages.
-                        </Typography>
-                    )}
-                </DialogContent>
-                <DialogActions>
-                    {errorCsvContent && (
-                        <Button
-                            onClick={handleDownloadErrors}
-                            color="secondary"
-                            startIcon={<GetAppIcon />}
-                        >
-                            Download Error Report
-                        </Button>
-                    )}
-                    <Button onClick={() => setErrorDialogOpen(false)} color="primary">
-                        Close
-                    </Button>
-                </DialogActions>
-            </Dialog>
 
             {/* Snackbar for notifications */}
             <Snackbar

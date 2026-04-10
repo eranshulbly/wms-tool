@@ -55,7 +55,7 @@ const dashboardService = {
 
   /**
    * Fetch orders by status
-   * @param {string} status - Status of orders to fetch (open, picking, packing, dispatch)
+   * @param {string} status - Status of orders to fetch (open, picking, packed, dispatch)
    * @param {number} warehouseId - ID of the selected warehouse
    * @param {number} companyId - ID of the selected company
    * @returns {Promise} Promise object that resolves to orders list

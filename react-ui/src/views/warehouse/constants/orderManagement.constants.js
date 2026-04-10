@@ -5,8 +5,8 @@ export const STATUS_FILTER_OPTIONS = [
   { value: 'all', label: 'All Orders' },
   { value: 'open', label: 'Open Orders' },
   { value: 'picking', label: 'Picking' },
-  { value: 'packing', label: 'Packing' },
-  { value: 'invoice-ready', label: 'Invoice Ready' },
+  { value: 'packed', label: 'Packed' },
+  { value: 'invoiced', label: 'Invoiced' },
   { value: 'dispatch-ready', label: 'Dispatch Ready' },
   { value: 'completed', label: 'Completed' },
   { value: 'partially-completed', label: 'Partially Completed' }
@@ -15,20 +15,27 @@ export const STATUS_FILTER_OPTIONS = [
 // Status progression mapping (manual UI transitions only)
 export const STATUS_PROGRESSION = {
   'open': 'picking',
-  'picking': 'packing',
-  'packing': 'invoice-ready',   // Packing → Invoice Ready (manual, creates final order)
-  'invoice-ready': null,         // Invoice Ready → Dispatch Ready (auto, via invoice upload)
+  'picking': 'packed',
+  'packed': null,            // Packed → Invoiced only via invoice file upload
+  'invoiced': null,          // Invoiced → Dispatch Ready (auto, via invoice upload)
   'dispatch-ready': null,
   'completed': null,
   'partially-completed': null
 };
 
+// Bulk target statuses (all except Invoiced)
+export const BULK_TARGET_STATUSES = [
+  { value: 'picking',          label: 'Picking',           requiresBoxes: false },
+  { value: 'packed',           label: 'Packed',            requiresBoxes: true  },
+  { value: 'completed',        label: 'Completed',         requiresBoxes: false },
+];
+
 // Status display names
 export const STATUS_LABELS = {
   'open': 'Open',
   'picking': 'Picking',
-  'packing': 'Packing',
-  'invoice-ready': 'Invoice Ready',
+  'packed': 'Packed',
+  'invoiced': 'Invoiced',
   'dispatch-ready': 'Dispatch Ready',
   'completed': 'Completed',
   'partially-completed': 'Partially Completed'
@@ -38,8 +45,8 @@ export const STATUS_LABELS = {
 export const FRONTEND_TO_BACKEND_STATUS = {
   'open': 'Open',
   'picking': 'Picking',
-  'packing': 'Packing',
-  'invoice-ready': 'Invoice Ready',
+  'packed': 'Packed',
+  'invoiced': 'Invoiced',
   'dispatch-ready': 'Dispatch Ready',
   'completed': 'Completed',
   'partially-completed': 'Partially Completed'
@@ -49,8 +56,8 @@ export const FRONTEND_TO_BACKEND_STATUS = {
 export const BACKEND_TO_FRONTEND_STATUS = {
   'Open': 'open',
   'Picking': 'picking',
-  'Packing': 'packing',
-  'Invoice Ready': 'invoice-ready',
+  'Packed': 'packed',
+  'Invoiced': 'invoiced',
   'Dispatch Ready': 'dispatch-ready',
   'Completed': 'completed',
   'Partially Completed': 'partially-completed'

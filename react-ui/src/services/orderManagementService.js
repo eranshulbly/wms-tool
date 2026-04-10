@@ -92,19 +92,14 @@ class OrderManagementService {
   }
 
   /**
-   * Update order status
+   * Update order status (Open→Picking, Picking→Packed, Dispatch Ready→Completed)
    * @param {string} orderId - Order ID (e.g., "PO123")
    * @param {string} newStatus - New status
-   * @param {Object} additionalData - Additional data (boxes, products, etc.)
+   * @param {Object} additionalData - For 'packed': { number_of_boxes }
    * @returns {Promise<Object>} API response
    */
   async updateOrderStatus(orderId, newStatus, additionalData = null) {
     try {
-      const allowedStatuses = ['open', 'picking', 'packing'];
-      if (!allowedStatuses.includes(newStatus.toLowerCase())) {
-        throw new Error(`Use specific methods for ${newStatus} transitions`);
-      }
-
       const requestBody = { new_status: newStatus };
       if (additionalData) Object.assign(requestBody, additionalData);
 
@@ -117,58 +112,22 @@ class OrderManagementService {
   }
 
   /**
-   * Move order to invoice ready status
-   * @param {string} orderId - Order ID
-   * @param {number} numberOfBoxes - Number of boxes used for packing
-   * @returns {Promise<Object>} API response
+   * Bulk status update from an Excel file.
+   * Excel must have 'Order ID' column; 'Number of Boxes' required when targetStatus='packed'.
+   * @param {File} file
+   * @param {string} targetStatus - e.g. 'picking', 'packed', 'completed'
+   * @param {number} warehouseId
+   * @param {number} companyId
+   * @returns {Promise<Object>} { success, processed_count, error_count, error_report? }
    */
-  async moveToInvoiceReady(orderId, numberOfBoxes) {
-    try {
-      const response = await axios.post(`${API_BASE_URL}/api/orders/${orderId}/move-to-invoice-ready`, {
-        number_of_boxes: numberOfBoxes
-      });
-      return response.data;
-    } catch (error) {
-      console.error('Error moving to invoice ready:', error);
-      return { success: false, msg: error.message };
-    }
-  }
-
-  /**
-   * Download bulk order Excel template filtered by current status/warehouse/company
-   * @param {Object} filters - { status, warehouseId, companyId }
-   */
-  async downloadBulkTemplate(filters = {}) {
-    const params = {};
-    if (filters.status && filters.status !== 'all') params.status = filters.status;
-    if (filters.warehouseId) params.warehouse_id = filters.warehouseId;
-    if (filters.companyId) params.company_id = filters.companyId;
-
-    const response = await axios.get(`${API_BASE_URL}/api/orders/bulk-export`, {
-      params,
-      responseType: 'blob'
-    });
-
-    const url = window.URL.createObjectURL(new Blob([response.data]));
-    const link = document.createElement('a');
-    link.href = url;
-    const filename = `orders_bulk_${new Date().toISOString().slice(0, 10)}.xlsx`;
-    link.setAttribute('download', filename);
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.URL.revokeObjectURL(url);
-  }
-
-  /**
-   * Upload filled bulk Excel file and process status transitions
-   * @param {File} file - The uploaded Excel file
-   * @returns {Promise<Object>} API response with summary and details
-   */
-  async uploadBulkFile(file) {
+  async bulkStatusUpdate(file, targetStatus, warehouseId, companyId) {
     const formData = new FormData();
     formData.append('file', file);
-    const response = await axios.post(`${API_BASE_URL}/api/orders/bulk-import`, formData, {
+    formData.append('target_status', targetStatus);
+    formData.append('warehouse_id', warehouseId);
+    formData.append('company_id', companyId);
+
+    const response = await axios.post(`${API_BASE_URL}/api/orders/bulk-status-update`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     });
     return response.data;
@@ -201,15 +160,8 @@ class OrderManagementService {
       switch (action) {
         case 'open':
         case 'picking':
-        case 'packing':
+        case 'packed':
           return await this.updateOrderStatus(orderId, action, additionalData);
-
-        case 'packing-to-invoice':
-        case 'invoice-ready':
-          if (!additionalData || !additionalData.number_of_boxes) {
-            throw new Error('number_of_boxes required for invoice ready');
-          }
-          return await this.moveToInvoiceReady(orderId, additionalData.number_of_boxes);
 
         case 'complete-dispatch':
         case 'completed':

@@ -1,4 +1,4 @@
-import { IconHistory } from '@tabler/icons';
+import { IconSettings } from '@tabler/icons';
 
 const adminMenu = {
     id: 'admin',
@@ -6,14 +6,15 @@ const adminMenu = {
     type: 'group',
     children: [
         {
-            id: 'upload-history',
-            title: 'Upload History',
+            id: 'admin-controls',
+            title: 'Admin Controls',
             type: 'item',
-            url: '/admin/upload-history',
-            icon: IconHistory,
-            breadcrumbs: false
-        }
-    ]
+            url: '/admin/controls',
+            icon: IconSettings,
+            breadcrumbs: false,
+        },
+        // Future admin menu items go here.
+    ],
 };
 
 export default adminMenu;

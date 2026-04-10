@@ -11,10 +11,10 @@ export const useWarehouseDashboardStyles = makeStyles((theme) => ({
   pickingCard: {
     borderTop: `5px solid ${theme.palette.primary.main}`
   },
-  packingCard: {
+  packedCard: {
     borderTop: `5px solid ${theme.palette.secondary.main}`
   },
-  invoiceReadyCard: {
+  invoicedCard: {
     borderTop: `5px solid #0288d1`
   },
   dispatchReadyCard: {
@@ -142,14 +142,14 @@ export const useWarehouseDashboardStyles = makeStyles((theme) => ({
       color: theme.palette.primary.dark,
     }
   },
-  chipPacking: {
+  chipPacked: {
     backgroundColor: theme.palette.secondary.light,
     color: theme.palette.secondary.dark,
     '& .MuiChip-icon': {
       color: theme.palette.secondary.dark,
     }
   },
-  chipInvoiceReady: {
+  chipInvoiced: {
     backgroundColor: '#b3e5fc',
     color: '#01579b',
     '& .MuiChip-icon': {

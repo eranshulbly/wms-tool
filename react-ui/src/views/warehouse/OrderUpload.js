@@ -17,12 +17,12 @@ import {
 import { makeStyles, useTheme } from '@material-ui/styles';
 import CloudUploadIcon from '@material-ui/icons/CloudUpload';
 import DescriptionIcon from '@material-ui/icons/Description';
-import CheckCircleOutlineIcon from '@material-ui/icons/CheckCircleOutline';
 import ErrorOutlineIcon from '@material-ui/icons/ErrorOutline';
 import { gridSpacing } from '../../store/constant';
 import { Snackbar, Alert } from '@material-ui/core';
 import MainCard from '../../ui-component/cards/MainCard';
 import AnimateButton from '../../ui-component/extended/AnimateButton';
+import UploadResultCard from '../../components/UploadResultCard';
 import axios from 'axios';
 import config from '../../config';
 
@@ -246,19 +246,24 @@ const OrderUpload = () => {
             }
         })
         .then(response => {
-            if (response.data.success) {
+            const data = response.data;
+            setUploadResults(data);
+            if (data.success) {
                 setUploadStatus('success');
-                setUploadResults(response.data);
-                showSnackbar('File uploaded successfully', 'success');
+                showSnackbar(
+                    `Processed ${data.processed_count} order(s)` +
+                    (data.error_count > 0 ? ` — ${data.error_count} row(s) failed` : ''),
+                    data.error_count > 0 ? 'warning' : 'success'
+                );
             } else {
                 setUploadStatus('error');
-                showSnackbar(response.data.msg || 'Upload failed', 'error');
+                showSnackbar(data.msg || 'Upload failed', 'error');
             }
         })
         .catch(error => {
             setUploadStatus('error');
-            const errorMessage = error.response?.data?.msg || 'Error uploading file';
-            showSnackbar(errorMessage, 'error');
+            setUploadResults(error.response?.data || null);
+            showSnackbar(error.response?.data?.msg || 'Error uploading file', 'error');
             console.error('Upload error:', error);
         })
         .finally(() => {
@@ -384,47 +389,14 @@ const OrderUpload = () => {
                                             </Grid>
                                         )}
 
-                                        {uploadStatus === 'success' && (
+                                        {(uploadStatus === 'success' || uploadStatus === 'error') && uploadResults && (
                                             <Grid item xs={12}>
-                                                <div className={classes.uploadProgress}>
-                                                    <CheckCircleOutlineIcon className={classes.successIcon} />
-                                                    <Typography variant="h6" gutterBottom>
-                                                        Upload Successful!
-                                                    </Typography>
-                                                    <Typography variant="body2">
-                                                        {uploadResults?.orders_processed || 0} orders and {uploadResults?.products_processed || 0} products were processed.
-                                                    </Typography>
-                                                    <Button
-                                                        variant="outlined"
-                                                        color="primary"
-                                                        style={{ marginTop: '16px' }}
-                                                        onClick={resetUpload}
-                                                    >
-                                                        Upload Another File
-                                                    </Button>
-                                                </div>
-                                            </Grid>
-                                        )}
-
-                                        {uploadStatus === 'error' && (
-                                            <Grid item xs={12}>
-                                                <div className={classes.uploadProgress}>
-                                                    <ErrorOutlineIcon className={classes.errorIcon} />
-                                                    <Typography variant="h6" gutterBottom>
-                                                        Upload Failed
-                                                    </Typography>
-                                                    <Typography variant="body2" color="error">
-                                                        There was an error processing your file. Please try again.
-                                                    </Typography>
-                                                    <Button
-                                                        variant="outlined"
-                                                        color="primary"
-                                                        style={{ marginTop: '16px' }}
-                                                        onClick={resetUpload}
-                                                    >
-                                                        Try Again
-                                                    </Button>
-                                                </div>
+                                                <UploadResultCard
+                                                    result={uploadResults}
+                                                    onReset={resetUpload}
+                                                    successLabel="Orders Processed"
+                                                    errorFilename={`order_upload_errors_${new Date().toISOString().split('T')[0]}.xlsx`}
+                                                />
                                             </Grid>
                                         )}
                                     </Grid>

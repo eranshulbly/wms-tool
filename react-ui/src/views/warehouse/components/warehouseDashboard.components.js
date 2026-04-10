@@ -227,8 +227,8 @@ export const StatusCard = ({ status, count, loading, classes }) => {
 const STATUS_LABELS = {
   'open': 'Open',
   'picking': 'Picking',
-  'packing': 'Packing',
-  'invoice-ready': 'Invoice Ready',
+  'packed': 'Packed',
+  'invoiced': 'Invoiced',
   'dispatch-ready': 'Dispatch Ready',
   'completed': 'Completed',
   'partially-completed': 'Partially Completed',

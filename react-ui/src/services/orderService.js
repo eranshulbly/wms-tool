@@ -109,7 +109,7 @@ const orderService = {
         new_status: newStatus
       };
 
-      // Include boxes data if provided (for packing to dispatch transition)
+      // Include boxes data if provided (for packed to dispatch transition)
       if (boxes) {
         requestData.boxes = boxes;
       }

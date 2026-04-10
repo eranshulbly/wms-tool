@@ -46,8 +46,8 @@ status_count_model = rest_api.model('StatusCount', {
 status_counts_model = rest_api.model('StatusCounts', {
     'open': fields.Nested(status_count_model),
     'picking': fields.Nested(status_count_model),
-    'packing': fields.Nested(status_count_model),
-    'invoice-ready': fields.Nested(status_count_model),
+    'packed': fields.Nested(status_count_model),
+    'invoiced': fields.Nested(status_count_model),
     'dispatch-ready': fields.Nested(status_count_model),
     'completed': fields.Nested(status_count_model),
     'partially-completed': fields.Nested(status_count_model)
@@ -157,8 +157,8 @@ class OrderStatusCount(Resource):
             all_statuses = [
                 ('open',                'Open',               'Open Orders'),
                 ('picking',             'Picking',            'Picking'),
-                ('packing',             'Packing',            'Packing'),
-                ('invoice-ready',       'Invoice Ready',      'Invoice Ready'),
+                ('packed',              'Packed',             'Packed'),
+                ('invoiced',            'Invoiced',           'Invoiced'),
                 ('dispatch-ready',      'Dispatch Ready',     'Dispatch Ready'),
                 ('completed',           'Completed',          'Completed'),
                 ('partially-completed', 'Partially Completed','Partially Completed'),
@@ -181,7 +181,7 @@ class OrdersList(Resource):
     """
 
     @rest_api.doc(params={
-        'status': 'Order status (open, picking, packing, dispatch-ready, completed, partially-completed)',
+        'status': 'Order status (open, picking, packed, dispatch-ready, completed, partially-completed)',
         'warehouse_id': 'Warehouse ID',
         'company_id': 'Company ID',
         'limit': 'Limit number of results (default 100)'
@@ -195,14 +195,14 @@ class OrdersList(Resource):
             status = request.args.get('status', '')
             warehouse_id = request.args.get('warehouse_id', type=int)
             company_id = request.args.get('company_id', type=int)
-            limit = request.args.get('limit', 100, type=int)
+            limit = request.args.get('limit', 1000, type=int)
 
             # Map frontend status names to database status names
             status_map = {
                 'open': 'Open',
                 'picking': 'Picking',
-                'packing': 'Packing',
-                'invoice-ready': 'Invoice Ready',
+                'packed': 'Packed',
+                'invoiced': 'Invoiced',
                 'dispatch-ready': 'Dispatch Ready',
                 'completed': 'Completed',
                 'partially-completed': 'Partially Completed'
@@ -217,56 +217,59 @@ class OrdersList(Resource):
                 limit=limit
             )
 
+            frontend_status_map = {
+                'Open': 'open',
+                'Picking': 'picking',
+                'Packed': 'packed',
+                'Invoiced': 'invoiced',
+                'Dispatch Ready': 'dispatch-ready',
+                'Completed': 'completed',
+                'Partially Completed': 'partially-completed'
+            }
+
             orders = []
             for order_data in potential_orders:
-                # Get dealer name
-                dealer_name = order_data.get('dealer_name', 'Unknown Dealer')
+                try:
+                    dealer_name = order_data.get('dealer_name') or 'Unknown Dealer'
+                    product_count = PotentialOrderProduct.count_by_order(order_data['potential_order_id'])
+                    state_history_data = OrderStateHistory.get_history_for_order(order_data['potential_order_id'])
 
-                # Get product count
-                product_count = PotentialOrderProduct.count_by_order(order_data['potential_order_id'])
+                    formatted_history = []
+                    for history in state_history_data:
+                        formatted_history.append({
+                            'state_name': history['state_name'],
+                            'timestamp': history['changed_at'].isoformat() if history['changed_at'] else None,
+                            'user': f"User {history['changed_by']}"
+                        })
 
-                # Get state history
-                state_history_data = OrderStateHistory.get_history_for_order(order_data['potential_order_id'])
+                    # Null-safe current state time
+                    current_state_time = (
+                        state_history_data[-1]['changed_at'] if state_history_data
+                        else order_data.get('updated_at') or order_data.get('created_at')
+                    )
+                    current_state_time_str = current_state_time.isoformat() if current_state_time else None
 
-                # Format state history
-                formatted_history = []
-                for history in state_history_data:
-                    formatted_history.append({
-                        'state_name': history['state_name'],
-                        'timestamp': history['changed_at'].isoformat(),
-                        'user': f"User {history['changed_by']}"
+                    # Null-safe order date
+                    order_date = order_data.get('order_date')
+                    order_date_str = order_date.isoformat() if order_date else None
+
+                    db_status = order_data.get('status', '')
+                    frontend_status = frontend_status_map.get(db_status, db_status.lower().replace(' ', '-'))
+
+                    orders.append({
+                        'order_request_id': f"PO{order_data['potential_order_id']}",
+                        'original_order_id': order_data['original_order_id'],
+                        'dealer_name': dealer_name,
+                        'order_date': order_date_str,
+                        'status': frontend_status,
+                        'current_state_time': current_state_time_str,
+                        'assigned_to': f"User {order_data['requested_by']}",
+                        'products': product_count,
+                        'state_history': formatted_history,
+                        'invoice_submitted': bool(order_data.get('invoice_submitted', False)),
                     })
-
-                # Get the time of the most recent state change
-                current_state_time = order_data['updated_at']
-                if state_history_data:
-                    current_state_time = state_history_data[-1]['changed_at']
-
-                # Map database status to frontend status
-                frontend_status_map = {
-                    'Open': 'open',
-                    'Picking': 'picking',
-                    'Packing': 'packing',
-                    'Invoice Ready': 'invoice-ready',
-                    'Dispatch Ready': 'dispatch-ready',
-                    'Completed': 'completed',
-                    'Partially Completed': 'partially-completed'
-                }
-                frontend_status = frontend_status_map.get(order_data['status'], order_data['status'].lower().replace(' ', '-'))
-
-                # Format the order
-                order_result = {
-                    'order_request_id': f"PO{order_data['potential_order_id']}",
-                    'original_order_id': order_data['original_order_id'],
-                    'dealer_name': dealer_name,
-                    'order_date': order_data['order_date'].isoformat(),
-                    'status': frontend_status,
-                    'current_state_time': current_state_time.isoformat(),
-                    'assigned_to': f"User {order_data['requested_by']}",
-                    'products': product_count,
-                    'state_history': formatted_history
-                }
-                orders.append(order_result)
+                except Exception as row_err:
+                    print(f"Warning: skipping order {order_data.get('potential_order_id')} due to error: {row_err}")
 
             return {
                 'success': True,
@@ -285,19 +288,19 @@ class OrdersList(Resource):
 FRONTEND_TO_DB_STATUS = {
     'open': 'Open',
     'picking': 'Picking',
-    'packing': 'Packing',
-    'invoice-ready': 'Invoice Ready',
+    'packed': 'Packed',
+    'invoiced': 'Invoiced',
     'dispatch-ready': 'Dispatch Ready',
     'completed': 'Completed',
 }
 
 DB_TO_FRONTEND_STATUS = {v: k for k, v in FRONTEND_TO_DB_STATUS.items()}
 
-# open→picking, picking→packing, packing→invoice-ready, dispatch-ready→completed
+# open→picking, picking→packed, packed→invoiced, dispatch-ready→completed
 VALID_BULK_TRANSITIONS = {
     'open': 'picking',
-    'picking': 'packing',
-    'packing': 'invoice-ready',
+    'picking': 'packed',
+    'packed': 'invoiced',
     'dispatch-ready': 'completed',
 }
 
@@ -345,8 +348,8 @@ class BulkOrderExport(Resource):
                 '(do not edit)',
                 '(do not edit)',
                 '(do not edit)',
-                'Fill: picking / packing / invoice-ready / completed',
-                'Fill only when moving packing → invoice-ready',
+                'Fill: picking / packed / invoiced / completed',
+                'Fill only when moving packed → invoiced',
             ]
             for col, note in enumerate(notes, 1):
                 cell = ws.cell(row=2, column=col, value=note)
@@ -359,7 +362,7 @@ class BulkOrderExport(Resource):
             ws.cell(row=3, column=1, value='NOTE').fill = blocked_fill
             note_cell = ws.cell(
                 row=3, column=2,
-                value='invoice-ready → dispatch-ready is NOT allowed here. Use the Invoice Upload tab.'
+                value='invoiced → dispatch-ready is NOT allowed here. Use the Invoice Upload tab.'
             )
             note_cell.fill = blocked_fill
             note_cell.font = Font(bold=True, color='B71C1C')
@@ -449,11 +452,11 @@ class BulkOrderImport(Resource):
                     skipped.append({'order_id': order_id, 'reason': 'Status unchanged'})
                     continue
 
-                # Block invoice-ready → dispatch-ready
-                if current_status == 'invoice-ready' and expected_status == 'dispatch-ready':
+                # Block invoiced → dispatch-ready
+                if current_status == 'invoiced' and expected_status == 'dispatch-ready':
                     errors.append({
                         'order_id': order_id,
-                        'reason': 'invoice-ready → dispatch-ready is not allowed here. Use the Invoice Upload tab.'
+                        'reason': 'invoiced → dispatch-ready is not allowed here. Use the Invoice Upload tab.'
                     })
                     continue
 
@@ -491,8 +494,8 @@ class BulkOrderImport(Resource):
                 try:
                     current_time = datetime.utcnow()
 
-                    if expected_status == 'invoice-ready':
-                        # Packing → Invoice Ready
+                    if expected_status == 'invoiced':
+                        # Packed → Invoiced
                         try:
                             number_of_boxes = max(1, int(raw_boxes or 1))
                         except (ValueError, TypeError):
@@ -515,11 +518,11 @@ class BulkOrderImport(Resource):
                                 updated_at=current_time
                             ).save()
 
-                        potential_order.status = 'Invoice Ready'
+                        potential_order.status = 'Invoiced'
                         potential_order.updated_at = current_time
                         potential_order.save()
 
-                        state = OrderState.find_by_name('Invoice Ready') or _ensure_state('Invoice Ready', 'Order packed and ready for invoice upload')
+                        state = OrderState.find_by_name('Invoiced') or _ensure_state('Invoiced', 'Order invoiced and ready for dispatch')
                         OrderStateHistory(
                             potential_order_id=numeric_id,
                             state_id=state.state_id,
@@ -561,7 +564,7 @@ class BulkOrderImport(Resource):
                         moved.append({'order_id': order_id, 'from': current_status, 'to': expected_status})
 
                     else:
-                        # Simple transitions: open→picking, picking→packing
+                        # Simple transitions: open→picking, picking→packed
                         new_db_status = FRONTEND_TO_DB_STATUS[expected_status]
                         potential_order.status = new_db_status
                         potential_order.updated_at = current_time
@@ -658,8 +661,8 @@ class OrderDetail(Resource):
             status_map = {
                 'Open': 'open',
                 'Picking': 'picking',
-                'Packing': 'packing',
-                'Invoice Ready': 'invoice-ready',
+                'Packed': 'packed',
+                'Invoiced': 'invoiced',
                 'Dispatch Ready': 'dispatch-ready',
                 'Completed': 'completed',
                 'Partially Completed': 'partially-completed'
@@ -738,8 +741,8 @@ class RecentOrders(Resource):
                 status_map = {
                     'Open': 'open',
                     'Picking': 'picking',
-                    'Packing': 'packing',
-                    'Invoice Ready': 'invoice-ready',
+                    'Packed': 'packed',
+                    'Invoiced': 'invoiced',
                     'Dispatch Ready': 'dispatch-ready',
                     'Completed': 'completed',
                     'Partially Completed': 'partially-completed'

@@ -79,7 +79,7 @@ product_detail_model = rest_api.model('ProductDetail', {
     'name': fields.String(description='Product name'),
     'description': fields.String(description='Product description'),
     'quantity_ordered': fields.Integer(description='Originally ordered quantity'),
-    'quantity_available': fields.Integer(description='Available quantity for packing'),
+    'quantity_available': fields.Integer(description='Available quantity for packed'),
     'quantity_packed': fields.Integer(description='Quantity already packed'),
     'price': fields.String(description='Product price')
 })
@@ -114,7 +114,7 @@ update_status_model = rest_api.model('UpdateStatusModel', {
     'boxes': fields.List(fields.Nested(box_assignment_model), description='Box assignments (optional)')
 })
 
-packing_update_model = rest_api.model('PackingUpdate', {
+packed_update_model = rest_api.model('PackedUpdate', {
     'products': fields.List(fields.Raw, description='Products with packed quantities and box assignments'),
     'boxes': fields.List(fields.Nested(box_assignment_model), description='Box assignments')
 })
@@ -446,52 +446,123 @@ class OrderUpload(Resource):
                 from .models import UserWarehouseCompany
                 if not UserWarehouseCompany.user_can_access(current_user.id, warehouse_id, company_id):
                     return {'success': False, 'msg': 'You do not have access to this warehouse/company combination.',
-                            'orders_processed': 0, 'products_processed': 0, 'errors': []}, 403
+                            'processed_count': 0, 'error_count': 0}, 403
 
-            # Validate that warehouse and company exist
             warehouse = Warehouse.get_by_id(warehouse_id)
             if not warehouse:
-                return {
-                    'success': False,
-                    'msg': f'Warehouse with ID {warehouse_id} not found',
-                    'orders_processed': 0,
-                    'products_processed': 0,
-                    'errors': ['Invalid warehouse ID']
-                }, 400
+                return {'success': False, 'msg': f'Warehouse with ID {warehouse_id} not found',
+                        'processed_count': 0, 'error_count': 0}, 400
 
             company = Company.get_by_id(company_id)
             if not company:
-                return {
-                    'success': False,
-                    'msg': f'Company with ID {company_id} not found',
-                    'orders_processed': 0,
-                    'products_processed': 0,
-                    'errors': ['Invalid company ID']
-                }, 400
+                return {'success': False, 'msg': f'Company with ID {company_id} not found',
+                        'processed_count': 0, 'error_count': 0}, 400
 
-            # Call the service layer to process the upload
-            result, status_code = order_service.process_order_upload(
-                uploaded_file,
-                warehouse_id,
-                company_id,
-                current_user.id
-            )
-
-            return result, status_code
+            return order_service.process_order_upload(uploaded_file, warehouse_id, company_id, current_user.id)
 
         except Exception as e:
-            return {
-                'success': False,
-                'msg': f'Error processing upload: {str(e)}',
-                'orders_processed': 0,
-                'products_processed': 0,
-                'errors': [str(e)]
-            }, 400
+            return {'success': False, 'msg': f'Error processing upload: {str(e)}',
+                    'processed_count': 0, 'error_count': 0}, 400
 
 
 """
    Order Management Route Starts - MySQL Optimized
 """
+
+bulk_status_update_parser = reqparse.RequestParser()
+bulk_status_update_parser.add_argument('file',
+                                       type=werkzeug.datastructures.FileStorage,
+                                       location='files',
+                                       required=True,
+                                       help='Excel file with Order ID (and Number of Boxes for Packed target)')
+bulk_status_update_parser.add_argument('target_status',
+                                       type=str,
+                                       location='form',
+                                       required=True,
+                                       help='Target status to move orders to')
+bulk_status_update_parser.add_argument('warehouse_id',
+                                       type=int,
+                                       location='form',
+                                       required=True)
+bulk_status_update_parser.add_argument('company_id',
+                                       type=int,
+                                       location='form',
+                                       required=True)
+
+
+@rest_api.route('/api/orders/bulk-status-update')
+class BulkStatusUpdate(Resource):
+    """Bulk-transition orders from an uploaded Excel file."""
+
+    @rest_api.expect(bulk_status_update_parser)
+    @token_required
+    @active_required
+    def post(self, current_user):
+        try:
+            import os
+            from .utils.upload_utils import (
+                save_temp_file, read_upload_file, cleanup_temp_file,
+                make_upload_response
+            )
+            from .business.order_business import process_bulk_status_update
+
+            args = bulk_status_update_parser.parse_args()
+            uploaded_file = args['file']
+            target_status = args['target_status'].strip()
+            warehouse_id = args['warehouse_id']
+            company_id = args['company_id']
+
+            if target_status.lower() in ('invoiced', 'invoice'):
+                return {
+                    'success': False,
+                    'msg': 'Cannot bulk-move orders to Invoiced. Use invoice file upload instead.',
+                    'processed_count': 0, 'error_count': 0
+                }, 400
+
+            # Check warehouse+company access
+            from .permissions import has_all_warehouse_access
+            if not has_all_warehouse_access(current_user.role):
+                from .models import UserWarehouseCompany
+                if not UserWarehouseCompany.user_can_access(current_user.id, warehouse_id, company_id):
+                    return {
+                        'success': False, 'msg': 'No access to this warehouse/company.',
+                        'processed_count': 0, 'error_count': 0
+                    }, 403
+
+            BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+            temp_path, file_extension = save_temp_file(uploaded_file, BASE_DIR)
+
+            try:
+                df = read_upload_file(temp_path, file_extension)
+            except Exception as e:
+                cleanup_temp_file(temp_path)
+                return {'success': False, 'msg': str(e), 'processed_count': 0, 'error_count': 0}, 400
+            finally:
+                cleanup_temp_file(temp_path)
+
+            # Clean up DataFrame: drop blank rows and normalise column names
+            df = df.dropna(how='all')
+            df.columns = df.columns.str.replace('\n', ' ').str.replace('\r', ' ').str.strip()
+
+            # Resolve required columns (fuzzy-match handles case differences like
+            # "Order Id" → "Order ID" and "Number Of Boxes" → "Number of Boxes")
+            from .utils.upload_utils import resolve_required_columns
+            required_cols = ['Order ID']
+            if target_status.lower() == 'packed':
+                required_cols.append('Number of Boxes')
+            df, col_error = resolve_required_columns(df, required_cols)
+            if col_error:
+                return {'success': False, 'msg': col_error, 'processed_count': 0, 'error_count': 0}, 400
+
+            result = process_bulk_status_update(df, target_status, warehouse_id, company_id, current_user.id)
+            return make_upload_response(result['orders_processed'], result['error_rows'])
+
+        except Exception as e:
+            return {
+                'success': False,
+                'msg': f'Error processing bulk update: {str(e)}',
+                'processed_count': 0, 'error_count': 0
+            }, 400
 
 
 @rest_api.route('/api/orders/<string:order_id>/details')
@@ -577,8 +648,8 @@ class OrderDetailWithProducts(Resource):
             status_map = {
                 'Open': 'open',
                 'Picking': 'picking',
-                'Packing': 'packing',
-                'Invoice Ready': 'invoice-ready',
+                'Packed': 'packed',
+                'Invoiced': 'invoiced',
                 'Dispatch Ready': 'dispatch-ready',
                 'Completed': 'completed',
                 'Partially Completed': 'partially-completed'
@@ -626,7 +697,7 @@ class OrderDetailWithProducts(Resource):
 @rest_api.route('/api/orders/<string:order_id>/status')
 class OrderStatusUpdate(Resource):
     """
-    MySQL: Regular Status Updates (Open -> Picking -> Packing only)
+    MySQL: Regular Status Updates (Open -> Picking -> Packed only)
     Complete rewrite with proper MySQL transaction management
     """
 
@@ -672,7 +743,7 @@ class OrderStatusUpdate(Resource):
             status_map = {
                 'open': 'Open',
                 'picking': 'Picking',
-                'packing': 'Packing'
+                'packed': 'Packed'
             }
 
             if new_status.lower() not in status_map:
@@ -686,9 +757,9 @@ class OrderStatusUpdate(Resource):
             # Validate status progression
             valid_transitions = {
                 'Open': ['Picking'],
-                'Picking': ['Packing', 'Open'],  # Allow going back to Open
-                'Packing': ['Picking'],  # Allow going back to Picking
-                'Invoice Ready': [],  # Cannot change from Invoice Ready using this endpoint
+                'Picking': ['Packed', 'Open'],  # Allow going back to Open
+                'Packed': ['Picking'],  # Allow going back to Picking
+                'Invoiced': [],  # Cannot change from Invoiced using this endpoint
                 'Dispatch Ready': [],  # Cannot change from Dispatch Ready using this endpoint
                 'Completed': [],  # Cannot change from Completed
                 'Partially Completed': []  # Cannot change from Partially Completed
@@ -725,7 +796,73 @@ class OrderStatusUpdate(Resource):
                 potential_order.updated_at = current_time
                 potential_order.save()
 
-                # Add state history record
+                # When moving to Packed: create the Order record + boxes
+                if db_status == 'Packed':
+                    number_of_boxes = req_data.get('number_of_boxes', 1)
+                    try:
+                        number_of_boxes = max(1, int(number_of_boxes))
+                    except (ValueError, TypeError):
+                        number_of_boxes = 1
+
+                    final_order = None
+                    existing_order = Order.find_by_potential_order_id(numeric_id)
+                    if not existing_order:
+                        final_order = Order(
+                            potential_order_id=numeric_id,
+                            order_number=f"ORD-{numeric_id}-{current_time.strftime('%Y%m%d%H%M')}",
+                            status='Packed',
+                            created_at=current_time,
+                            updated_at=current_time
+                        )
+                        final_order.save()
+                        for i in range(number_of_boxes):
+                            OrderBox(
+                                order_id=final_order.order_id,
+                                name=f'Box-{i + 1}',
+                                created_at=current_time,
+                                updated_at=current_time
+                            ).save()
+                    else:
+                        final_order = existing_order
+
+                    # Auto-transition: if an invoice was already submitted for this
+                    # order while it was in Open/Picking, skip Packed and go straight
+                    # to Invoiced now that it's been packed.
+                    if potential_order.invoice_submitted:
+                        # Record the intermediate Packed state in history (audit trail)
+                        OrderStateHistory(
+                            potential_order_id=potential_order.potential_order_id,
+                            state_id=new_state.state_id,  # Packed state
+                            changed_by=current_user.id,
+                            changed_at=current_time
+                        ).save()
+
+                        # Resolve / create the Invoiced state
+                        invoiced_state = OrderState.find_by_name('Invoiced')
+                        if not invoiced_state:
+                            invoiced_state = OrderState(
+                                state_name='Invoiced',
+                                description='Invoice uploaded for order'
+                            )
+                            invoiced_state.save()
+
+                        # Transition to Invoiced and clear the flag
+                        potential_order.status = 'Invoiced'
+                        potential_order.invoice_submitted = False
+                        potential_order.updated_at = current_time
+                        potential_order.save()
+
+                        if final_order:
+                            final_order.status = 'Invoiced'
+                            final_order.updated_at = current_time
+                            final_order.save()
+
+                        # Override so the state_history block below records Invoiced,
+                        # and the response reflects the final state.
+                        db_status = 'Invoiced'
+                        new_state = invoiced_state
+
+                # Add state history record (records the final state: Packed or Invoiced)
                 state_history = OrderStateHistory(
                     potential_order_id=potential_order.potential_order_id,
                     state_id=new_state.state_id,
@@ -758,8 +895,8 @@ class OrderStatusUpdate(Resource):
                 frontend_status_map = {
                     'Open': 'open',
                     'Picking': 'picking',
-                    'Packing': 'packing',
-                    'Invoice Ready': 'invoice-ready',
+                    'Packed': 'packed',
+                    'Invoiced': 'invoiced',
                     'Dispatch Ready': 'dispatch-ready',
                     'Completed': 'completed',
                     'Partially Completed': 'partially-completed'
@@ -807,19 +944,19 @@ class OrderStatusUpdate(Resource):
             }, 400
 
 
-@rest_api.route('/api/orders/<string:order_id>/packing')
-class OrderPackingUpdate(Resource):
+@rest_api.route('/api/orders/<string:order_id>/packed')
+class OrderPackedUpdate(Resource):
     """
-    MySQL: Endpoint for updating packing information with enhanced box quantity handling
+    MySQL: Endpoint for updating packed information with enhanced box quantity handling
     Complete rewrite with proper MySQL transaction management and validation
     """
 
-    @rest_api.expect(packing_update_model)
+    @rest_api.expect(packed_update_model)
     @rest_api.response(200, 'Success', update_status_response)
     @rest_api.response(400, 'Error', error_response)
     @rest_api.response(404, 'Order not found', error_response)
     def post(self, order_id):
-        """Update packing information for an order with comprehensive validation - Complete MySQL"""
+        """Update packed information for an order with comprehensive validation - Complete MySQL"""
         try:
             # Extract numeric ID from order_id
             numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
@@ -837,18 +974,18 @@ class OrderPackingUpdate(Resource):
             products_data = req_data.get('products', [])
             boxes_data = req_data.get('boxes', [])
 
-            # Validate that order is in packing status
-            if potential_order.status != 'Packing':
+            # Validate that order is in packed status
+            if potential_order.status != 'Packed':
                 return {
                     'success': False,
-                    'msg': f'Order must be in Packing status to update packing information. Current status: {potential_order.status}'
+                    'msg': f'Order must be in Packed status to update packed information. Current status: {potential_order.status}'
                 }, 400
 
             # Validate input data
             if not products_data:
                 return {
                     'success': False,
-                    'msg': 'Products data is required for packing update'
+                    'msg': 'Products data is required for packed update'
                 }, 400
 
             # Validate product data structure
@@ -1005,7 +1142,7 @@ class OrderPackingUpdate(Resource):
                     dealer = Dealer.get_by_id(potential_order.dealer_id)
                 dealer_name = dealer.name if dealer else 'Unknown Dealer'
 
-                # Get updated products with packing info
+                # Get updated products with packed info
                 updated_products = PotentialOrderProduct.get_products_for_order(numeric_id)
                 formatted_products = []
                 for product in updated_products:
@@ -1053,7 +1190,7 @@ class OrderPackingUpdate(Resource):
                     'original_order_id': potential_order.original_order_id,
                     'dealer_name': dealer_name,
                     'order_date': potential_order.order_date.isoformat(),
-                    'status': 'packing',
+                    'status': 'packed',
                     'current_state_time': current_time.isoformat(),
                     'assigned_to': f"User {potential_order.requested_by}",
                     'products': formatted_products,
@@ -1061,20 +1198,20 @@ class OrderPackingUpdate(Resource):
                     'state_history': formatted_history
                 }
 
-                # Calculate packing summary
+                # Calculate packed summary
                 total_items_ordered = sum(p['quantity_ordered'] for p in formatted_products)
                 total_items_packed = sum(p['quantity_packed'] for p in formatted_products)
-                packing_progress = round(
+                packed_progress = round(
                     (total_items_packed / total_items_ordered * 100) if total_items_ordered > 0 else 0, 1)
 
                 return {
                     'success': True,
-                    'msg': f'Packing information updated successfully. {total_items_packed}/{total_items_ordered} items packed ({packing_progress}%)',
+                    'msg': f'Packed information updated successfully. {total_items_packed}/{total_items_ordered} items packed ({packed_progress}%)',
                     'order': updated_order,
-                    'packing_summary': {
+                    'packed_summary': {
                         'total_items_ordered': total_items_ordered,
                         'total_items_packed': total_items_packed,
-                        'packing_progress_percent': packing_progress,
+                        'packed_progress_percent': packed_progress,
                         'boxes_created': len(formatted_boxes)
                     }
                 }, 200
@@ -1096,7 +1233,7 @@ class OrderPackingUpdate(Resource):
         except Exception as e:
             return {
                 'success': False,
-                'msg': f'Error updating packing information: {str(e)}'
+                'msg': f'Error updating packed information: {str(e)}'
             }, 400
 
 
@@ -1125,11 +1262,11 @@ class OrderDispatchFinal(Resource):
             products_data = req_data.get('products', [])
             boxes_data = req_data.get('boxes', [])
 
-            # Validate that order is in packing status
-            if potential_order.status != 'Packing':
+            # Validate that order is in packed status
+            if potential_order.status != 'Packed':
                 return {
                     'success': False,
-                    'msg': 'Order must be in Packing status to dispatch'
+                    'msg': 'Order must be in Packed status to dispatch'
                 }, 400
 
             current_time = datetime.utcnow()
@@ -1243,10 +1380,10 @@ class OrderDispatchFinal(Resource):
                 'msg': f'Error dispatching order: {str(e)}'
             }, 400
 
-@rest_api.route('/api/orders/<string:order_id>/move-to-invoice-ready')
-class MoveToInvoiceReady(Resource):
+@rest_api.route('/api/orders/<string:order_id>/move-to-invoiced')
+class MoveToInvoiced(Resource):
     """
-    MySQL: Move from Packing to Invoice Ready - Create Final Order Records
+    MySQL: Move from Packed to Invoiced - Create Final Order Records
     """
 
     @rest_api.expect(move_to_dispatch_model)
@@ -1255,14 +1392,14 @@ class MoveToInvoiceReady(Resource):
     @token_required
     @active_required
     def post(self, current_user, order_id):
-        """Move order from packing to invoice ready and create final order records - MySQL"""
+        """Move order from packed to invoice ready and create final order records - MySQL"""
         try:
-            # Check that user has permission for Packing state
+            # Check that user has permission for Packed state
             from .permissions import can_see_order_state
-            if not can_see_order_state(current_user.role, 'Packing'):
+            if not can_see_order_state(current_user.role, 'Packed'):
                 return {
                     'success': False,
-                    'msg': 'You do not have permission to manage orders in Packing status.'
+                    'msg': 'You do not have permission to manage orders in Packed status.'
                 }, 403
 
             # Extract numeric ID
@@ -1275,11 +1412,11 @@ class MoveToInvoiceReady(Resource):
                     'msg': 'Order not found'
                 }, 404
 
-            # Validate that order is in packing status
-            if potential_order.status != 'Packing':
+            # Validate that order is in packed status
+            if potential_order.status != 'Packed':
                 return {
                     'success': False,
-                    'msg': 'Order must be in Packing status to move to Invoice Ready'
+                    'msg': 'Order must be in Packed status to move to Invoiced'
                 }, 400
 
             req_data = request.get_json()
@@ -1314,30 +1451,30 @@ class MoveToInvoiceReady(Resource):
                 order_box.save()
 
             # STEP 3: UPDATE POTENTIAL ORDER STATUS
-            potential_order.status = 'Invoice Ready'
+            potential_order.status = 'Invoiced'
             potential_order.updated_at = current_time
             potential_order.save()
 
             # STEP 4: CREATE STATE HISTORY
-            invoice_ready_state = OrderState.find_by_name('Invoice Ready')
-            if not invoice_ready_state:
-                invoice_ready_state = OrderState(
-                    state_name='Invoice Ready',
-                    description='Order packed and ready for invoice upload'
+            invoiced_state = OrderState.find_by_name('Invoiced')
+            if not invoiced_state:
+                invoiced_state = OrderState(
+                    state_name='Invoiced',
+                    description='Order invoiced and ready for dispatch'
                 )
-                invoice_ready_state.save()
+                invoiced_state.save()
 
-            invoice_ready_history = OrderStateHistory(
+            invoiced_history = OrderStateHistory(
                 potential_order_id=numeric_id,
-                state_id=invoice_ready_state.state_id,
+                state_id=invoiced_state.state_id,
                 changed_by=current_user.id,
                 changed_at=current_time
             )
-            invoice_ready_history.save()
+            invoiced_history.save()
 
             return {
                 'success': True,
-                'msg': 'Order moved to invoice ready successfully',
+                'msg': 'Order moved to invoiced successfully',
                 'final_order_id': final_order.order_id,
                 'final_order_number': final_order.order_number,
                 'number_of_boxes': number_of_boxes,
@@ -1348,7 +1485,7 @@ class MoveToInvoiceReady(Resource):
         except Exception as e:
             return {
                 'success': False,
-                'msg': f'Error moving to invoice ready: {str(e)}'
+                'msg': f'Error moving to invoiced: {str(e)}'
             }, 400
 
 @rest_api.route('/api/orders/<string:order_id>/complete-dispatch')
@@ -1470,79 +1607,23 @@ class InvoiceUpload(Resource):
                 from .models import UserWarehouseCompany
                 if not UserWarehouseCompany.user_can_access(current_user.id, warehouse_id, company_id):
                     return {'success': False, 'msg': 'You do not have access to this warehouse/company combination.',
-                            'invoices_processed': 0, 'orders_completed': 0, 'errors': [], 'has_errors': True}, 403
+                            'processed_count': 0, 'error_count': 0}, 403
 
-            # Validate that warehouse and company exist
             warehouse = Warehouse.get_by_id(warehouse_id)
             if not warehouse:
-                return {
-                    'success': False,
-                    'msg': f'Warehouse with ID {warehouse_id} not found',
-                    'invoices_processed': 0,
-                    'orders_completed': 0,
-                    'errors': ['Invalid warehouse ID'],
-                    'has_errors': True
-                }, 400
+                return {'success': False, 'msg': f'Warehouse with ID {warehouse_id} not found',
+                        'processed_count': 0, 'error_count': 0}, 400
 
             company = Company.get_by_id(company_id)
             if not company:
-                return {
-                    'success': False,
-                    'msg': f'Company with ID {company_id} not found',
-                    'invoices_processed': 0,
-                    'orders_completed': 0,
-                    'errors': ['Invalid company ID'],
-                    'has_errors': True
-                }, 400
+                return {'success': False, 'msg': f'Company with ID {company_id} not found',
+                        'processed_count': 0, 'error_count': 0}, 400
 
-            # Call the service layer to process the upload
-            result, status_code, error_csv_content = invoice_service.process_invoice_upload(
-                uploaded_file,
-                warehouse_id,
-                company_id,
-                current_user.id
-            )
-
-            # Prepare the response
-            from flask import make_response
-            response = make_response(result, status_code)
-
-            # If there are errors, add the CSV content to headers for frontend to access
-            if error_csv_content:
-                try:
-                    import base64
-                    # Encode the CSV content to base64 for safe header transmission
-                    encoded_csv = base64.b64encode(error_csv_content.encode('utf-8')).decode('utf-8')
-
-                    # Only include in header if it's not too large (< 8KB when encoded)
-                    if len(encoded_csv) < 8192:
-                        response.headers['X-Error-CSV-Available'] = 'true'
-                        response.headers['X-Error-CSV-Content'] = encoded_csv
-                    else:
-                        # For large error files, we'll include a flag and let frontend request it separately
-                        response.headers['X-Error-CSV-Available'] = 'true'
-                        response.headers['X-Error-CSV-Large'] = 'true'
-                        response.headers['X-Error-Batch-ID'] = result.get('upload_batch_id', '')
-
-                        # Store the CSV content temporarily
-                        result['error_csv_content'] = error_csv_content
-
-                except Exception as e:
-                    print(f"Error encoding CSV for header: {str(e)}")
-                    # Fallback: include in response body
-                    result['error_csv_content'] = error_csv_content
-
-            return response
+            return invoice_service.process_invoice_upload(uploaded_file, warehouse_id, company_id, current_user.id)
 
         except Exception as e:
-            return {
-                'success': False,
-                'msg': f'Error processing upload: {str(e)}',
-                'invoices_processed': 0,
-                'orders_completed': 0,
-                'errors': [str(e)],
-                'has_errors': True
-            }, 400
+            return {'success': False, 'msg': f'Error processing upload: {str(e)}',
+                    'processed_count': 0, 'error_count': 0}, 400
 
 @rest_api.route('/api/invoices/download-errors')
 class InvoiceErrorDownload(Resource):

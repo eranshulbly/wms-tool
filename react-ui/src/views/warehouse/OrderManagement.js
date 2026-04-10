@@ -15,8 +15,7 @@ import {
   FilterControls,
   OrdersTable,
   OrderDetailsDialog,
-  BulkActionsBar,
-  BulkResultsDialog
+  BulkActionsBar
 } from './components/orderManagement.components';
 import orderManagementService from '../../services/orderManagementService';
 
@@ -48,9 +47,7 @@ const OrderManagement = () => {
   const [snackbarMessage, setSnackbarMessage] = useState('');
   const [snackbarSeverity, setSnackbarSeverity] = useState('success');
 
-  // Bulk results dialog state
-  const [bulkResultsOpen, setBulkResultsOpen] = useState(false);
-  const [bulkResults, setBulkResults] = useState(null);
+  // (bulk results are now shown inline in BulkActionsBar — no dialog state needed)
 
   // Fetch warehouses and companies on component mount
   useEffect(() => {
@@ -186,32 +183,10 @@ const OrderManagement = () => {
       switch (action) {
         case 'open':
         case 'picking':
-        case 'packing':
+        case 'packed':
           // Regular status transitions
           response = await orderManagementService.updateOrderStatus(order.order_request_id, action);
           successMessage = `Order ${order.order_request_id} moved to ${action}`;
-          break;
-
-        case 'packing-to-invoice':
-          // Open the dialog for packing configuration
-          handleOrderClick(order);
-          return; // Don't proceed with API call, let dialog handle it
-
-        case 'invoice-ready':
-          // Move from packing to invoice ready (creates final order)
-          if (!additionalData || !additionalData.number_of_boxes) {
-            showSnackbar('Missing number of boxes for invoice ready', 'error');
-            return;
-          }
-
-          response = await orderManagementService.moveToInvoiceReady(
-            order.order_request_id,
-            additionalData.number_of_boxes
-          );
-
-          if (response.success) {
-            successMessage = `Order moved to Invoice Ready! Final Order: ${response.final_order_number}`;
-          }
           break;
 
         case 'complete-dispatch':
@@ -252,7 +227,7 @@ const OrderManagement = () => {
         showSnackbar(successMessage, 'success');
 
         // Close dialog after terminal actions
-        if (action === 'completed' || action === 'complete-dispatch' || action === 'invoice-ready') {
+        if (action === 'completed' || action === 'complete-dispatch') {
           handleOrderDetailsClose();
         }
       } else if (response) {
@@ -276,17 +251,6 @@ const OrderManagement = () => {
 
       // Handle the action
       switch (action) {
-        case 'invoice-ready':
-          response = await orderManagementService.moveToInvoiceReady(
-            order.order_request_id,
-            additionalData.number_of_boxes
-          );
-
-          if (response.success) {
-            successMessage = `Order moved to Invoice Ready! Final Order: ${response.final_order_number}`;
-          }
-          break;
-
         case 'completed':
         case 'complete-dispatch':
           response = await orderManagementService.completeDispatch(order.order_request_id);
@@ -357,10 +321,8 @@ const OrderManagement = () => {
   };
 
   const handleBulkUploadComplete = async (result) => {
-    setBulkResults(result);
-    setBulkResultsOpen(true);
-    // Refresh orders list after bulk update
-    if (result.summary.moved > 0 && warehouse && company) {
+    // Refresh orders list when at least one order was moved
+    if (result.processed_count > 0 && warehouse && company) {
       const updatedOrders = await orderManagementService.getOrders(warehouse, company);
       if (updatedOrders.success) {
         setOrders((updatedOrders.orders || []).map(ord => ({
@@ -380,7 +342,7 @@ const OrderManagement = () => {
       <Grid item xs={12}>
         <Typography variant="h3" gutterBottom>Order Management</Typography>
         <Typography variant="subtitle1" color="textSecondary" gutterBottom>
-          Manage orders through their lifecycle: Open → Picking → Packing → Invoice Ready → Dispatch Ready → Completed
+          Manage orders through their lifecycle: Open → Picking → Packed → Invoiced → Dispatch Ready → Completed
         </Typography>
       </Grid>
 
@@ -400,7 +362,6 @@ const OrderManagement = () => {
 
       {/* Bulk Actions */}
       <BulkActionsBar
-        statusFilter={statusFilter}
         warehouse={warehouse}
         company={company}
         onUploadComplete={handleBulkUploadComplete}
@@ -426,13 +387,6 @@ const OrderManagement = () => {
         onStatusUpdate={handleDialogStatusUpdate}
         allowedStatuses={allowedStatuses}
         classes={classes}
-      />
-
-      {/* Bulk Results Dialog */}
-      <BulkResultsDialog
-        open={bulkResultsOpen}
-        results={bulkResults}
-        onClose={() => setBulkResultsOpen(false)}
       />
 
       {/* Snackbar for notifications */}

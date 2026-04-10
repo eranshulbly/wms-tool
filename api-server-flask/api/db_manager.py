@@ -284,12 +284,14 @@ def create_all_tables():
         order_date DATETIME DEFAULT CURRENT_TIMESTAMP,
         requested_by INT,
         status VARCHAR(50) DEFAULT 'Open',
+        invoice_submitted TINYINT(1) NOT NULL DEFAULT 0,
         upload_batch_id INT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         INDEX idx_potential_order_status (status),
         INDEX idx_potential_order_date (order_date),
         INDEX idx_potential_order_composite (warehouse_id, company_id, status),
+        INDEX idx_po_invoice_submitted (invoice_submitted),
         FOREIGN KEY (warehouse_id) REFERENCES warehouse(warehouse_id),
         FOREIGN KEY (company_id) REFERENCES company(company_id),
         FOREIGN KEY (dealer_id) REFERENCES dealer(dealer_id)
@@ -575,6 +577,22 @@ def create_all_tables():
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
 
+    # Generic key-value config table for invoice processing rules.
+    # config_key 'bypass_order_type': order types that skip the Packed prerequisite.
+    invoice_processing_config_sql = """
+    CREATE TABLE IF NOT EXISTS invoice_processing_config (
+        id           INT AUTO_INCREMENT PRIMARY KEY,
+        config_key   VARCHAR(50)  NOT NULL COMMENT 'Rule category, e.g. bypass_order_type',
+        config_value VARCHAR(100) NOT NULL COMMENT 'Rule value, e.g. ZGOI',
+        description  TEXT         NULL,
+        is_active    TINYINT(1)   NOT NULL DEFAULT 1,
+        created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE INDEX idx_config_key_value (config_key, config_value),
+        INDEX        idx_config_key_active (config_key, is_active)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+
     # Execute all table creation queries
     tables = [
         users_sql, jwt_blocklist_sql, warehouse_sql, company_sql,
@@ -583,7 +601,8 @@ def create_all_tables():
         order_state_history_sql, order_box_sql, order_product_sql,
         box_product_sql, invoice_sql, user_warehouse_company_sql,
         roles_sql, role_order_states_sql, role_uploads_sql, upload_batches_sql,
-        transport_routes_sql, customer_route_mappings_sql, daily_route_manifests_sql, company_schema_mappings_sql
+        transport_routes_sql, customer_route_mappings_sql, daily_route_manifests_sql,
+        company_schema_mappings_sql, invoice_processing_config_sql,
     ]
 
     for table_sql in tables:
@@ -630,14 +649,28 @@ def _drop_city_tables():
 
 
 def _migrate_potential_order_table():
-    """Add upload_batch_id column to potential_order if missing"""
+    """Add columns to potential_order if missing (idempotent)."""
+    migrations = [
+        "ALTER TABLE potential_order ADD COLUMN upload_batch_id INT NULL",
+        "ALTER TABLE potential_order ADD COLUMN invoice_submitted TINYINT(1) NOT NULL DEFAULT 0",
+        "ALTER TABLE potential_order ADD INDEX idx_po_invoice_submitted (invoice_submitted)",
+    ]
+    for sql in migrations:
+        try:
+            mysql_manager.execute_query(sql, fetch=False)
+        except Exception:
+            pass  # Column / index already exists
+
+    # Seed invoice_processing_config bypass types if table exists but is empty
     try:
         mysql_manager.execute_query(
-            "ALTER TABLE potential_order ADD COLUMN upload_batch_id INT NULL",
+            "INSERT IGNORE INTO invoice_processing_config (config_key, config_value, description) "
+            "VALUES ('bypass_order_type', 'ZGOI', "
+            "'ZGOI orders bypass the Packed prerequisite — invoice upload moves them directly to Invoiced.')",
             fetch=False
         )
     except Exception:
-        pass  # Column already exists
+        pass
 
 
 def insert_default_states():
@@ -645,8 +678,8 @@ def insert_default_states():
     states = [
         ('Open', 'Order is open and ready for processing'),
         ('Picking', 'Order is being picked from inventory'),
-        ('Packing', 'Order items are being packed'),
-        ('Invoice Ready', 'Order packed and ready for invoice upload'),
+        ('Packed', 'Order items are packed'),
+        ('Invoiced', 'Order invoiced and ready for dispatch'),
         ('Dispatch Ready', 'Invoices uploaded, order ready for physical dispatch'),
         ('Completed', 'Order has been fully dispatched from warehouse'),
         ('Partially Completed', 'Order has been partially completed with remaining items')
@@ -663,7 +696,7 @@ def insert_default_states():
             print(f"Error inserting state {state_name}: {e}")
 
 
-ALL_ORDER_STATES = ['Open', 'Picking', 'Packing', 'Invoice Ready', 'Dispatch Ready', 'Completed', 'Partially Completed']
+ALL_ORDER_STATES = ['Open', 'Picking', 'Packed', 'Invoiced', 'Dispatch Ready', 'Completed', 'Partially Completed']
 ALL_UPLOAD_TYPES = ['orders', 'invoices']
 
 
@@ -688,16 +721,16 @@ def seed_default_roles():
         },
         {
             'name': 'warehouse_staff',
-            'description': 'Open/Picking/Packing states. Order uploads only.',
+            'description': 'Open/Picking/Packed states. Order uploads only.',
             'all_warehouses': False,
-            'order_states': ['Open', 'Picking', 'Packing'],
+            'order_states': ['Open', 'Picking', 'Packed'],
             'uploads': ['orders'],
         },
         {
             'name': 'dispatcher',
-            'description': 'Invoice Ready/Dispatch Ready/Completed states. Invoice uploads only.',
+            'description': 'Invoiced/Dispatch Ready/Completed states. Invoice uploads only.',
             'all_warehouses': False,
-            'order_states': ['Invoice Ready', 'Dispatch Ready', 'Completed', 'Partially Completed'],
+            'order_states': ['Invoiced', 'Dispatch Ready', 'Completed', 'Partially Completed'],
             'uploads': ['invoices'],
         },
         {
