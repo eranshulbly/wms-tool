@@ -5,8 +5,14 @@ One row = one order (no product rows).
 """
 
 from datetime import datetime
-from ..models import PotentialOrder, OrderState, OrderStateHistory, Order, Dealer
+from ..models import PotentialOrder, Order
 from . import dealer_business
+from .order_state_machine import OrderStateMachine
+from ..constants.order_states import OrderStatus
+from ..repositories import order_repo
+from ..core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_id=None):
@@ -26,8 +32,7 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
     orders_processed = 0
     error_rows = []
 
-    print(f"Processing DataFrame with {len(df)} rows")
-    print(f"DataFrame columns: {df.columns.tolist()}")
+    logger.debug("Processing DataFrame", extra={'row_count': len(df), 'columns': df.columns.tolist()})
 
     for index, row in df.iterrows():
         try:
@@ -57,11 +62,11 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
             if purchaser_name:
                 try:
                     dealer_id = dealer_business.get_or_create_dealer(purchaser_name)
-                    print(f"Row {index}: Got dealer_id={dealer_id}")
+                    logger.debug("Resolved dealer", extra={'row': index, 'dealer_id': dealer_id})
                 except Exception as e:
-                    print(f"Row {index}: Error resolving dealer: {str(e)}")
+                    logger.warning("Error resolving dealer", extra={'row': index, 'error': str(e)})
             else:
-                print(f"Row {index}: No Purchaser Name — order created without dealer association.")
+                logger.debug("No Purchaser Name — order created without dealer", extra={'row': index})
 
             # --- Create order ---
             try:
@@ -82,7 +87,7 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
                     upload_batch_id=upload_batch_id
                 )
                 orders_processed += 1
-                print(f"Row {index}: Created order {potential_order_id} for Sales Order # {sales_order_id}")
+                logger.debug("Order created", extra={'row': index, 'order_id': potential_order_id, 'sales_order': sales_order_id})
             except Exception as e:
                 if '1062' in str(e) or 'Duplicate entry' in str(e):
                     reason = f"Order {sales_order_id} already exists"
@@ -95,10 +100,10 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
             sales_order_id = str(row.get('Sales Order #', '') or '').strip()
             purchaser_name = str(row.get('Purchaser Name', '') or '').strip()
             error_rows.append(_make_error_row(sales_order_id, purchaser_name, f"Unexpected error: {str(e)}"))
-            print(f"Row {index}: Unexpected error: {str(e)}")
+            logger.exception("Unexpected error processing row", extra={'row': index})
             continue
 
-    print(f"Processing complete: {orders_processed} orders, {len(error_rows)} errors")
+    logger.info("Order processing complete", extra={'orders_processed': orders_processed, 'error_count': len(error_rows)})
 
     return {
         'orders_processed': orders_processed,
@@ -136,7 +141,7 @@ def parse_order_date(order_date_str, row_index=None):
                 return order_date_str
             return datetime.now()
     except Exception as e:
-        print(f"Row {row_index}: Could not parse date '{order_date_str}'. Using current date. Error: {str(e)}")
+        logger.warning("Could not parse date, using current date", extra={'row': row_index, 'raw_value': str(order_date_str), 'error': str(e)})
         return datetime.now()
 
 
@@ -147,7 +152,7 @@ def create_potential_order(original_order_id, b2b_po_number, order_type, vin_num
     """Create a new potential order — MySQL implementation."""
     current_time = datetime.utcnow()
 
-    print(f"Creating potential order: {original_order_id}, warehouse={warehouse_id}, company={company_id}")
+    logger.debug("Creating potential order", extra={'original_order_id': original_order_id, 'warehouse_id': warehouse_id, 'company_id': company_id})
 
     potential_order = PotentialOrder(
         original_order_id=original_order_id,
@@ -170,28 +175,15 @@ def create_potential_order(original_order_id, b2b_po_number, order_type, vin_num
     )
     potential_order.save()
     potential_order_id = potential_order.potential_order_id
-    print(f"Created potential order with ID: {potential_order_id}")
+    logger.debug("Potential order created", extra={'potential_order_id': potential_order_id})
 
     # Create initial Open state history
     try:
-        initial_state = OrderState.find_by_name('Open')
-        if not initial_state:
-            initial_state = OrderState(
-                state_name='Open',
-                description='Order is open and ready for processing'
-            )
-            initial_state.save()
-
-        state_history = OrderStateHistory(
-            potential_order_id=potential_order_id,
-            state_id=initial_state.state_id,
-            changed_by=user_id,
-            changed_at=current_time
-        )
-        state_history.save()
-        print(f"Created state history for order {potential_order_id}")
+        initial_state = order_repo.get_or_create_state('Open', 'Order is open and ready for processing')
+        order_repo.create_state_history(potential_order_id, initial_state.state_id, user_id, current_time)
+        logger.debug("State history created", extra={'potential_order_id': potential_order_id})
     except Exception as e:
-        print(f"Error creating state history: {str(e)}")
+        logger.warning("Error creating state history", extra={'potential_order_id': potential_order_id, 'error': str(e)})
         # Don't fail order creation if state history fails
 
     return potential_order_id
@@ -200,25 +192,6 @@ def create_potential_order(original_order_id, b2b_po_number, order_type, vin_num
 # ---------------------------------------------------------------------------
 # Bulk status update (from Excel file upload on Manage Orders page)
 # ---------------------------------------------------------------------------
-
-# Forward-only chain: key = expected current status → value = valid target
-_VALID_TRANSITIONS = {
-    'Open': 'Picking',
-    'Picking': 'Packed',
-    'Dispatch Ready': 'Completed',
-}
-# Reverse lookup: target → required source
-_SOURCE_FOR_TARGET = {v: k for k, v in _VALID_TRANSITIONS.items()}
-
-_FRONTEND_TO_DB_STATUS = {
-    'open': 'Open',
-    'picking': 'Picking',
-    'packed': 'Packed',
-    'dispatch-ready': 'Dispatch Ready',
-    'completed': 'Completed',
-    'partially-completed': 'Partially Completed',
-}
-
 
 def process_bulk_status_update(df, target_status, _warehouse_id, _company_id, user_id):
     """
@@ -232,17 +205,17 @@ def process_bulk_status_update(df, target_status, _warehouse_id, _company_id, us
     Returns:
         {'orders_processed': int, 'error_rows': list}
     """
-    db_target = _FRONTEND_TO_DB_STATUS.get(
-        target_status.lower().replace(' ', '-')
-    )
-    if not db_target:
+    # Resolve the target status from frontend slug via the canonical enum
+    try:
+        db_target = OrderStatus.from_frontend_slug(target_status.lower().replace(' ', '-'))
+    except ValueError:
         return {
             'orders_processed': 0,
             'error_rows': [{'order_id': '', 'name': '',
                             'reason': f'Invalid target status: {target_status}'}]
         }
 
-    required_source = _SOURCE_FOR_TARGET.get(db_target)
+    required_source = OrderStateMachine.required_source_for_bulk(db_target)
     if not required_source:
         return {
             'orders_processed': 0,
@@ -264,20 +237,14 @@ def process_bulk_status_update(df, target_status, _warehouse_id, _company_id, us
         for _, row in df.iterrows()
     ]
     all_order_ids = [oid for oid in all_order_ids if oid]
-    potential_orders_map = PotentialOrder.find_bulk_by_original_order_ids(all_order_ids)
+    potential_orders_map = order_repo.find_bulk_by_original_ids(all_order_ids)
 
     # Pre-load/create the target OrderState once
-    new_state = OrderState.find_by_name(db_target)
-    if not new_state:
-        new_state = OrderState(state_name=db_target, description=f'{db_target} state')
-        new_state.save()
+    new_state = order_repo.get_or_create_state(db_target, f'{db_target} state')
 
     invoiced_state = None
     if needs_boxes:
-        invoiced_state = OrderState.find_by_name('Invoiced')
-        if not invoiced_state:
-            invoiced_state = OrderState(state_name='Invoiced', description='Invoice uploaded for order')
-            invoiced_state.save()
+        invoiced_state = order_repo.get_or_create_state('Invoiced', 'Invoice uploaded for order')
 
     for index, row in df.iterrows():
         original_order_id = str(row.get('Order ID', '') or '').strip()
@@ -295,11 +262,7 @@ def process_bulk_status_update(df, target_status, _warehouse_id, _company_id, us
             continue
 
         # Get dealer name for error rows
-        dealer_name = ''
-        if potential_order.dealer_id:
-            dealer = Dealer.get_by_id(potential_order.dealer_id)
-            if dealer:
-                dealer_name = dealer.name
+        dealer_name = order_repo.get_dealer_name(potential_order.dealer_id) if potential_order.dealer_id else ''
 
         # Validate strict chain
         if potential_order.status != required_source:
@@ -337,12 +300,9 @@ def process_bulk_status_update(df, target_status, _warehouse_id, _company_id, us
             potential_order.updated_at = current_time
             potential_order.save()
 
-            OrderStateHistory(
-                potential_order_id=potential_order.potential_order_id,
-                state_id=new_state.state_id,
-                changed_by=user_id,
-                changed_at=current_time
-            ).save()
+            order_repo.create_state_history(
+                potential_order.potential_order_id, new_state.state_id, user_id, current_time
+            )
 
             # When moving to Packed: save box_count on PotentialOrder only.
             # The Order record is NOT created here — it is created at Invoice
@@ -376,17 +336,14 @@ def process_bulk_status_update(df, target_status, _warehouse_id, _company_id, us
                     potential_order.save()
 
                     # Record the Invoiced state history entry (use pre-fetched state)
-                    OrderStateHistory(
-                        potential_order_id=potential_order.potential_order_id,
-                        state_id=invoiced_state.state_id,
-                        changed_by=user_id,
-                        changed_at=current_time
-                    ).save()
+                    order_repo.create_state_history(
+                        potential_order.potential_order_id, invoiced_state.state_id, user_id, current_time
+                    )
                     effective_target = 'Invoiced'
 
             # When moving to Completed: update final Order record
             if effective_target == 'Completed':
-                final_order = Order.find_by_potential_order_id(
+                final_order = order_repo.find_order_by_potential_id(
                     potential_order.potential_order_id
                 )
                 if final_order:
@@ -396,7 +353,7 @@ def process_bulk_status_update(df, target_status, _warehouse_id, _company_id, us
                     final_order.save()
 
             orders_processed += 1
-            print(f"Bulk: moved order {original_order_id} → {effective_target}")
+            logger.debug("Bulk order status transition", extra={'order_id': original_order_id, 'new_status': effective_target})
 
         except Exception as e:
             # Best-effort rollback

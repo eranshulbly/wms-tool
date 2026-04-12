@@ -1,27 +1,45 @@
 # -*- encoding: utf-8 -*-
+"""
+E-way bill routes:
+  GET/POST   /api/eway/routes
+  GET/POST   /api/eway/customer-route-mappings
+  POST       /api/eway/customer-route-mappings/bulk
+  GET        /api/eway/customer-route-mappings/template
+  POST       /api/eway/customer-route-mappings/delete
+  GET        /api/eway/route-customers/<route_id>
+  POST       /api/eway/route-customers/remove
+  GET/POST   /api/eway/manifest
+  POST       /api/eway/upload
+  POST       /api/eway/generate-json
+  GET/POST   /api/eway/schema-mappings
+"""
 
+from datetime import datetime
+from functools import wraps
+
+import io
+import openpyxl
+import pandas as pd
 from flask import request, send_file
 from flask_restx import Resource, fields
-from datetime import datetime
-import pandas as pd
-import openpyxl
-import io
 
-from .models import (
+from ..extensions import rest_api
+from ..core.auth import token_required, active_required
+from ..models import (
     TransportRoute, CustomerRouteMapping,
     DailyRouteManifest, CompanySchemaMapping
 )
-from .business.dealer_business import get_or_create_dealer
-from .routes import rest_api, token_required, active_required
+from ..business.dealer_business import get_or_create_dealer
+from ..permissions import get_permissions
 
-# --- Basic response models ---
+# ── Basic response model ──────────────────────────────────────────────────────
+
 basic_response = rest_api.model('EwayBasicResponse', {
     'success': fields.Boolean,
-    'msg': fields.String
+    'msg':     fields.String,
 })
 
-from functools import wraps
-from .permissions import get_permissions
+# ── Permission decorators ─────────────────────────────────────────────────────
 
 def eway_admin_required(f):
     @wraps(f)
@@ -36,6 +54,7 @@ def eway_admin_required(f):
         return f(*args, **kwargs)
     return decorator
 
+
 def eway_filling_required(f):
     @wraps(f)
     def decorator(*args, **kwargs):
@@ -49,12 +68,11 @@ def eway_filling_required(f):
         return f(*args, **kwargs)
     return decorator
 
-# ─────────────────────────────────────────────────────────────
-# ROUTES
-# ─────────────────────────────────────────────────────────────
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @rest_api.route('/api/eway/routes')
 class EwayRoutes(Resource):
+
     @token_required
     @active_required
     @eway_filling_required
@@ -71,7 +89,7 @@ class EwayRoutes(Resource):
     def post(self, current_user):
         """Create a route."""
         try:
-            data = request.json
+            data  = request.json
             route = TransportRoute(name=data['name'], description=data.get('description', ''))
             route.save()
             return {'success': True, 'msg': 'Route created', 'route_id': route.route_id}, 200
@@ -79,12 +97,11 @@ class EwayRoutes(Resource):
             return {'success': False, 'msg': str(e)}, 400
 
 
-# ─────────────────────────────────────────────────────────────
-# CUSTOMER → ROUTE MAPPINGS
-# ─────────────────────────────────────────────────────────────
+# ── Customer → Route Mappings ─────────────────────────────────────────────────
 
 @rest_api.route('/api/eway/customer-route-mappings')
 class EwayCustomerRouteMappings(Resource):
+
     @token_required
     @active_required
     @eway_filling_required
@@ -110,10 +127,10 @@ class EwayCustomerRouteMappings(Resource):
     def post(self, current_user):
         """Add / update a single customer-route mapping (upsert by dealer)."""
         try:
-            data = request.json
+            data        = request.json
             dealer_code = data['customer_code'].strip()
             dealer_name = data.get('customer_name', '').strip() or dealer_code
-            dealer_id = get_or_create_dealer(dealer_name=dealer_name, dealer_code=dealer_code)
+            dealer_id   = get_or_create_dealer(dealer_name=dealer_name, dealer_code=dealer_code)
             m = CustomerRouteMapping(
                 dealer_id=dealer_id,
                 route_id=int(data['route_id']),
@@ -127,6 +144,7 @@ class EwayCustomerRouteMappings(Resource):
 
 @rest_api.route('/api/eway/customer-route-mappings/bulk')
 class EwayCustomerRouteMappingsBulk(Resource):
+
     @token_required
     @active_required
     @eway_admin_required
@@ -140,7 +158,7 @@ class EwayCustomerRouteMappingsBulk(Resource):
         try:
             if 'file' not in request.files:
                 return {'success': False, 'msg': 'No file uploaded'}, 400
-            f = request.files['file']
+            f  = request.files['file']
             wb = openpyxl.load_workbook(f, read_only=True, data_only=True)
             ws = wb.active
 
@@ -173,12 +191,11 @@ class EwayCustomerRouteMappingsBulk(Resource):
                     'msg': 'Could not find required columns. Expected: Customer Code, Route Name, Distance (km)'
                 }, 400
 
-            # Pre-load all routes for case-insensitive name lookup
             all_routes = TransportRoute.get_all()
-            route_map = {r.name.lower(): r.route_id for r in all_routes}
+            route_map  = {r.name.lower(): r.route_id for r in all_routes}
 
             imported = 0
-            errors = []
+            errors   = []
             for i, row in enumerate(rows[1:], start=2):
                 try:
                     code       = str(row[ci_code]).strip()  if row[ci_code]  else ''
@@ -194,21 +211,20 @@ class EwayCustomerRouteMappingsBulk(Resource):
 
                     cust_name = str(row[ci_name]).strip() if (ci_name is not None and row[ci_name]) else code
                     dealer_id = get_or_create_dealer(dealer_name=cust_name, dealer_code=code)
-                    m = CustomerRouteMapping(
+                    CustomerRouteMapping(
                         dealer_id=dealer_id,
                         route_id=route_id,
                         distance=int(float(str(dist)))
-                    )
-                    m.save()
+                    ).save()
                     imported += 1
                 except Exception as row_err:
                     errors.append(f"Row {i}: {str(row_err)}")
 
             return {
-                'success': True,
+                'success':  True,
                 'imported': imported,
-                'errors': errors,
-                'msg': f"Imported {imported} mappings" + (f" ({len(errors)} errors)" if errors else "")
+                'errors':   errors,
+                'msg':      f"Imported {imported} mappings" + (f" ({len(errors)} errors)" if errors else "")
             }, 200
         except Exception as e:
             return {'success': False, 'msg': str(e)}, 400
@@ -216,6 +232,7 @@ class EwayCustomerRouteMappingsBulk(Resource):
 
 @rest_api.route('/api/eway/customer-route-mappings/template')
 class EwayCustomerRouteMappingsTemplate(Resource):
+
     @token_required
     @active_required
     @eway_admin_required
@@ -227,7 +244,7 @@ class EwayCustomerRouteMappingsTemplate(Resource):
             ws.title = "Customer Route Mapping"
             ws.append(['Customer Code', 'Customer Name', 'Route Name', 'Distance (km)'])
             ws.append(['HMC001', 'Hero Moto Corp - Delhi', 'UP Route A', 120])
-            ws.append(['HMC002', 'Hero Moto Corp - UP', 'UP Route B', 85])
+            ws.append(['HMC002', 'Hero Moto Corp - UP',    'UP Route B', 85])
             ws.column_dimensions['A'].width = 18
             ws.column_dimensions['B'].width = 35
             ws.column_dimensions['C'].width = 20
@@ -246,6 +263,7 @@ class EwayCustomerRouteMappingsTemplate(Resource):
 
 @rest_api.route('/api/eway/customer-route-mappings/delete')
 class EwayCustomerRouteMappingDelete(Resource):
+
     @token_required
     @active_required
     @eway_admin_required
@@ -259,12 +277,11 @@ class EwayCustomerRouteMappingDelete(Resource):
             return {'success': False, 'msg': str(e)}, 400
 
 
-# ─────────────────────────────────────────────────────────────
-# ROUTE CUSTOMERS  (admin-only: view & remove customers per route)
-# ─────────────────────────────────────────────────────────────
+# ── Route Customers  (admin-only: view & remove customers per route) ──────────
 
 @rest_api.route('/api/eway/route-customers/<int:route_id>')
 class EwayRouteCustomers(Resource):
+
     @token_required
     @active_required
     @eway_admin_required
@@ -279,6 +296,7 @@ class EwayRouteCustomers(Resource):
 
 @rest_api.route('/api/eway/route-customers/remove')
 class EwayRouteCustomerRemove(Resource):
+
     @token_required
     @active_required
     @eway_admin_required
@@ -292,20 +310,19 @@ class EwayRouteCustomerRemove(Resource):
             return {'success': False, 'msg': str(e)}, 400
 
 
-# ─────────────────────────────────────────────────────────────
-# DAILY MANIFEST
-# ─────────────────────────────────────────────────────────────
+# ── Daily Manifest ────────────────────────────────────────────────────────────
 
 @rest_api.route('/api/eway/manifest')
 class EwayManifest(Resource):
+
     @token_required
     @active_required
     @eway_filling_required
     def get(self, current_user):
         try:
-            date_str = request.args.get('date', datetime.utcnow().strftime('%Y-%m-%d'))
+            date_str  = request.args.get('date', datetime.utcnow().strftime('%Y-%m-%d'))
             manifests = DailyRouteManifest.get_for_date(date_str)
-            enriched = []
+            enriched  = []
             for m in (manifests or []):
                 customers = CustomerRouteMapping.get_for_route(m['route_id'])
                 enriched.append({**m, 'customer_count': len(customers)})
@@ -318,7 +335,7 @@ class EwayManifest(Resource):
     @eway_filling_required
     def post(self, current_user):
         try:
-            data = request.json
+            data     = request.json
             date_str = data.get('date', datetime.utcnow().strftime('%Y-%m-%d'))
             for asg in data.get('assignments', []):
                 DailyRouteManifest(
@@ -331,12 +348,11 @@ class EwayManifest(Resource):
             return {'success': False, 'msg': str(e)}, 400
 
 
-# ─────────────────────────────────────────────────────────────
-# CSV UPLOAD  — enriches rows via Customer → Route → Vehicle
-# ─────────────────────────────────────────────────────────────
+# ── CSV Upload — enriches rows via Customer → Route → Vehicle ─────────────────
 
 @rest_api.route('/api/eway/upload')
 class EwayUpload(Resource):
+
     @token_required
     @active_required
     @eway_filling_required
@@ -354,12 +370,12 @@ class EwayUpload(Resource):
 
             schema = CompanySchemaMapping.get_for_company(company_id)
             if not schema:
-                return {'success': False, 'msg': 'No schema found for this company. Configure it in Company Schema Config tab.'}, 400
+                return {'success': False,
+                        'msg': 'No schema found for this company. Configure it in Company Schema Config tab.'}, 400
 
-            # Parse CSV
             raw = file.read()
             sep = '\t' if b'\t' in raw[:500] else ','
-            df = pd.read_csv(io.BytesIO(raw), sep=sep)
+            df  = pd.read_csv(io.BytesIO(raw), sep=sep)
 
             irn_col     = schema['irn_col']
             ccode_col   = schema['customer_code_col']
@@ -370,13 +386,13 @@ class EwayUpload(Resource):
             if missing:
                 return {'success': False, 'msg': f"CSV columns not found: {', '.join(missing)}"}, 400
 
-            today = datetime.utcnow().strftime('%Y-%m-%d')
+            today   = datetime.utcnow().strftime('%Y-%m-%d')
             results = []
 
             for _, row in df.iterrows():
                 irn = str(row.get(irn_col, '') or '').strip()
                 if not irn or irn.lower() == 'nan':
-                    continue  # Only rows with an IRN are e-invoices
+                    continue
 
                 c_code  = str(row.get(ccode_col,   '') or '').strip()
                 c_name  = str(row.get(cname_col,   '') or '').strip()
@@ -386,13 +402,11 @@ class EwayUpload(Resource):
                 vehicle_no = None
                 distance   = None
 
-                # Lookup: Customer Code (dealer_code) → route + distance
                 cm = CustomerRouteMapping.find_by_dealer_code(c_code)
                 if cm:
                     route_id = cm.route_id
                     distance = cm.distance
                     if route_id:
-                        # Lookup: route + date → vehicle
                         vehicle_no = DailyRouteManifest.get_vehicle_for_route_date(route_id, today)
 
                 status = 'Complete' if (distance and vehicle_no) else 'Incomplete'
@@ -404,22 +418,22 @@ class EwayUpload(Resource):
                     'distance':      distance,
                     'vehicle_no':    vehicle_no,
                     'route_id':      route_id,
-                    'status':        status
+                    'status':        status,
                 })
 
-            # ── Extract date from filename ────────────────────────────────────
+            # Extract date from filename
             import re as _re
             file_date = None
-            fname = getattr(file, 'filename', '') or ''
+            fname     = getattr(file, 'filename', '') or ''
             for pattern, fmt in [
-                (r'(\d{2}-\d{2}-\d{4})', 'dmy'),   # 24-03-2026
-                (r'(\d{2}_\d{2}_\d{4})', 'dmy'),   # 24_03_2026
-                (r'(\d{4}-\d{2}-\d{2})', 'ymd'),   # 2026-03-24
+                (r'(\d{2}-\d{2}-\d{4})', 'dmy'),
+                (r'(\d{2}_\d{2}_\d{4})', 'dmy'),
+                (r'(\d{4}-\d{2}-\d{2})', 'ymd'),
             ]:
                 m = _re.search(pattern, fname)
                 if m:
                     try:
-                        s = m.group(1).replace('_', '-')
+                        s     = m.group(1).replace('_', '-')
                         parts = s.split('-')
                         if fmt == 'dmy':
                             file_date = f"{parts[2]}-{parts[1]}-{parts[0]}"
@@ -431,34 +445,34 @@ class EwayUpload(Resource):
 
             return {
                 'success': True,
-                'data': results,
+                'data':    results,
                 'meta': {
-                    'filename': fname,
+                    'filename':  fname,
                     'row_count': len(results),
                     'file_date': file_date,
-                    'today': today
+                    'today':     today,
                 }
             }, 200
         except Exception as e:
             return {'success': False, 'msg': str(e)}, 400
 
 
-# ─────────────────────────────────────────────────────────────
-# JSON GENERATION
-# ─────────────────────────────────────────────────────────────
+# ── JSON Generation ───────────────────────────────────────────────────────────
 
 @rest_api.route('/api/eway/generate-json')
 class EwayGenerateJson(Resource):
+
     @token_required
     @active_required
     @eway_filling_required
     def post(self, current_user):
         try:
-            data = request.json
+            data    = request.json
             payload = []
             for item in data:
                 if not item.get('irn') or not item.get('vehicle_no') or not item.get('distance'):
-                    return {'success': False, 'msg': 'Missing IRN, Vehicle No, or Distance in one or more rows.'}, 400
+                    return {'success': False,
+                            'msg': 'Missing IRN, Vehicle No, or Distance in one or more rows.'}, 400
                 payload.append({
                     "Irn":           item['irn'],
                     "Distance":      int(item['distance']),
@@ -466,19 +480,19 @@ class EwayGenerateJson(Resource):
                     "TransDocNo":    "",
                     "TransDocDate":  "",
                     "VehicleNo":     item['vehicle_no'],
-                    "VehType":       "R"
+                    "VehType":       "R",
                 })
-            return {'success': True, 'json_payload': payload, 'msg': f'Generated {len(payload)} records.'}, 200
+            return {'success': True, 'json_payload': payload,
+                    'msg': f'Generated {len(payload)} records.'}, 200
         except Exception as e:
             return {'success': False, 'msg': str(e)}, 400
 
 
-# ─────────────────────────────────────────────────────────────
-# SCHEMA MAPPINGS  (company CSV column config)
-# ─────────────────────────────────────────────────────────────
+# ── Schema Mappings  (company CSV column config) ──────────────────────────────
 
 @rest_api.route('/api/eway/schema-mappings')
 class EwaySchemaMappings(Resource):
+
     @token_required
     @active_required
     @eway_filling_required
@@ -497,7 +511,7 @@ class EwaySchemaMappings(Resource):
     @eway_filling_required
     def post(self, current_user):
         try:
-            data = request.json
+            data   = request.json
             schema = CompanySchemaMapping(
                 company_id=data['company_id'],
                 invoice_no_col=data['invoice_no_col'],

@@ -1,3 +1,4 @@
+# -*- encoding: utf-8 -*-
 """
 Admin Controls API — admin only.
 
@@ -27,8 +28,9 @@ from datetime import datetime
 from flask import request
 from flask_restx import Resource
 
-from .routes import rest_api, token_required, active_required
-from .db_manager import mysql_manager, partition_filter
+from ..extensions import rest_api
+from ..core.auth import token_required, active_required
+from ..db_manager import mysql_manager, partition_filter
 
 # States that permanently block reverting an order upload.
 BLOCKING_STATES = ('Invoiced', 'Dispatch Ready', 'Completed', 'Partially Completed')
@@ -171,7 +173,7 @@ class UploadBatchDetails(Resource):
             if not batch_rows:
                 return {'success': False, 'msg': 'Batch not found.'}, 404
 
-            batch = batch_rows[0]
+            batch   = batch_rows[0]
             records = _fetch_batch_records(batch['id'], batch['upload_type'])
 
             return {
@@ -255,7 +257,7 @@ def _fetch_batch_records(batch_id: int, upload_type: str) -> list:
     """Return the detailed rows for a batch depending on its upload type."""
 
     if upload_type == 'orders':
-        pf_po_sql, pf_po_params = partition_filter('potential_order', alias='po')
+        pf_po_sql,  pf_po_params  = partition_filter('potential_order', alias='po')
         pf_pop_sql, pf_pop_params = partition_filter('potential_order_product', alias='pop')
         rows = mysql_manager.execute_query(
             f"""
@@ -322,7 +324,7 @@ def _fetch_batch_records(batch_id: int, upload_type: str) -> list:
 
     elif upload_type == 'invoices':
         pf_inv_sql, pf_inv_params = partition_filter('invoice', alias='inv')
-        pf_po_sql, pf_po_params = partition_filter('potential_order', alias='po')
+        pf_po_sql,  pf_po_params  = partition_filter('potential_order', alias='po')
         rows = mysql_manager.execute_query(
             f"""
             SELECT
@@ -406,7 +408,7 @@ def _delete_order_batch(batch_id: int) -> None:
     Raises DeleteBlockedError if any order has progressed to
     'Invoiced' or any state beyond it.
     """
-    pf_po_sql, pf_po_params = partition_filter('potential_order', alias='po')
+    pf_po_sql,  pf_po_params  = partition_filter('potential_order', alias='po')
     pf_osh_sql, pf_osh_params = partition_filter('order_state_history', alias='osh')
     pf_pop_sql, pf_pop_params = partition_filter('potential_order_product', alias='pop')
 
@@ -475,12 +477,8 @@ def _delete_invoice_batch(batch_id: int) -> None:
     if not invoices:
         return
 
-    # Deduplicate — one order may appear across multiple invoices in the batch.
     order_ids = list({r['potential_order_id'] for r in invoices if r['potential_order_id']})
     now = datetime.utcnow()
-
-    pf_ord_sql, pf_ord_params = partition_filter('order')
-    pf_ob_sql, pf_ob_params = partition_filter('order_box')
 
     for order_id in order_ids:
         previous_state = _state_before_invoiced(order_id)
@@ -493,11 +491,8 @@ def _delete_invoice_batch(batch_id: int) -> None:
         )
 
         # The Order record was created when the invoice was uploaded.
-        # Rolling back the invoice must also remove the Order and its boxes
-        # so the order reverts cleanly to a pre-invoice (Packed) state.
-        # Bug 35 fix: do NOT apply the partition filter here. The Order record may
-        # have been created before the partition window, and an invoice batch revert
-        # must clean it up regardless of age to avoid inconsistent state.
+        # Rolling back the invoice must also remove the Order and its boxes.
+        # Bug 35 fix: do NOT apply partition filter here.
         existing_order = mysql_manager.execute_query(
             "SELECT order_id FROM `order` WHERE potential_order_id = %s",
             (order_id,),

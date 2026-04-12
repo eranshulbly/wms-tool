@@ -10,6 +10,7 @@ To add support for a new upload type:
 
 import base64
 import csv
+import logging
 import os
 import uuid
 from io import BytesIO
@@ -17,6 +18,8 @@ from io import BytesIO
 import chardet
 import pandas as pd
 from werkzeug.utils import secure_filename
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +164,7 @@ def create_upload_batch(mysql_manager, upload_type, filename, warehouse_id, comp
             )
             return cursor.lastrowid
     except Exception as e:
-        print(f"Warning: Could not create upload batch record: {e}")
+        logger.warning("Could not create upload batch record", extra={'error': str(e)})
         return None
 
 

@@ -5,8 +5,11 @@ Environments: development | staging | production
 Loaded by APP_ENV environment variable in __init__.py
 """
 
+import logging
 import os
 from datetime import timedelta
+
+_config_logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 
@@ -51,10 +54,16 @@ class BaseConfig():
             "MySQL configuration incomplete. Set: DB_USERNAME, DB_PASS, DB_HOST, DB_PORT, DB_NAME"
         )
 
-    print(f'> Environment  : {APP_ENV}')
-    print(f'> Version      : {APP_VERSION}')
-    print(f'> MySQL        : {DB_HOST}:{DB_PORT}/{DB_NAME}')
-    print(f'> Pool         : size={DB_POOL_SIZE}, overflow={DB_MAX_OVERFLOW}')
+    _config_logger.info(
+        "WMS API config loaded",
+        extra={
+            'environment': APP_ENV,
+            'version': APP_VERSION,
+            'mysql': f"{DB_HOST}:{DB_PORT}/{DB_NAME}",
+            'pool_size': DB_POOL_SIZE,
+            'pool_overflow': DB_MAX_OVERFLOW,
+        }
+    )
 
 
 class DevelopmentConfig(BaseConfig):

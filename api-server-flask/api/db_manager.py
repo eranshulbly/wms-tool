@@ -31,11 +31,14 @@ transport_routes, customer_route_mappings, daily_route_manifests,
 company_schema_mappings, invoice_processing_config, user_warehouse_company
 """
 
+import logging
 import os
 import pymysql
 import threading
 from contextlib import contextmanager
 from datetime import datetime, date
+
+logger = logging.getLogger(__name__)
 
 # Install PyMySQL as MySQLdb for compatibility
 pymysql.install_as_MySQLdb()
@@ -181,7 +184,7 @@ class MySQLManager:
                     conn = self._create_connection()
                     self.pool.append(conn)
                 except Exception as e:
-                    print(f"Error creating connection: {e}")
+                    logger.warning("Error creating pool connection", extra={'error': str(e)})
 
     def _create_connection(self):
         """Create a new MySQL connection"""
@@ -289,7 +292,7 @@ class MySQLModel:
 def initialize_database():
     """Initialize database tables with MySQL"""
     try:
-        print("🔄 Attempting to connect to MySQL database...")
+        logger.info("Connecting to MySQL database...")
 
         # Test database connection
         try:
@@ -297,17 +300,17 @@ def initialize_database():
                 with conn.cursor() as cursor:
                     cursor.execute('SELECT 1 as test')
                     cursor.fetchone()
-                print("✅ MySQL database connection successful!")
+                logger.info("MySQL database connection successful")
         except Exception as conn_error:
-            print(f"❌ MySQL connection failed: {str(conn_error)}")
+            logger.critical("MySQL connection failed", exc_info=True)
             raise conn_error
 
-        print("🔄 Creating database tables...")
+        logger.info("Creating database tables...")
         create_all_tables()
-        print("✅ MySQL database tables created successfully!")
+        logger.info("MySQL database tables created successfully")
 
     except Exception as e:
-        print(f'❌ Error: MySQL Database Exception: {str(e)}')
+        logger.critical("MySQL Database Exception during initialization", exc_info=True)
         raise e
 
 
@@ -878,7 +881,7 @@ def insert_default_states():
                 fetch=False
             )
         except Exception as e:
-            print(f"Error inserting state {state_name}: {e}")
+            logger.warning("Error inserting state", extra={'state_name': state_name, 'error': str(e)})
 
 
 ALL_ORDER_STATES = ['Open', 'Picking', 'Packed', 'Invoiced', 'Dispatch Ready', 'Completed', 'Partially Completed']
