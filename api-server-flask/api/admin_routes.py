@@ -430,32 +430,29 @@ def _delete_order_batch(batch_id: int) -> None:
             f"Affected orders: {sample_ids}{suffix}."
         )
 
-    # Delete child records in FK-safe order.
-    # order_state_history is deleted here because the FK prevents deleting the
-    # parent potential_order row while history rows still reference it.
-    mysql_manager.execute_query(
-        f"""DELETE osh FROM order_state_history osh
-           INNER JOIN potential_order po ON osh.potential_order_id = po.potential_order_id
-           WHERE po.upload_batch_id = %s
-             AND {pf_osh_sql}
-             AND {pf_po_sql}""",
-        (batch_id, *pf_osh_params, *pf_po_params),
-        fetch=False,
-    )
-    mysql_manager.execute_query(
-        f"""DELETE pop FROM potential_order_product pop
-           INNER JOIN potential_order po ON pop.potential_order_id = po.potential_order_id
-           WHERE po.upload_batch_id = %s
-             AND {pf_pop_sql}
-             AND {pf_po_sql}""",
-        (batch_id, *pf_pop_params, *pf_po_params),
-        fetch=False,
-    )
-    mysql_manager.execute_query(
-        f"DELETE FROM potential_order WHERE upload_batch_id = %s AND {pf_po_sql}",
-        (batch_id, *pf_po_params),
-        fetch=False,
-    )
+    # Bug 18 fix: wrap all three DELETEs in a single connection so that a partial
+    # failure leaves the DB unchanged instead of producing orphaned rows.
+    with mysql_manager.get_cursor() as cursor:
+        cursor.execute(
+            f"""DELETE osh FROM order_state_history osh
+               INNER JOIN potential_order po ON osh.potential_order_id = po.potential_order_id
+               WHERE po.upload_batch_id = %s
+                 AND {pf_osh_sql}
+                 AND {pf_po_sql}""",
+            (batch_id, *pf_osh_params, *pf_po_params),
+        )
+        cursor.execute(
+            f"""DELETE pop FROM potential_order_product pop
+               INNER JOIN potential_order po ON pop.potential_order_id = po.potential_order_id
+               WHERE po.upload_batch_id = %s
+                 AND {pf_pop_sql}
+                 AND {pf_po_sql}""",
+            (batch_id, *pf_pop_params, *pf_po_params),
+        )
+        cursor.execute(
+            f"DELETE FROM potential_order WHERE upload_batch_id = %s AND {pf_po_sql}",
+            (batch_id, *pf_po_params),
+        )
 
 
 def _delete_invoice_batch(batch_id: int) -> None:
@@ -482,6 +479,9 @@ def _delete_invoice_batch(batch_id: int) -> None:
     order_ids = list({r['potential_order_id'] for r in invoices if r['potential_order_id']})
     now = datetime.utcnow()
 
+    pf_ord_sql, pf_ord_params = partition_filter('order')
+    pf_ob_sql, pf_ob_params = partition_filter('order_box')
+
     for order_id in order_ids:
         previous_state = _state_before_invoiced(order_id)
         mysql_manager.execute_query(
@@ -491,6 +491,29 @@ def _delete_invoice_batch(batch_id: int) -> None:
             (previous_state, now, order_id),
             fetch=False,
         )
+
+        # The Order record was created when the invoice was uploaded.
+        # Rolling back the invoice must also remove the Order and its boxes
+        # so the order reverts cleanly to a pre-invoice (Packed) state.
+        # Bug 35 fix: do NOT apply the partition filter here. The Order record may
+        # have been created before the partition window, and an invoice batch revert
+        # must clean it up regardless of age to avoid inconsistent state.
+        existing_order = mysql_manager.execute_query(
+            "SELECT order_id FROM `order` WHERE potential_order_id = %s",
+            (order_id,),
+        )
+        if existing_order:
+            db_order_id = existing_order[0]['order_id']
+            mysql_manager.execute_query(
+                "DELETE FROM order_box WHERE order_id = %s",
+                (db_order_id,),
+                fetch=False,
+            )
+            mysql_manager.execute_query(
+                "DELETE FROM `order` WHERE order_id = %s",
+                (db_order_id,),
+                fetch=False,
+            )
 
     mysql_manager.execute_query(
         f"DELETE FROM invoice WHERE upload_batch_id = %s AND {pf_inv_sql}",

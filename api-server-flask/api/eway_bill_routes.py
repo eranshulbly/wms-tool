@@ -8,7 +8,7 @@ import openpyxl
 import io
 
 from .models import (
-    TransportRoute, CustomerRouteMapping, Dealer,
+    TransportRoute, CustomerRouteMapping,
     DailyRouteManifest, CompanySchemaMapping
 )
 from .business.dealer_business import get_or_create_dealer
@@ -26,22 +26,26 @@ from .permissions import get_permissions
 def eway_admin_required(f):
     @wraps(f)
     def decorator(*args, **kwargs):
+        # Bug 36 fix: default-deny — if current_user is None, reject immediately.
         current_user = args[1] if len(args) > 1 else kwargs.get('current_user')
-        if current_user:
-            perms = get_permissions(current_user.role)
-            if not perms.get('eway_bill_admin'):
-                return {'success': False, 'msg': 'E-way Bill Admin permission required'}, 403
+        if not current_user:
+            return {'success': False, 'msg': 'Authentication required'}, 401
+        perms = get_permissions(current_user.role)
+        if not perms.get('eway_bill_admin'):
+            return {'success': False, 'msg': 'E-way Bill Admin permission required'}, 403
         return f(*args, **kwargs)
     return decorator
 
 def eway_filling_required(f):
     @wraps(f)
     def decorator(*args, **kwargs):
+        # Bug 36 fix: default-deny — if current_user is None, reject immediately.
         current_user = args[1] if len(args) > 1 else kwargs.get('current_user')
-        if current_user:
-            perms = get_permissions(current_user.role)
-            if not (perms.get('eway_bill_admin') or perms.get('eway_bill_filling')):
-                return {'success': False, 'msg': 'E-way Bill Filling permission required'}, 403
+        if not current_user:
+            return {'success': False, 'msg': 'Authentication required'}, 401
+        perms = get_permissions(current_user.role)
+        if not (perms.get('eway_bill_admin') or perms.get('eway_bill_filling')):
+            return {'success': False, 'msg': 'E-way Bill Filling permission required'}, 403
         return f(*args, **kwargs)
     return decorator
 

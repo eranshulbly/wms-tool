@@ -10,9 +10,10 @@ from openpyxl.styles import PatternFill, Font, Alignment
 from .models import (
     Users, JWTTokenBlocklist, Warehouse, Company, PotentialOrder,
     PotentialOrderProduct, OrderStateHistory, OrderState, Product,
-    Dealer, Box, Order, OrderProduct, OrderBox, BoxProduct, Invoice,
+    Dealer, Box, Order, OrderProduct, BoxProduct, Invoice,
     UserWarehouseCompany, mysql_manager
 )
+from .db_manager import partition_filter
 from .routes import rest_api, token_required, active_required
 from .permissions import get_permissions, has_all_warehouse_access
 
@@ -78,7 +79,10 @@ order_model = rest_api.model('Order', {
 
 orders_response = rest_api.model('OrdersResponse', {
     'success': fields.Boolean(description='Success status'),
-    'orders': fields.List(fields.Nested(order_model), description='List of orders')
+    'orders': fields.List(fields.Nested(order_model), description='List of orders'),
+    'total': fields.Integer(description='Total number of orders matching filters'),
+    'page': fields.Integer(description='Current page'),
+    'limit': fields.Integer(description='Page size')
 })
 
 order_detail_response = rest_api.model('OrderDetailResponse', {
@@ -129,10 +133,23 @@ class CompanyList(Resource):
     @active_required
     def get(self, current_user):
         try:
+            from .db_manager import mysql_manager as _db
             warehouse_id = request.args.get('warehouse_id', type=int)
 
-            companies = Company.get_all()
-            company_list = [{'id': c.company_id, 'name': c.name} for c in companies]
+            # Bug 20 fix: filter companies by warehouse when warehouse_id is provided
+            if warehouse_id:
+                rows = _db.execute_query(
+                    """SELECT DISTINCT c.company_id, c.name
+                       FROM company c
+                       JOIN user_warehouse_company uwc ON c.company_id = uwc.company_id
+                       WHERE uwc.warehouse_id = %s
+                       ORDER BY c.name""",
+                    (warehouse_id,)
+                )
+                company_list = [{'id': r['company_id'], 'name': r['name']} for r in rows]
+            else:
+                companies = Company.get_all()
+                company_list = [{'id': c.company_id, 'name': c.name} for c in companies]
             return {'success': True, 'companies': company_list}, 200
         except Exception as e:
             return {'success': False, 'msg': f'Error retrieving companies: {str(e)}'}, 400
@@ -195,7 +212,9 @@ class OrdersList(Resource):
             status = request.args.get('status', '')
             warehouse_id = request.args.get('warehouse_id', type=int)
             company_id = request.args.get('company_id', type=int)
-            limit = request.args.get('limit', 1000, type=int)
+            limit = request.args.get('limit', 100, type=int)
+            page = request.args.get('page', 1, type=int)
+            offset = (page - 1) * limit
 
             # Map frontend status names to database status names
             status_map = {
@@ -210,11 +229,18 @@ class OrdersList(Resource):
 
             db_status = status_map.get(status.lower(), '') if status else ''
 
+            total = PotentialOrder.count_by_filters(
+                status=db_status,
+                warehouse_id=warehouse_id,
+                company_id=company_id
+            )
+
             potential_orders = PotentialOrder.find_by_filters(
                 status=db_status,
                 warehouse_id=warehouse_id,
                 company_id=company_id,
-                limit=limit
+                limit=limit,
+                offset=offset
             )
 
             frontend_status_map = {
@@ -227,12 +253,42 @@ class OrdersList(Resource):
                 'Partially Completed': 'partially-completed'
             }
 
+            # Bulk-fetch product counts and state history to avoid N+1 queries
+            order_ids = [o['potential_order_id'] for o in potential_orders]
+            product_counts = {}
+            state_histories = {}
+            if order_ids:
+                placeholders = ','.join(['%s'] * len(order_ids))
+                pf_pop_sql, pf_pop_params = partition_filter('potential_order_product')
+                count_rows = mysql_manager.execute_query(
+                    f"SELECT potential_order_id, COUNT(*) as cnt FROM potential_order_product"
+                    f" WHERE {pf_pop_sql} AND potential_order_id IN ({placeholders})"
+                    f" GROUP BY potential_order_id",
+                    pf_pop_params + tuple(order_ids)
+                )
+                product_counts = {r['potential_order_id']: r['cnt'] for r in (count_rows or [])}
+
+                pf_osh_sql, pf_osh_params = partition_filter('order_state_history', alias='osh')
+                history_rows = mysql_manager.execute_query(
+                    f"SELECT osh.*, os.state_name"
+                    f" FROM order_state_history osh"
+                    f" JOIN order_state os ON osh.state_id = os.state_id"
+                    f" WHERE {pf_osh_sql} AND osh.potential_order_id IN ({placeholders})"
+                    f" ORDER BY osh.potential_order_id, osh.changed_at",
+                    pf_osh_params + tuple(order_ids)
+                )
+                from collections import defaultdict
+                _hist_map = defaultdict(list)
+                for h in (history_rows or []):
+                    _hist_map[h['potential_order_id']].append(h)
+                state_histories = dict(_hist_map)
+
             orders = []
             for order_data in potential_orders:
                 try:
                     dealer_name = order_data.get('dealer_name') or 'Unknown Dealer'
-                    product_count = PotentialOrderProduct.count_by_order(order_data['potential_order_id'])
-                    state_history_data = OrderStateHistory.get_history_for_order(order_data['potential_order_id'])
+                    product_count = product_counts.get(order_data['potential_order_id'], 0)
+                    state_history_data = state_histories.get(order_data['potential_order_id'], [])
 
                     formatted_history = []
                     for history in state_history_data:
@@ -263,7 +319,7 @@ class OrdersList(Resource):
                         'order_date': order_date_str,
                         'status': frontend_status,
                         'current_state_time': current_state_time_str,
-                        'assigned_to': f"User {order_data['requested_by']}",
+                        'assigned_to': order_data.get('assigned_username') or f"User {order_data['requested_by']}",
                         'products': product_count,
                         'state_history': formatted_history,
                         'invoice_submitted': bool(order_data.get('invoice_submitted', False)),
@@ -273,7 +329,10 @@ class OrdersList(Resource):
 
             return {
                 'success': True,
-                'orders': orders
+                'orders': orders,
+                'total': total,
+                'page': page,
+                'limit': limit
             }, 200
 
         except Exception as e:
@@ -320,11 +379,16 @@ class BulkOrderExport(Resource):
 
             db_status = FRONTEND_TO_DB_STATUS.get(status.lower(), '') if status else ''
 
+            # Bug 21 fix: fetch all matching orders (no artificial cap).
+            # find_by_filters requires a limit; use count first to avoid unbounded queries.
+            total_count = PotentialOrder.count_by_filters(
+                status=db_status, warehouse_id=warehouse_id, company_id=company_id
+            )
             potential_orders = PotentialOrder.find_by_filters(
                 status=db_status,
                 warehouse_id=warehouse_id,
                 company_id=company_id,
-                limit=1000
+                limit=max(total_count, 1)
             )
 
             wb = openpyxl.Workbook()
@@ -439,7 +503,6 @@ class BulkOrderImport(Resource):
                 order_id = str(row[0] or '').strip() if row[0] else ''
                 current_status = str(row[2] or '').strip().lower()
                 expected_status = str(row[3] or '').strip().lower()
-                raw_boxes = row[4]
 
                 if not order_id:
                     continue
@@ -495,28 +558,17 @@ class BulkOrderImport(Resource):
                     current_time = datetime.utcnow()
 
                     if expected_status == 'invoiced':
-                        # Packed → Invoiced
-                        try:
-                            number_of_boxes = max(1, int(raw_boxes or 1))
-                        except (ValueError, TypeError):
-                            number_of_boxes = 1
-
+                        # Packed → Invoiced: create Order now using box_count stored
+                        # on PotentialOrder during the packing step.
                         final_order = Order(
                             potential_order_id=numeric_id,
                             order_number=f"ORD-{numeric_id}-{current_time.strftime('%Y%m%d%H%M')}",
                             status='Dispatch Ready',
+                            box_count=potential_order.box_count,
                             created_at=current_time,
                             updated_at=current_time
                         )
                         final_order.save()
-
-                        for i in range(number_of_boxes):
-                            OrderBox(
-                                order_id=final_order.order_id,
-                                name=f'Box-{i + 1}',
-                                created_at=current_time,
-                                updated_at=current_time
-                            ).save()
 
                         potential_order.status = 'Invoiced'
                         potential_order.updated_at = current_time
@@ -534,7 +586,7 @@ class BulkOrderImport(Resource):
                             'order_id': order_id,
                             'from': current_status,
                             'to': expected_status,
-                            'boxes': number_of_boxes
+                            'boxes': potential_order.box_count
                         })
 
                     elif expected_status == 'completed':
@@ -677,7 +729,8 @@ class OrderDetail(Resource):
                 'order_date': potential_order.order_date.isoformat(),
                 'status': status,
                 'current_state_time': current_state_time.isoformat(),
-                'assigned_to': f"User {potential_order.requested_by}",
+                'assigned_to': (Users.get_by_id(potential_order.requested_by).username
+                                if potential_order.requested_by else 'Unassigned'),
                 'products': product_count,
                 'state_history': formatted_history
             }
@@ -725,13 +778,32 @@ class RecentOrders(Resource):
             # Only show orders in states the role can see
             potential_orders = [o for o in potential_orders if o['status'] in allowed_states]
 
+            # Bulk-fetch state history to avoid N+1 queries
+            recent_ids = [o['potential_order_id'] for o in potential_orders]
+            recent_state_histories = {}
+            if recent_ids:
+                placeholders = ','.join(['%s'] * len(recent_ids))
+                pf_osh_sql, pf_osh_params = partition_filter('order_state_history', alias='osh')
+                history_rows = mysql_manager.execute_query(
+                    f"SELECT osh.*, os.state_name"
+                    f" FROM order_state_history osh"
+                    f" JOIN order_state os ON osh.state_id = os.state_id"
+                    f" WHERE {pf_osh_sql} AND osh.potential_order_id IN ({placeholders})"
+                    f" ORDER BY osh.potential_order_id, osh.changed_at",
+                    pf_osh_params + tuple(recent_ids)
+                )
+                from collections import defaultdict
+                _map = defaultdict(list)
+                for h in (history_rows or []):
+                    _map[h['potential_order_id']].append(h)
+                recent_state_histories = dict(_map)
+
             orders = []
             for order_data in potential_orders:
                 # Get dealer name
                 dealer_name = order_data.get('dealer_name', 'Unknown Dealer')
 
-                # Get the most recent state change for each order
-                state_history_data = OrderStateHistory.get_history_for_order(order_data['potential_order_id'])
+                state_history_data = recent_state_histories.get(order_data['potential_order_id'], [])
 
                 current_state_time = order_data['updated_at']
                 if state_history_data:
@@ -756,7 +828,7 @@ class RecentOrders(Resource):
                     'status': status,
                     'order_date': order_data['order_date'].isoformat(),
                     'current_state_time': current_state_time.isoformat(),
-                    'assigned_to': f"User {order_data['requested_by']}",
+                    'assigned_to': order_data.get('assigned_username') or f"User {order_data['requested_by']}",
                 }
                 orders.append(order_result)
 

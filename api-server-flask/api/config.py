@@ -6,8 +6,6 @@ Loaded by APP_ENV environment variable in __init__.py
 """
 
 import os
-import random
-import string
 from datetime import timedelta
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -16,13 +14,14 @@ APP_VERSION = os.getenv('APP_VERSION', '1.0.0')
 
 
 class BaseConfig():
-    SECRET_KEY = os.getenv('SECRET_KEY', None)
-    if not SECRET_KEY:
-        SECRET_KEY = ''.join(random.choice(string.ascii_lowercase) for i in range(32))
+    # Bug 8 fix: use a stable fallback so tokens survive restarts in dev/staging.
+    # In production, SECRET_KEY *must* be set via env var — the fallback is only
+    # safe for local development where token persistence doesn't matter.
+    _SECRET_KEY_DEFAULT = 'wms-dev-secret-key-change-in-production-please'
+    SECRET_KEY = os.getenv('SECRET_KEY') or _SECRET_KEY_DEFAULT
 
-    JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', None)
-    if not JWT_SECRET_KEY:
-        JWT_SECRET_KEY = ''.join(random.choice(string.ascii_lowercase) for i in range(32))
+    # Bug 7 fix: both JWT systems share the same secret so tokens are interoperable.
+    JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY') or os.getenv('SECRET_KEY') or _SECRET_KEY_DEFAULT
 
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=1)
 

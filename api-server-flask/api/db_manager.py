@@ -204,7 +204,17 @@ class MySQLManager:
 
         except Exception as e:
             if conn:
-                conn.rollback()
+                try:
+                    conn.rollback()
+                except Exception:
+                    # Bug 42 fix: rollback failed — connection is broken.
+                    # Close it and set to None so the finally block discards it
+                    # instead of returning a dead connection to the pool.
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    conn = None
             raise e
         finally:
             if conn:
@@ -432,6 +442,7 @@ def create_all_tables():
         order_date         DATETIME DEFAULT CURRENT_TIMESTAMP,
         requested_by       INT,
         status             VARCHAR(50) DEFAULT 'Open',
+        box_count          INT         NOT NULL DEFAULT 1,
         invoice_submitted  TINYINT(1)  NOT NULL DEFAULT 0,
         upload_batch_id    INT NULL,
         created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -477,6 +488,7 @@ def create_all_tables():
         dispatched_date    DATETIME,
         delivery_date      DATETIME,
         status             VARCHAR(50) DEFAULT 'In Transit',
+        box_count          INT NOT NULL DEFAULT 1,
         created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (order_id, created_at),
@@ -770,6 +782,7 @@ def create_all_tables():
     # Migrate existing tables
     _migrate_users_table()
     _migrate_potential_order_table()
+    _migrate_box_count()
     _drop_city_tables()
 
     # Insert default order states
@@ -805,6 +818,19 @@ def _drop_city_tables():
             mysql_manager.execute_query(f"DROP TABLE IF EXISTS {table}", fetch=False)
         except Exception:
             pass
+
+
+def _migrate_box_count():
+    """Add box_count column to potential_order and order tables if missing."""
+    migrations = [
+        "ALTER TABLE potential_order ADD COLUMN box_count INT NOT NULL DEFAULT 1 AFTER status",
+        "ALTER TABLE `order` ADD COLUMN box_count INT NOT NULL DEFAULT 1 AFTER status",
+    ]
+    for sql in migrations:
+        try:
+            mysql_manager.execute_query(sql, fetch=False)
+        except Exception:
+            pass  # Column already exists
 
 
 def _migrate_potential_order_table():

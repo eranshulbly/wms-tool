@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useSelector } from 'react-redux';
 import {
   Grid,
@@ -10,7 +10,6 @@ import { gridSpacing } from '../../store/constant';
 
 // Import fixed components
 import { useOrderManagementStyles } from './styles/orderManagement.styles';
-import { filterOrdersByStatus } from './utils/orderManagement.utils';
 import {
   FilterControls,
   OrdersTable,
@@ -36,9 +35,11 @@ const OrderManagement = () => {
   const [statusFilter, setStatusFilter] = useState('all');
   const [warehouses, setWarehouses] = useState([]);
   const [companies, setCompanies] = useState([]);
-  const [orders, setOrders] = useState([]);
   const [filteredOrders, setFilteredOrders] = useState([]);
+  const [totalOrders, setTotalOrders] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [orderDetailsOpen, setOrderDetailsOpen] = useState(false);
 
@@ -86,46 +87,48 @@ const OrderManagement = () => {
     fetchInitialData();
   }, []);
 
-  // Fetch orders when warehouse, company changes
-  useEffect(() => {
-    const fetchOrders = async () => {
-      if (!warehouse || !company) return;
+  // Fetch orders — pass statusFilter to API so server does the filtering.
+  // resetPage=true when the context changes (filter/warehouse/company);
+  // resetPage=false after a single-order status update (stay on current page).
+  const fetchOrders = useCallback(async (resetPage = false) => {
+    if (!warehouse || !company) return;
 
-      setLoading(true);
-      try {
-        const response = await orderManagementService.getOrders(warehouse, company);
+    setLoading(true);
+    try {
+      const apiStatus = statusFilter !== 'all' ? statusFilter : null;
+      const response = await orderManagementService.getOrders(warehouse, company, apiStatus);
 
-        if (response.success) {
-          const processedOrders = (response.orders || []).map(order => ({
-            ...order,
-            status: order.status || 'open',
-            current_state_time: order.current_state_time || new Date().toISOString(),
-            dealer_name: order.dealer_name || 'Unknown Dealer',
-            assigned_to: order.assigned_to || 'Unassigned'
-          }));
-
-          setOrders(processedOrders);
-        } else {
-          console.error('Error in API response:', response.msg);
-          showSnackbar('Error fetching orders: ' + response.msg, 'error');
-          setOrders([]);
-        }
-      } catch (error) {
-        console.error('Error fetching orders:', error);
-        showSnackbar('Error fetching orders', 'error');
-        setOrders([]);
-      } finally {
-        setLoading(false);
+      if (response.success) {
+        const processedOrders = (response.orders || []).map(order => ({
+          ...order,
+          status: order.status || 'open',
+          current_state_time: order.current_state_time || new Date().toISOString(),
+          dealer_name: order.dealer_name || 'Unknown Dealer',
+          assigned_to: order.assigned_to || 'Unassigned'
+        }));
+        setFilteredOrders(processedOrders);
+        // Bug 24 fix: use the server-supplied total for correct pagination
+        setTotalOrders(response.total ?? processedOrders.length);
+        if (resetPage) setPage(0);
+      } else {
+        console.error('Error in API response:', response.msg);
+        showSnackbar('Error fetching orders: ' + response.msg, 'error');
+        setFilteredOrders([]);
       }
-    };
+    } catch (error) {
+      console.error('Error fetching orders:', error);
+      showSnackbar('Error fetching orders', 'error');
+      setFilteredOrders([]);
+    } finally {
+      setLoading(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [warehouse, company, statusFilter]);
 
-    fetchOrders();
-  }, [warehouse, company]);
-
-  // Filter orders based on status filter
+  // Re-fetch (and reset page) when warehouse, company, or status filter changes
   useEffect(() => {
-    setFilteredOrders(filterOrdersByStatus(orders, statusFilter));
-  }, [orders, statusFilter]);
+    fetchOrders(true);
+  }, [fetchOrders]);
 
   // Helper function to show snackbar messages
   const showSnackbar = (message, severity = 'info') => {
@@ -209,27 +212,15 @@ const OrderManagement = () => {
       }
 
       if (response && response.success) {
-        // Refresh orders list
-        const updatedOrders = await orderManagementService.getOrders(warehouse, company);
-
-        if (updatedOrders.success) {
-          const processedOrders = (updatedOrders.orders || []).map(ord => ({
-            ...ord,
-            status: ord.status || 'open',
-            current_state_time: ord.current_state_time || new Date().toISOString(),
-            dealer_name: ord.dealer_name || 'Unknown Dealer',
-            assigned_to: ord.assigned_to || 'Unassigned'
-          }));
-
-          setOrders(processedOrders);
-        }
-
         showSnackbar(successMessage, 'success');
 
         // Close dialog after terminal actions
         if (action === 'completed' || action === 'complete-dispatch') {
           handleOrderDetailsClose();
         }
+
+        // Refresh the current page without resetting pagination
+        await fetchOrders(false);
       } else if (response) {
         throw new Error(response.msg || 'Unknown error occurred');
       }
@@ -286,19 +277,8 @@ const OrderManagement = () => {
           handleOrderDetailsClose();
         }
 
-        // Refresh the orders list
-        const updatedOrders = await orderManagementService.getOrders(warehouse, company);
-        if (updatedOrders.success) {
-          const processedOrders = (updatedOrders.orders || []).map(ord => ({
-            ...ord,
-            status: ord.status || 'open',
-            current_state_time: ord.current_state_time || new Date().toISOString(),
-            dealer_name: ord.dealer_name || 'Unknown Dealer',
-            assigned_to: ord.assigned_to || 'Unassigned'
-          }));
-
-          setOrders(processedOrders);
-        }
+        // Refresh the current page without resetting pagination
+        await fetchOrders(false);
 
         // Close dialog for completed actions
         if (action === 'completed' || action === 'complete-dispatch') {
@@ -320,19 +300,21 @@ const OrderManagement = () => {
     setSnackbarOpen(false);
   };
 
+  const handlePageChange = (event, newPage) => {
+    setPage(newPage);
+  };
+
+  const handleRowsPerPageChange = (event) => {
+    setRowsPerPage(parseInt(event.target.value, 10));
+    setPage(0);
+  };
+
+  const pagedOrders = filteredOrders.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
+
   const handleBulkUploadComplete = async (result) => {
-    // Refresh orders list when at least one order was moved
     if (result.processed_count > 0 && warehouse && company) {
-      const updatedOrders = await orderManagementService.getOrders(warehouse, company);
-      if (updatedOrders.success) {
-        setOrders((updatedOrders.orders || []).map(ord => ({
-          ...ord,
-          status: ord.status || 'open',
-          current_state_time: ord.current_state_time || new Date().toISOString(),
-          dealer_name: ord.dealer_name || 'Unknown Dealer',
-          assigned_to: ord.assigned_to || 'Unassigned'
-        })));
-      }
+      // Bulk moves reset to page 0 since the result set changes significantly
+      await fetchOrders(true);
     }
   };
 
@@ -370,7 +352,12 @@ const OrderManagement = () => {
 
       {/* Orders Table */}
       <OrdersTable
-        orders={filteredOrders}
+        orders={pagedOrders}
+        totalCount={totalOrders}
+        page={page}
+        rowsPerPage={rowsPerPage}
+        onPageChange={handlePageChange}
+        onRowsPerPageChange={handleRowsPerPageChange}
         loading={loading}
         statusFilter={statusFilter}
         onOrderClick={handleOrderClick}

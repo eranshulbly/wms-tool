@@ -3,12 +3,11 @@
 Fixed Authentication Routes for Flask API
 """
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from functools import wraps
 from flask import request, jsonify
 from flask_restx import Api, Resource, fields
 import jwt
-import hashlib
 from .config import BaseConfig
 from .models import Users, JWTTokenBlocklist, mysql_manager
 from .db_manager import partition_filter
@@ -255,12 +254,10 @@ class Logout(Resource):
     def post(self, current_user):
         """Logout user and invalidate token"""
         try:
-            # Get the token from header
+            # Bug 45 fix: use the same stripping logic as token_required so the
+            # stored token exactly matches what blocklist checks look for.
             auth_header = request.headers.get("authorization", "")
-            if auth_header.startswith('Bearer '):
-                token = auth_header.split(' ')[1]
-            else:
-                token = auth_header
+            token = auth_header[7:] if auth_header.lower().startswith("bearer ") else auth_header
 
             # Add token to blocklist
             jwt_block = JWTTokenBlocklist(

@@ -1,15 +1,34 @@
 // action - state management
 import { ACCOUNT_INITIALIZE, LOGIN, LOGOUT } from './actions';
 
+// Bug 26 fix: check JWT expiry on rehydration so an expired token in localStorage
+// doesn't restore an authenticated session on page load.
+const _isTokenValid = (token) => {
+    if (!token) return false;
+    try {
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        return payload.exp && payload.exp * 1000 > Date.now();
+    } catch {
+        return false;
+    }
+};
+
 // Rehydrate from localStorage on page load
 const savedToken = localStorage.getItem('wms_token');
 const savedUser = (() => { try { return JSON.parse(localStorage.getItem('wms_user')); } catch { return null; } })();
+const _tokenValid = _isTokenValid(savedToken);
+
+// Clear stale auth data if the token has expired
+if (savedToken && !_tokenValid) {
+    localStorage.removeItem('wms_token');
+    localStorage.removeItem('wms_user');
+}
 
 export const initialState = {
-    token: savedToken || '',
-    isLoggedIn: !!(savedToken && savedUser),
+    token: _tokenValid ? savedToken : '',
+    isLoggedIn: !!(savedToken && savedUser && _tokenValid),
     isInitialized: true,
-    user: savedUser || null
+    user: _tokenValid ? savedUser : null
 };
 
 //-----------------------|| ACCOUNT REDUCER ||-----------------------//

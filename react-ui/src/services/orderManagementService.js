@@ -3,6 +3,17 @@ import axios from 'axios';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
+// Bug 27 fix: attach auth token to every request from this service
+const axiosWithAuth = axios.create();
+axiosWithAuth.interceptors.request.use((config) => {
+  const token = localStorage.getItem('wms_token');
+  if (token) {
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 /**
  * API service for order management operations
  */
@@ -14,7 +25,7 @@ class OrderManagementService {
    */
   async getWarehouses() {
     try {
-      const response = await axios.get(`${API_BASE_URL}/api/warehouses`);
+      const response = await axiosWithAuth.get(`${API_BASE_URL}/api/warehouses`);
       return response.data;
     } catch (error) {
       console.error('Error fetching warehouses:', error);
@@ -28,7 +39,7 @@ class OrderManagementService {
    */
   async getCompanies() {
     try {
-      const response = await axios.get(`${API_BASE_URL}/api/companies`);
+      const response = await axiosWithAuth.get(`${API_BASE_URL}/api/companies`);
       return response.data;
     } catch (error) {
       console.error('Error fetching companies:', error);
@@ -43,14 +54,14 @@ class OrderManagementService {
    * @param {string} status - Order status filter (optional)
    * @returns {Promise<Object>} API response with orders
    */
-  async getOrders(warehouseId, companyId, status = null) {
+  async getOrders(warehouseId, companyId, status = null, page = 1, limit = 100) {
     try {
-      const params = {};
+      const params = { page, limit };
       if (warehouseId) params.warehouse_id = warehouseId;
       if (companyId) params.company_id = companyId;
       if (status && status !== 'all') params.status = status;
 
-      const response = await axios.get(`${API_BASE_URL}/api/orders`, { params });
+      const response = await axiosWithAuth.get(`${API_BASE_URL}/api/orders`, { params });
       const data = response.data;
 
       if (data.success && data.orders) {
@@ -74,7 +85,7 @@ class OrderManagementService {
    */
   async getOrderDetailsWithProducts(orderId) {
     try {
-      const response = await axios.get(`${API_BASE_URL}/api/orders/${orderId}/details`);
+      const response = await axiosWithAuth.get(`${API_BASE_URL}/api/orders/${orderId}/details`);
       const data = response.data;
 
       if (data.success && data.order) {
@@ -103,7 +114,7 @@ class OrderManagementService {
       const requestBody = { new_status: newStatus };
       if (additionalData) Object.assign(requestBody, additionalData);
 
-      const response = await axios.post(`${API_BASE_URL}/api/orders/${orderId}/status`, requestBody);
+      const response = await axiosWithAuth.post(`${API_BASE_URL}/api/orders/${orderId}/status`, requestBody);
       return response.data;
     } catch (error) {
       console.error('Error updating order status:', error);
@@ -121,16 +132,22 @@ class OrderManagementService {
    * @returns {Promise<Object>} { success, processed_count, error_count, error_report? }
    */
   async bulkStatusUpdate(file, targetStatus, warehouseId, companyId) {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('target_status', targetStatus);
-    formData.append('warehouse_id', warehouseId);
-    formData.append('company_id', companyId);
+    // Bug 34 fix: wrap in try/catch like all other service methods
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('target_status', targetStatus);
+      formData.append('warehouse_id', warehouseId);
+      formData.append('company_id', companyId);
 
-    const response = await axios.post(`${API_BASE_URL}/api/orders/bulk-status-update`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    });
-    return response.data;
+      const response = await axiosWithAuth.post(`${API_BASE_URL}/api/orders/bulk-status-update`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Error bulk updating order statuses:', error);
+      return { success: false, msg: error.response?.data?.msg || error.message };
+    }
   }
 
   /**
@@ -140,7 +157,7 @@ class OrderManagementService {
    */
   async completeDispatch(orderId) {
     try {
-      const response = await axios.post(`${API_BASE_URL}/api/orders/${orderId}/complete-dispatch`);
+      const response = await axiosWithAuth.post(`${API_BASE_URL}/api/orders/${orderId}/complete-dispatch`);
       return response.data;
     } catch (error) {
       console.error('Error completing dispatch:', error);
@@ -188,7 +205,7 @@ class OrderManagementService {
       if (warehouseId) params.warehouse_id = warehouseId;
       if (companyId) params.company_id = companyId;
 
-      const response = await axios.get(`${API_BASE_URL}/api/orders/status`, { params });
+      const response = await axiosWithAuth.get(`${API_BASE_URL}/api/orders/status`, { params });
       return response.data;
     } catch (error) {
       console.error('Error fetching order status counts:', error);

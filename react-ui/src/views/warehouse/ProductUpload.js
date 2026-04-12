@@ -17,7 +17,6 @@ import { makeStyles, useTheme } from '@material-ui/styles';
 import CloudUploadIcon from '@material-ui/icons/CloudUpload';
 import DescriptionIcon from '@material-ui/icons/Description';
 import ErrorOutlineIcon from '@material-ui/icons/ErrorOutline';
-import { gridSpacing } from '../../store/constant';
 import { Snackbar, Alert } from '@material-ui/core';
 import MainCard from '../../ui-component/cards/MainCard';
 import AnimateButton from '../../ui-component/extended/AnimateButton';
@@ -67,11 +66,6 @@ const useStyles = makeStyles((theme) => ({
         justifyContent: 'center',
         flexDirection: 'column'
     },
-    successIcon: {
-        fontSize: '3rem',
-        color: theme.palette.success.main,
-        marginBottom: '8px'
-    },
     errorIcon: {
         fontSize: '3rem',
         color: theme.palette.error.main,
@@ -88,21 +82,18 @@ const useStyles = makeStyles((theme) => ({
         height: '100%',
         width: '100%',
         padding: '20px'
-    }
+    },
 }));
 
-const OrderUpload = () => {
+const ProductUpload = () => {
     const classes = useStyles();
     const theme = useTheme();
 
-    // State variables
     const [file, setFile] = useState(null);
     const [isDragging, setIsDragging] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
     const [uploadStatus, setUploadStatus] = useState(null);
-    const [warehouses, setWarehouses] = useState([]);
     const [companies, setCompanies] = useState([]);
-    const [selectedWarehouse, setSelectedWarehouse] = useState('');
     const [selectedCompany, setSelectedCompany] = useState('');
     const [snackbarOpen, setSnackbarOpen] = useState(false);
     const [snackbarMessage, setSnackbarMessage] = useState('');
@@ -111,39 +102,25 @@ const OrderUpload = () => {
     const [isLoading, setIsLoading] = useState(true);
     const [dataError, setDataError] = useState(null);
 
-    // Fetch warehouses and companies from the API
     useEffect(() => {
         const fetchData = async () => {
             setIsLoading(true);
             setDataError(null);
-
             try {
-                // Fetch warehouses
-                const warehousesResponse = await axios.get(`${config.API_SERVER}warehouses`);
-
-                if (warehousesResponse.data.success) {
-                    setWarehouses(warehousesResponse.data.warehouses);
-                } else {
-                    throw new Error(warehousesResponse.data.msg || 'Failed to fetch warehouses');
-                }
-
-                // Fetch companies
                 const companiesResponse = await axios.get(`${config.API_SERVER}companies`);
-
                 if (companiesResponse.data.success) {
                     setCompanies(companiesResponse.data.companies);
                 } else {
                     throw new Error(companiesResponse.data.msg || 'Failed to fetch companies');
                 }
             } catch (error) {
-                console.error('Error fetching data:', error);
+                console.error('Error fetching companies:', error);
                 setDataError(error.message || 'Failed to load required data');
-                showSnackbar('Failed to load warehouses and companies', 'error');
+                showSnackbar('Failed to load companies', 'error');
             } finally {
                 setIsLoading(false);
             }
         };
-
         fetchData();
     }, []);
 
@@ -154,60 +131,43 @@ const OrderUpload = () => {
     };
 
     const handleSnackbarClose = (event, reason) => {
-        if (reason === 'clickaway') {
-            return;
-        }
+        if (reason === 'clickaway') return;
         setSnackbarOpen(false);
     };
 
-    const handleDragOver = (e) => {
-        e.preventDefault();
-        setIsDragging(true);
-    };
-
-    const handleDragLeave = (e) => {
-        e.preventDefault();
-        setIsDragging(false);
-    };
+    const handleDragOver = (e) => { e.preventDefault(); setIsDragging(true); };
+    const handleDragLeave = (e) => { e.preventDefault(); setIsDragging(false); };
 
     const handleDrop = (e) => {
         e.preventDefault();
         setIsDragging(false);
-
         if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-            const droppedFile = e.dataTransfer.files[0];
-            validateAndSetFile(droppedFile);
+            validateAndSetFile(e.dataTransfer.files[0]);
         }
     };
 
     const handleFileSelect = (e) => {
         if (e.target.files && e.target.files.length > 0) {
-            const selectedFile = e.target.files[0];
-            validateAndSetFile(selectedFile);
+            validateAndSetFile(e.target.files[0]);
         }
     };
 
-    const validateAndSetFile = (file) => {
-        // Validate file type (Excel or CSV)
+    const validateAndSetFile = (selectedFile) => {
         const validTypes = [
             'application/vnd.ms-excel',
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             'text/csv',
             'application/csv'
         ];
-
-        if (!validTypes.includes(file.type)) {
+        if (!validTypes.includes(selectedFile.type)) {
             showSnackbar('Please upload a valid Excel or CSV file', 'error');
             return;
         }
-
-        // Validate file size (max 5MB)
-        if (file.size > 5 * 1024 * 1024) {
-            showSnackbar('File size exceeds 5MB limit', 'error');
+        if (selectedFile.size > 10 * 1024 * 1024) {
+            showSnackbar('File size exceeds 10MB limit', 'error');
             return;
         }
-
-        setFile(file);
+        setFile(selectedFile);
         setUploadStatus(null);
         setUploadResults(null);
     };
@@ -217,12 +177,6 @@ const OrderUpload = () => {
             showSnackbar('Please select a file to upload', 'warning');
             return;
         }
-
-        if (!selectedWarehouse) {
-            showSnackbar('Please select a warehouse', 'warning');
-            return;
-        }
-
         if (!selectedCompany) {
             showSnackbar('Please select a company', 'warning');
             return;
@@ -231,17 +185,12 @@ const OrderUpload = () => {
         setIsUploading(true);
         setUploadStatus('uploading');
 
-        // Create form data
         const formData = new FormData();
         formData.append('file', file);
-        formData.append('warehouse_id', selectedWarehouse);
         formData.append('company_id', selectedCompany);
 
-        // Send to API
-        axios.post(`${config.API_SERVER}orders/upload`, formData, {
-            headers: {
-                'Content-Type': 'multipart/form-data'
-            }
+        axios.post(`${config.API_SERVER}products/upload`, formData, {
+            headers: { 'Content-Type': 'multipart/form-data' }
         })
         .then(response => {
             const data = response.data;
@@ -249,19 +198,19 @@ const OrderUpload = () => {
             if (data.success) {
                 setUploadStatus('success');
                 showSnackbar(
-                    `Processed ${data.processed_count} order(s)` +
+                    `Processed ${data.processed_count} product line(s)` +
                     (data.error_count > 0 ? ` — ${data.error_count} row(s) failed` : ''),
                     data.error_count > 0 ? 'warning' : 'success'
                 );
             } else {
                 setUploadStatus('error');
-                showSnackbar(data.msg || 'Upload failed', 'error');
+                showSnackbar(data.msg || 'Processing failed', 'error');
             }
         })
         .catch(error => {
             setUploadStatus('error');
             setUploadResults(error.response?.data || null);
-            showSnackbar(error.response?.data?.msg || 'Error uploading file', 'error');
+            showSnackbar(error.response?.data?.msg || 'Error processing product file', 'error');
             console.error('Upload error:', error);
         })
         .finally(() => {
@@ -275,10 +224,9 @@ const OrderUpload = () => {
         setUploadResults(null);
     };
 
-    // Show loading state while fetching warehouses and companies
     if (isLoading) {
         return (
-            <MainCard title="Upload Order File">
+            <MainCard title="Upload Product File">
                 <div className={classes.loadingContainer}>
                     <CircularProgress />
                     <Typography variant="body1" style={{ marginLeft: '16px' }}>
@@ -289,18 +237,15 @@ const OrderUpload = () => {
         );
     }
 
-    // Show error state if data fetching failed
     if (dataError) {
         return (
-            <MainCard title="Upload Order File">
+            <MainCard title="Upload Product File">
                 <div style={{ textAlign: 'center', padding: '40px 20px' }}>
                     <ErrorOutlineIcon className={classes.errorIcon} />
                     <Typography variant="h5" color="error" gutterBottom>
                         Error Loading Data
                     </Typography>
-                    <Typography variant="body1" gutterBottom>
-                        {dataError}
-                    </Typography>
+                    <Typography variant="body1" gutterBottom>{dataError}</Typography>
                     <Button
                         variant="contained"
                         color="primary"
@@ -315,20 +260,22 @@ const OrderUpload = () => {
     }
 
     return (
-        <MainCard title="Upload Order File">
-            <Grid container spacing={gridSpacing}>
+        <MainCard title="Upload Product File">
+            <Grid container spacing={3}>
                 <Grid item xs={12}>
-                    <Grid container spacing={gridSpacing}>
+                    <Grid container spacing={3}>
                         <Grid item lg={8} md={6} sm={12} xs={12}>
                             <Card>
                                 <CardContent>
                                     <Grid container spacing={2}>
                                         <Grid item xs={12}>
                                             <Typography variant="h4" gutterBottom>
-                                                Upload Excel/CSV File
+                                                Upload Product Excel/CSV File
                                             </Typography>
                                             <Typography variant="body2" color="textSecondary" gutterBottom>
-                                                Upload your order file in Excel or CSV format. The system will process the data and create orders accordingly.
+                                                Upload your spare parts / product file to attach product lines to existing orders.
+                                                Each row links a <strong>Part #</strong> to an <strong>Order #</strong>.
+                                                Existing product lines for matched orders will be replaced.
                                             </Typography>
                                         </Grid>
 
@@ -338,11 +285,11 @@ const OrderUpload = () => {
                                                 onDragOver={handleDragOver}
                                                 onDragLeave={handleDragLeave}
                                                 onDrop={handleDrop}
-                                                onClick={() => document.getElementById('file-upload').click()}
+                                                onClick={() => document.getElementById('product-file-upload').click()}
                                             >
                                                 <input
                                                     type="file"
-                                                    id="file-upload"
+                                                    id="product-file-upload"
                                                     style={{ display: 'none' }}
                                                     accept=".xlsx,.xls,.csv"
                                                     onChange={handleFileSelect}
@@ -351,13 +298,13 @@ const OrderUpload = () => {
                                                     <>
                                                         <CloudUploadIcon className={classes.uploadIcon} />
                                                         <Typography variant="h6" gutterBottom>
-                                                            Drag & Drop your file here
+                                                            Drag & Drop your product file here
                                                         </Typography>
                                                         <Typography variant="body2" color="textSecondary">
                                                             or click to browse
                                                         </Typography>
                                                         <Typography variant="caption" color="textSecondary" style={{ marginTop: '8px' }}>
-                                                            Supported formats: .xlsx, .xls, .csv (Max 5MB)
+                                                            Supported formats: .xlsx, .xls, .csv (Max 10MB)
                                                         </Typography>
                                                     </>
                                                 ) : (
@@ -381,7 +328,7 @@ const OrderUpload = () => {
                                                 <div className={classes.uploadProgress}>
                                                     <CircularProgress size={40} />
                                                     <Typography variant="body1" style={{ marginTop: '16px' }}>
-                                                        Uploading and processing file...
+                                                        Processing product file and linking to orders...
                                                     </Typography>
                                                 </div>
                                             </Grid>
@@ -392,8 +339,13 @@ const OrderUpload = () => {
                                                 <UploadResultCard
                                                     result={uploadResults}
                                                     onReset={resetUpload}
-                                                    successLabel="Orders Processed"
-                                                    errorFilename={`order_upload_errors_${new Date().toISOString().split('T')[0]}.xlsx`}
+                                                    successLabel="Product Lines Processed"
+                                                    errorFilename={`product_upload_errors_${new Date().toISOString().split('T')[0]}.xlsx`}
+                                                    extraStats={[
+                                                        ...(uploadResults.orders_updated != null
+                                                            ? [{ label: 'Orders Updated', value: uploadResults.orders_updated, color: 'secondary' }]
+                                                            : []),
+                                                    ]}
                                                 />
                                             </Grid>
                                         )}
@@ -408,32 +360,9 @@ const OrderUpload = () => {
                                     <Grid container spacing={2}>
                                         <Grid item xs={12}>
                                             <Typography variant="h4" gutterBottom>
-                                                Order Details
+                                                Upload Settings
                                             </Typography>
                                             <Divider sx={{ my: 1.5 }} />
-                                        </Grid>
-
-                                        <Grid item xs={12}>
-                                            <FormControl fullWidth>
-                                                <InputLabel id="warehouse-select-label">Warehouse</InputLabel>
-                                                <Select
-                                                    labelId="warehouse-select-label"
-                                                    id="warehouse-select"
-                                                    value={selectedWarehouse}
-                                                    label="Warehouse"
-                                                    onChange={(e) => setSelectedWarehouse(e.target.value)}
-                                                    disabled={isUploading || uploadStatus === 'success'}
-                                                >
-                                                    <MenuItem value="">
-                                                        <em>Select a warehouse</em>
-                                                    </MenuItem>
-                                                    {warehouses.map((warehouse) => (
-                                                        <MenuItem key={warehouse.id} value={warehouse.id}>
-                                                            {warehouse.name}
-                                                        </MenuItem>
-                                                    ))}
-                                                </Select>
-                                            </FormControl>
                                         </Grid>
 
                                         <Grid item xs={12}>
@@ -466,48 +395,29 @@ const OrderUpload = () => {
                                                     color="primary"
                                                     fullWidth
                                                     startIcon={<CloudUploadIcon />}
-                                                    disabled={!file || !selectedWarehouse || !selectedCompany || isUploading || uploadStatus === 'success'}
+                                                    disabled={!file || !selectedCompany || isUploading || uploadStatus === 'success'}
                                                     onClick={handleUpload}
                                                 >
-                                                    {isUploading ? 'Uploading...' : 'Upload File'}
+                                                    {isUploading ? 'Processing...' : 'Process Product File'}
                                                 </Button>
                                             </AnimateButton>
-                                        </Grid>
-
-                                        <Grid item xs={12} style={{ marginTop: '8px' }}>
-                                            <Typography variant="caption" color="textSecondary">
-                                                Note: The system will automatically process the file and create orders based on the data.
-                                                Make sure your file follows the required format.
-                                            </Typography>
                                         </Grid>
 
                                         <Grid item xs={12} style={{ marginTop: '16px' }}>
                                             <Box p={2} bgcolor={theme.palette.primary.light} borderRadius="8px">
                                                 <Typography variant="subtitle2" gutterBottom>
-                                                    File Format Requirements:
+                                                    Processing Rules:
                                                 </Typography>
                                                 <Typography variant="body2" component="div">
                                                     <ul style={{ paddingLeft: '20px', margin: '8px 0' }}>
-                                                        <li>Order # = Order ID</li>
-                                                        <li>Date = Order creation date</li>
-                                                        <li>Part # = Product ID</li>
-                                                        <li>Part Description = Product description</li>
-                                                        <li>Account Name = Dealer name</li>
-                                                        <li>Order Quantity = Actual ordered quantity</li>
-                                                        <li>Reserved Qty = Reserved quantity</li>
+                                                        <li>File must have <strong>Order #</strong>, <strong>Part #</strong>, <strong>Part Description</strong>, and <strong>Reserved Qty</strong> columns</li>
+                                                        <li><strong>Reserved Qty</strong> is used as the product quantity</li>
+                                                        <li>If an order already has products, they are <strong>replaced</strong> by this upload</li>
+                                                        <li>New Part # values are automatically created as products</li>
+                                                        <li>Order # must match an existing order in the system</li>
+                                                        <li>Errors are provided in a downloadable report</li>
                                                     </ul>
                                                 </Typography>
-                                                <Button
-                                                    size="small"
-                                                    color="primary"
-                                                    style={{ marginTop: '8px' }}
-                                                    onClick={() => {
-                                                        // Add functionality to download a template
-                                                        showSnackbar('Template download functionality will be implemented', 'info');
-                                                    }}
-                                                >
-                                                    Download Template
-                                                </Button>
                                             </Box>
                                         </Grid>
                                     </Grid>
@@ -518,7 +428,6 @@ const OrderUpload = () => {
                 </Grid>
             </Grid>
 
-            {/* Snackbar for notifications */}
             <Snackbar
                 open={snackbarOpen}
                 autoHideDuration={6000}
@@ -533,4 +442,4 @@ const OrderUpload = () => {
     );
 };
 
-export default OrderUpload;
+export default ProductUpload;

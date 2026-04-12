@@ -76,12 +76,13 @@ const useStyles = makeStyles((theme) => ({
 
 //============================|| API JWT - LOGIN ||============================//
 
-const RestLogin = (props, { ...others }) => {
+// Bug 25 fix: React components only receive one argument (props).
+// The second parameter destructuring `{ ...others }` was always {}.
+const RestLogin = (props) => {
     const classes = useStyles();
     const dispatcher = useDispatch();
 
     const scriptedRef = useScriptRef();
-    const [checked, setChecked] = React.useState(true);
 
     const [showPassword, setShowPassword] = React.useState(false);
     const handleClickShowPassword = () => {
@@ -133,7 +134,7 @@ const RestLogin = (props, { ...others }) => {
                             })
                             .catch(function (error) {
                                 setStatus({ success: false });
-                                setErrors({ submit: error.response.data.msg });
+                                setErrors({ submit: error?.response?.data?.msg || 'Unable to connect to server. Please try again.' });
                                 setSubmitting(false);
                             });
                     } catch (err) {
@@ -147,7 +148,7 @@ const RestLogin = (props, { ...others }) => {
                 }}
             >
                 {({ errors, handleBlur, handleChange, handleSubmit, isSubmitting, touched, values }) => (
-                    <form noValidate onSubmit={handleSubmit} {...others}>
+                    <form noValidate onSubmit={handleSubmit}>
                         <FormControl fullWidth error={Boolean(touched.email && errors.email)} className={classes.loginInput}>
                             <InputLabel htmlFor="outlined-adornment-email-login">Email</InputLabel>
                             <OutlinedInput
@@ -207,18 +208,7 @@ const RestLogin = (props, { ...others }) => {
                                 </FormHelperText>
                             )}
                         </FormControl>
-                        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-                            <FormControlLabel
-                                control={
-                                    <Checkbox
-                                        checked={checked}
-                                        onChange={(event) => setChecked(event.target.checked)}
-                                        name="checked"
-                                        color="primary"
-                                    />
-                                }
-                                label="Remember me"
-                            />
+                        <Stack direction="row" alignItems="center" justifyContent="flex-end" spacing={1}>
                             <Typography
                                 variant="subtitle1"
                                 component={Link}

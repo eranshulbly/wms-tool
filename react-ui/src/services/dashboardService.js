@@ -3,6 +3,17 @@ import config from '../config';
 
 // This service handles all API calls related to the warehouse dashboard
 
+// Bug 27 fix: attach auth token to every request from this service
+const axiosWithAuth = axios.create();
+axiosWithAuth.interceptors.request.use((cfg) => {
+  const token = localStorage.getItem('wms_token');
+  if (token) {
+    cfg.headers = cfg.headers || {};
+    cfg.headers.Authorization = `Bearer ${token}`;
+  }
+  return cfg;
+});
+
 const dashboardService = {
   /**
    * Fetch available warehouses
@@ -10,7 +21,7 @@ const dashboardService = {
    */
   getWarehouses: async () => {
     try {
-      const response = await axios.get(`${config.API_SERVER}warehouses`);
+      const response = await axiosWithAuth.get(`${config.API_SERVER}warehouses`);
       return response.data;
     } catch (error) {
       console.error('Error fetching warehouses:', error);
@@ -24,7 +35,7 @@ const dashboardService = {
    */
   getCompanies: async () => {
     try {
-      const response = await axios.get(`${config.API_SERVER}companies`);
+      const response = await axiosWithAuth.get(`${config.API_SERVER}companies`);
       return response.data;
     } catch (error) {
       console.error('Error fetching companies:', error);
@@ -40,7 +51,7 @@ const dashboardService = {
    */
   getOrderStatusCounts: async (warehouseId, companyId) => {
     try {
-      const response = await axios.get(`${config.API_SERVER}orders/status`, {
+      const response = await axiosWithAuth.get(`${config.API_SERVER}orders/status`, {
         params: {
           warehouse_id: warehouseId,
           company_id: companyId
@@ -62,7 +73,7 @@ const dashboardService = {
    */
   getOrdersByStatus: async (status, warehouseId, companyId) => {
     try {
-      const response = await axios.get(`${config.API_SERVER}orders`, {
+      const response = await axiosWithAuth.get(`${config.API_SERVER}orders`, {
         params: {
           status,
           warehouse_id: warehouseId,
@@ -83,7 +94,8 @@ const dashboardService = {
    */
   getOrderDetails: async (orderId) => {
     try {
-      const response = await axios.get(`${config.API_SERVER}orders/${orderId}`);
+      // Bug 40 fix: correct endpoint includes /details suffix
+      const response = await axiosWithAuth.get(`${config.API_SERVER}orders/${orderId}/details`);
       return response.data;
     } catch (error) {
       console.error('Error fetching order details:', error);
@@ -98,9 +110,9 @@ const dashboardService = {
    * @param {number} limit - Maximum number of records to return
    * @returns {Promise} Promise object that resolves to recent activity data
    */
-  getRecentActivity: async (warehouseId, companyId, limit = 10000) => {
+  getRecentActivity: async (warehouseId, companyId, limit = 100) => {
     try {
-      const response = await axios.get(`${config.API_SERVER}orders/recent`, {
+      const response = await axiosWithAuth.get(`${config.API_SERVER}orders/recent`, {
         params: {
           warehouse_id: warehouseId,
           company_id: companyId,

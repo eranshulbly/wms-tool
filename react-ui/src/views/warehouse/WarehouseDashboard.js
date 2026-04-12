@@ -5,7 +5,6 @@ import {
   Card,
   CardContent,
   Typography,
-  Button,
   IconButton,
   Tooltip
 } from '@material-ui/core';
@@ -19,9 +18,8 @@ import { ORDER_STATUS_DATA } from './constants/warehouseDashboard.constants';
 import { filterOrdersByStatus } from './utils/warehouseDashboard.utils';
 import {
   FilterControls,
-  CompactStatusSummary,        // NEW: Compact design
-  HorizontalStatusBar,         // NEW: Alternative compact design
-  StatusCard,                  // OLD: Keep for backwards compatibility
+  CompactStatusSummary,
+  StatusCard,
   OrdersTable,
   OrderDetailsDialog
 } from './components/warehouseDashboard.components';
@@ -53,8 +51,7 @@ const WarehouseDashboard = () => {
   const [statusFilter, setStatusFilter] = useState('all');
   const [filteredOrders, setFilteredOrders] = useState([]);
 
-  // New state for UI preference (you can make this a user setting)
-  const [compactView, setCompactView] = useState(true); // Set to true for compact view
+  const [compactView] = useState(true);
   const [refreshTick, setRefreshTick] = useState(0);
 
   const handleRefresh = useCallback(() => {
@@ -232,9 +229,11 @@ const WarehouseDashboard = () => {
                 )}
               </Typography>
               <Tooltip title="Refresh data">
-                <IconButton size="small" onClick={handleRefresh} disabled={loading}>
-                  <RefreshIcon />
-                </IconButton>
+                <span>
+                  <IconButton size="small" onClick={handleRefresh} disabled={loading}>
+                    <RefreshIcon />
+                  </IconButton>
+                </span>
               </Tooltip>
             </div>
 

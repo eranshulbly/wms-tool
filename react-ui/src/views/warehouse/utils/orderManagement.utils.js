@@ -31,18 +31,25 @@ export const getTimeInCurrentStatus = (dateString) => {
   if (!dateString) return 'N/A';
 
   try {
-    const date = new Date(dateString);
+    // Backend returns UTC timestamps without 'Z'; append it so the browser
+    // parses them as UTC rather than local time.
+    const utcString = dateString.endsWith('Z') || dateString.includes('+') ? dateString : dateString + 'Z';
+    const date = new Date(utcString);
     if (isNaN(date.getTime())) return 'N/A';
 
     const now = new Date();
     const diffMs = now - date;
     const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
     const diffHours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const diffMins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
 
     if (diffDays > 0) {
-      return `${diffDays}d ${diffHours}h`;
+      return `${diffDays}d ${diffHours}h ${diffMins}m`;
     }
-    return `${diffHours}h`;
+    if (diffHours > 0) {
+      return `${diffHours}h ${diffMins}m`;
+    }
+    return `${diffMins}m`;
   } catch (error) {
     console.error('Error calculating time in status:', error);
     return 'N/A';

@@ -430,6 +430,7 @@ class PotentialOrder(MySQLModel):
         self.order_date = kwargs.get('order_date')
         self.requested_by = kwargs.get('requested_by')
         self.status = kwargs.get('status', 'Open')
+        self.box_count = kwargs.get('box_count', 1)
         self.invoice_submitted = bool(kwargs.get('invoice_submitted', False))
         self.upload_batch_id = kwargs.get('upload_batch_id')
         self.created_at = kwargs.get('created_at')
@@ -443,13 +444,13 @@ class PotentialOrder(MySQLModel):
                    order_type=%s, vin_number=%s, shipping_address=%s,
                    source_created_by=%s, purchaser_sap_code=%s, purchaser_name=%s,
                    warehouse_id=%s, company_id=%s, dealer_id=%s, order_date=%s,
-                   requested_by=%s, status=%s, invoice_submitted=%s, updated_at=%s
+                   requested_by=%s, status=%s, box_count=%s, invoice_submitted=%s, updated_at=%s
                    WHERE potential_order_id=%s""",
                 (self.original_order_id, self.b2b_po_number,
                  self.order_type, self.vin_number, self.shipping_address,
                  self.source_created_by, self.purchaser_sap_code, self.purchaser_name,
                  self.warehouse_id, self.company_id, self.dealer_id, self.order_date,
-                 self.requested_by, self.status, int(self.invoice_submitted),
+                 self.requested_by, self.status, self.box_count, int(self.invoice_submitted),
                  datetime.utcnow(), self.potential_order_id),
                 fetch=False
             )
@@ -459,15 +460,15 @@ class PotentialOrder(MySQLModel):
                     """INSERT INTO potential_order (original_order_id, b2b_po_number,
                        order_type, vin_number, shipping_address, source_created_by,
                        purchaser_sap_code, purchaser_name, warehouse_id, company_id,
-                       dealer_id, order_date, requested_by, status, upload_batch_id,
+                       dealer_id, order_date, requested_by, status, box_count, upload_batch_id,
                        created_at, updated_at)
                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                               %s, %s, %s, %s, %s, %s, %s)""",
+                               %s, %s, %s, %s, %s, %s, %s, %s)""",
                     (self.original_order_id, self.b2b_po_number,
                      self.order_type, self.vin_number, self.shipping_address,
                      self.source_created_by, self.purchaser_sap_code, self.purchaser_name,
                      self.warehouse_id, self.company_id, self.dealer_id, self.order_date,
-                     self.requested_by, self.status, self.upload_batch_id,
+                     self.requested_by, self.status, self.box_count, self.upload_batch_id,
                      datetime.utcnow(), datetime.utcnow())
                 )
                 self.potential_order_id = cursor.lastrowid
@@ -503,13 +504,14 @@ class PotentialOrder(MySQLModel):
         return result[0]['count'] if result else 0
 
     @classmethod
-    def find_by_filters(cls, status=None, warehouse_id=None, company_id=None, limit=1000):
+    def find_by_filters(cls, status=None, warehouse_id=None, company_id=None, limit=1000, offset=0):
         """Find orders by filters — scoped to the active 4-month partition window."""
         pf_sql, pf_params = partition_filter('potential_order', alias='po')
         query = f"""
-        SELECT po.*, d.name as dealer_name
+        SELECT po.*, d.name as dealer_name, u.username as assigned_username
         FROM potential_order po
         LEFT JOIN dealer d ON po.dealer_id = d.dealer_id
+        LEFT JOIN users u ON po.requested_by = u.id
         WHERE {pf_sql}
         """
         params = list(pf_params)
@@ -526,11 +528,34 @@ class PotentialOrder(MySQLModel):
             query += " AND po.company_id = %s"
             params.append(company_id)
 
-        query += " ORDER BY po.created_at DESC LIMIT %s"
+        query += " ORDER BY po.created_at DESC LIMIT %s OFFSET %s"
         params.append(limit)
+        params.append(offset)
 
         results = mysql_manager.execute_query(query, params)
         return results
+
+    @classmethod
+    def count_by_filters(cls, status=None, warehouse_id=None, company_id=None):
+        """Count orders matching filters — used for pagination total."""
+        pf_sql, pf_params = partition_filter('potential_order', alias='po')
+        query = f"SELECT COUNT(*) as cnt FROM potential_order po WHERE {pf_sql}"
+        params = list(pf_params)
+
+        if status:
+            query += " AND po.status = %s"
+            params.append(status)
+
+        if warehouse_id:
+            query += " AND po.warehouse_id = %s"
+            params.append(warehouse_id)
+
+        if company_id:
+            query += " AND po.company_id = %s"
+            params.append(company_id)
+
+        result = mysql_manager.execute_query(query, params)
+        return result[0]['cnt'] if result else 0
 
     @classmethod
     def find_by_original_order_id(cls, original_order_id, warehouse_id=None, company_id=None):  # noqa: ARG003
@@ -684,6 +709,7 @@ class Order(MySQLModel):
         self.dispatched_date = kwargs.get('dispatched_date')
         self.delivery_date = kwargs.get('delivery_date')
         self.status = kwargs.get('status', 'In Transit')
+        self.box_count = kwargs.get('box_count', 1)
         self.created_at = kwargs.get('created_at')
         self.updated_at = kwargs.get('updated_at')
 
@@ -691,21 +717,21 @@ class Order(MySQLModel):
         """Save order"""
         if self.order_id:
             mysql_manager.execute_query(
-                """UPDATE `order` SET potential_order_id=%s, order_number=%s, 
-                   dispatched_date=%s, delivery_date=%s, status=%s, updated_at=%s 
+                """UPDATE `order` SET potential_order_id=%s, order_number=%s,
+                   dispatched_date=%s, delivery_date=%s, status=%s, box_count=%s, updated_at=%s
                    WHERE order_id=%s""",
                 (self.potential_order_id, self.order_number, self.dispatched_date,
-                 self.delivery_date, self.status, datetime.utcnow(), self.order_id),
+                 self.delivery_date, self.status, self.box_count, datetime.utcnow(), self.order_id),
                 fetch=False
             )
         else:
             with mysql_manager.get_cursor() as cursor:
                 cursor.execute(
-                    """INSERT INTO `order` (potential_order_id, order_number, 
-                       dispatched_date, delivery_date, status, created_at, updated_at) 
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                    """INSERT INTO `order` (potential_order_id, order_number,
+                       dispatched_date, delivery_date, status, box_count, created_at, updated_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
                     (self.potential_order_id, self.order_number, self.dispatched_date,
-                     self.delivery_date, self.status, datetime.utcnow(), datetime.utcnow())
+                     self.delivery_date, self.status, self.box_count, datetime.utcnow(), datetime.utcnow())
                 )
                 self.order_id = cursor.lastrowid
 

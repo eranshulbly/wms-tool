@@ -36,6 +36,14 @@ const warehouse = {
             breadcrumbs: false
         },
         {
+            id: 'upload-products',
+            title: 'Upload Products',
+            type: 'item',
+            url: '/warehouse/upload-products',
+            icon: icons.IconFileUpload,
+            breadcrumbs: false
+        },
+        {
             id: 'manage-orders',
             title: 'Manage Orders',
             type: 'item',

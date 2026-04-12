@@ -6,7 +6,7 @@ Copyright (c) 2019 - present AppSeed.us
 
 from datetime import datetime, timezone, timedelta
 import werkzeug
-from .services import order_service, invoice_service
+from .services import order_service, invoice_service, product_service
 
 from functools import wraps
 from flask import request
@@ -19,7 +19,7 @@ from .config import BaseConfig
 from .models import (
     Users, JWTTokenBlocklist, Warehouse, Company, PotentialOrder,
     PotentialOrderProduct, OrderStateHistory, OrderState, Product,
-    Dealer, Box, Order, OrderProduct, OrderBox, BoxProduct, Invoice,
+    Dealer, Box, Order, BoxProduct, Invoice,
     mysql_manager
 )
 from .db_manager import partition_filter
@@ -160,6 +160,29 @@ move_to_dispatch_model = rest_api.model('MoveToDispatchModel', {
     'boxes': fields.List(fields.Raw, description='Box assignments')
 })
 
+# Product Upload Models
+product_upload_parser = reqparse.RequestParser()
+product_upload_parser.add_argument('file',
+                                 type=werkzeug.datastructures.FileStorage,
+                                 location='files',
+                                 required=True,
+                                 help='Excel/CSV file with product data')
+product_upload_parser.add_argument('company_id',
+                                 type=int,
+                                 location='form',
+                                 required=True,
+                                 help='Company ID must be provided')
+
+product_upload_response = rest_api.model('ProductUploadResponse', {
+    'success': fields.Boolean(description='Success status of upload'),
+    'msg': fields.String(description='Message describing the result'),
+    'processed_count': fields.Integer(description='Number of product lines processed'),
+    'error_count': fields.Integer(description='Number of rows with errors'),
+    'orders_updated': fields.Integer(description='Number of orders whose products were updated'),
+    'error_report': fields.String(description='Base64-encoded Excel error report'),
+    'upload_batch_id': fields.String(description='Batch ID for tracking'),
+})
+
 # Invoice Management Models
 invoice_upload_parser = reqparse.RequestParser()
 invoice_upload_parser.add_argument('file',
@@ -228,7 +251,9 @@ def token_required(f):
         token = None
 
         if "authorization" in request.headers:
-            token = request.headers["authorization"]
+            raw = request.headers["authorization"]
+            # Strip Bearer prefix so the token can be decoded and matched against blocklist
+            token = raw[7:] if raw.lower().startswith("bearer ") else raw
 
         if not token:
             return {"success": False, "msg": "Valid JWT token is missing"}, 400
@@ -254,8 +279,12 @@ def token_required(f):
             if current_user.status == 'blocked':
                 return {"success": False, "msg": "Account has been blocked."}, 403
 
-        except Exception:
-            return {"success": False, "msg": "Token is invalid"}, 401
+        except jwt.ExpiredSignatureError:
+            return {"success": False, "msg": "Token has expired."}, 401
+        except jwt.InvalidTokenError:
+            return {"success": False, "msg": "Token is invalid."}, 401
+        except Exception as e:
+            return {"success": False, "msg": f"Authentication error: {str(e)}"}, 500
 
         # For Flask-RESTX class methods: args = (self,)
         # We need to call f(self, current_user, ...) not f(current_user, self, ...)
@@ -344,6 +373,10 @@ class Login(Resource):
         if not user_exists.check_password(_password):
             return {"success": False, "msg": "Wrong credentials."}, 400
 
+        # Bug 9 fix: reject blocked users before issuing a token
+        if user_exists.status == 'blocked':
+            return {"success": False, "msg": "Account has been blocked."}, 403
+
         # Build warehouse/company access list
         from .models import UserWarehouseCompany
         from .permissions import get_permissions, has_all_warehouse_access
@@ -395,10 +428,15 @@ class EditUser(Resource):
         _new_username = req_data.get("username")
         _new_email = req_data.get("email")
 
-        if _new_username:
+        # Bug 47 fix: reject if the new email/username is already taken
+        if _new_username and _new_username != current_user.username:
+            if Users.get_by_username(_new_username):
+                return {"success": False, "msg": "Username already taken."}, 400
             current_user.update_username(_new_username)
 
-        if _new_email:
+        if _new_email and _new_email != current_user.email:
+            if Users.get_by_email(_new_email):
+                return {"success": False, "msg": "Email already taken."}, 400
             current_user.update_email(_new_email)
 
         current_user.save()
@@ -412,7 +450,10 @@ class LogoutUser(Resource):
 
     @token_required
     def post(self, current_user):
-        _jwt_token = request.headers["authorization"]
+        # Bug 28 fix: strip 'Bearer ' prefix so the stored token matches what
+        # token_required checks against the blocklist (it also strips the prefix).
+        raw = request.headers.get("authorization", "")
+        _jwt_token = raw[7:] if raw.startswith("Bearer ") or raw.startswith("bearer ") else raw
 
         jwt_block = JWTTokenBlocklist(jwt_token=_jwt_token, created_at=datetime.now(timezone.utc))
         jwt_block.save()
@@ -577,7 +618,9 @@ class OrderDetailWithProducts(Resource):
     @rest_api.response(200, 'Success')
     @rest_api.response(400, 'Error', error_response)
     @rest_api.response(404, 'Order not found', error_response)
-    def get(self, order_id):
+    @token_required
+    @active_required
+    def get(self, _current_user, order_id):
         """Get detailed order information with correct timeline - MySQL"""
         try:
             numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
@@ -676,7 +719,7 @@ class OrderDetailWithProducts(Resource):
                 'order_request_id': f"PO{order_data['potential_order_id']}",
                 'original_order_id': order_data['original_order_id'],
                 'dealer_name': order_data['dealer_name'] or 'Unknown Dealer',
-                'order_date': order_data['order_date'].isoformat(),
+                'order_date': order_data['order_date'].isoformat() if order_data['order_date'] else None,
                 'status': frontend_status,
                 'current_state_time': current_state_time.isoformat(),
                 'assigned_to': f"User {order_data['requested_by']}",
@@ -800,7 +843,11 @@ class OrderStatusUpdate(Resource):
                 potential_order.updated_at = current_time
                 potential_order.save()
 
-                # When moving to Packed: create the Order record + boxes
+                final_order = None
+
+                # When moving to Packed: save box_count on PotentialOrder only.
+                # The Order record is NOT created here — it is created at Invoice
+                # upload time, since an order is only "finalized" once invoiced.
                 if db_status == 'Packed':
                     number_of_boxes = req_data.get('number_of_boxes', 1)
                     try:
@@ -808,30 +855,15 @@ class OrderStatusUpdate(Resource):
                     except (ValueError, TypeError):
                         number_of_boxes = 1
 
-                    final_order = None
-                    existing_order = Order.find_by_potential_order_id(numeric_id)
-                    if not existing_order:
-                        final_order = Order(
-                            potential_order_id=numeric_id,
-                            order_number=f"ORD-{numeric_id}-{current_time.strftime('%Y%m%d%H%M')}",
-                            status='Packed',
-                            created_at=current_time,
-                            updated_at=current_time
-                        )
-                        final_order.save()
-                        for i in range(number_of_boxes):
-                            OrderBox(
-                                order_id=final_order.order_id,
-                                name=f'Box-{i + 1}',
-                                created_at=current_time,
-                                updated_at=current_time
-                            ).save()
-                    else:
-                        final_order = existing_order
+                    # Persist box count on the potential order for later use
+                    potential_order.box_count = number_of_boxes
+                    potential_order.updated_at = current_time
+                    potential_order.save()
 
                     # Auto-transition: if an invoice was already submitted for this
                     # order while it was in Open/Picking, skip Packed and go straight
-                    # to Invoiced now that it's been packed.
+                    # to Invoiced now that it's been packed. This is the right moment
+                    # to create the Order record since the invoice already exists.
                     if potential_order.invoice_submitted:
                         # Record the intermediate Packed state in history (audit trail)
                         OrderStateHistory(
@@ -850,16 +882,22 @@ class OrderStatusUpdate(Resource):
                             )
                             invoiced_state.save()
 
-                        # Transition to Invoiced and clear the flag
+                        # Create the Order record now — invoice was already uploaded
+                        final_order = Order(
+                            potential_order_id=numeric_id,
+                            order_number=f"ORD-{numeric_id}-{current_time.strftime('%Y%m%d%H%M')}",
+                            status='Invoiced',
+                            box_count=potential_order.box_count,
+                            created_at=current_time,
+                            updated_at=current_time
+                        )
+                        final_order.save()
+
+                        # Transition PotentialOrder to Invoiced and clear the flag
                         potential_order.status = 'Invoiced'
                         potential_order.invoice_submitted = False
                         potential_order.updated_at = current_time
                         potential_order.save()
-
-                        if final_order:
-                            final_order.status = 'Invoiced'
-                            final_order.updated_at = current_time
-                            final_order.save()
 
                         # Override so the state_history block below records Invoiced,
                         # and the response reflects the final state.
@@ -917,6 +955,7 @@ class OrderStatusUpdate(Resource):
                     'current_state_time': current_time.isoformat(),
                     'assigned_to': f"User {potential_order.requested_by}",
                     'products': product_count,
+                    'box_count': final_order.box_count if final_order else None,
                     'state_history': formatted_history
                 }
 
@@ -959,9 +998,15 @@ class OrderPackedUpdate(Resource):
     @rest_api.response(200, 'Success', update_status_response)
     @rest_api.response(400, 'Error', error_response)
     @rest_api.response(404, 'Order not found', error_response)
-    def post(self, order_id):
+    @token_required
+    @active_required
+    def post(self, current_user, order_id):
         """Update packed information for an order with comprehensive validation - Complete MySQL"""
         try:
+            from .permissions import can_see_order_state
+            if not can_see_order_state(current_user.role, 'Packed'):
+                return {'success': False, 'msg': 'You do not have permission to manage Packed orders.'}, 403
+
             # Extract numeric ID from order_id
             numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
 
@@ -1250,7 +1295,9 @@ class OrderDispatchFinal(Resource):
     @rest_api.expect(dispatch_update_model)
     @rest_api.response(200, 'Success', update_status_response)
     @rest_api.response(400, 'Error', error_response)
-    def post(self, order_id):
+    @token_required
+    @active_required
+    def post(self, current_user, order_id):
         """Finalize order and create final order record - MySQL"""
         try:
             numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
@@ -1264,7 +1311,6 @@ class OrderDispatchFinal(Resource):
 
             req_data = request.get_json()
             products_data = req_data.get('products', [])
-            boxes_data = req_data.get('boxes', [])
 
             # Validate that order is in packed status
             if potential_order.status != 'Packed':
@@ -1275,44 +1321,24 @@ class OrderDispatchFinal(Resource):
 
             current_time = datetime.utcnow()
 
-            # Create final order
-            final_order = Order(
-                potential_order_id=numeric_id,
-                order_number=f"ORD-{numeric_id}-{current_time.strftime('%Y%m%d')}",
-                status='In Transit',
-                created_at=current_time,
-                updated_at=current_time
-            )
-            final_order.save()
-
-            # Process products and create final order products
+            # Update packed quantities on potential_order_product records.
+            # Order/OrderProduct/OrderBox records are NOT created here — they are
+            # created when an invoice is uploaded (Invoice upload is the canonical
+            # creation point for the order table).
             total_dispatched_products = 0
             for product_data in products_data:
                 product_id = product_data.get('product_id')
                 quantity_packed = product_data.get('quantity_packed', 0)
 
                 if quantity_packed > 0:
-                    # Get the original potential order product
                     potential_product = PotentialOrderProduct.find_by_order_and_product(numeric_id, product_id)
 
                     if potential_product:
-                        # Create final order product
-                        order_product = OrderProduct(
-                            order_id=final_order.order_id,
-                            product_id=product_id,
-                            quantity=quantity_packed,
-                            mrp=potential_product.mrp,
-                            total_price=potential_product.mrp * quantity_packed if potential_product.mrp else None,
-                            created_at=current_time,
-                            updated_at=current_time
-                        )
-                        order_product.save()
                         total_dispatched_products += 1
 
-                        # Update potential order product quantity (reduce by packed amount)
+                        # Reduce remaining quantity on the potential order product
                         remaining_quantity = potential_product.quantity - quantity_packed
                         if remaining_quantity <= 0:
-                            # Remove the potential order product if fully packed
                             pf_sql, pf_params = partition_filter('potential_order_product')
                             mysql_manager.execute_query(
                                 f"DELETE FROM potential_order_product WHERE potential_order_product_id = %s AND {pf_sql}",
@@ -1320,60 +1346,39 @@ class OrderDispatchFinal(Resource):
                                 fetch=False
                             )
                         else:
-                            # Update with remaining quantity
                             potential_product.quantity = remaining_quantity
-                            potential_product.quantity_packed = 0  # Reset packed quantity
+                            potential_product.quantity_packed = 0
                             potential_product.updated_at = current_time
                             potential_product.save()
-
-            # Process boxes for final order
-            for box_data in boxes_data:
-                box_name = box_data.get('box_name')
-
-                # Create final order box
-                order_box = OrderBox(
-                    order_id=final_order.order_id,
-                    name=box_name,
-                    created_at=current_time,
-                    updated_at=current_time
-                )
-                order_box.save()
 
             # Check if any products remain in potential order
             remaining_products = PotentialOrderProduct.count_by_order(numeric_id)
 
-            # Update status correctly for dashboard counting
             if remaining_products == 0:
-                # All products were dispatched, mark potential order as completed
                 potential_order.status = 'Completed'
                 final_status = 'Completed'
             else:
-                # Some products remain, mark as partially completed
                 potential_order.status = 'Partially Completed'
                 final_status = 'Partially Completed'
 
-            # Update potential order
             potential_order.updated_at = current_time
             potential_order.save()
 
-            # Create state history for the final status
             final_state = OrderState.find_by_name(final_status)
             if not final_state:
                 final_state = OrderState(state_name=final_status, description=f'{final_status} state')
                 final_state.save()
 
-            state_history = OrderStateHistory(
+            OrderStateHistory(
                 potential_order_id=numeric_id,
                 state_id=final_state.state_id,
-                changed_by=1,  # In real app, use authenticated user ID
+                changed_by=current_user.id,
                 changed_at=current_time
-            )
-            state_history.save()
+            ).save()
 
             return {
                 'success': True,
-                'msg': f'Order dispatched successfully. Order number: {final_order.order_number}',
-                'final_order_id': final_order.order_id,
+                'msg': 'Packed quantities updated successfully.',
                 'products_dispatched': total_dispatched_products,
                 'remaining_products': remaining_products,
                 'final_status': final_status.lower().replace(' ', '-')
@@ -1424,54 +1429,40 @@ class MoveToInvoiced(Resource):
                     'msg': 'Order must be in Packed status to move to Invoiced'
                 }, 400
 
-            req_data = request.get_json()
-            number_of_boxes = req_data.get('number_of_boxes', 1)
-
-            if not isinstance(number_of_boxes, int) or number_of_boxes < 1:
-                return {
-                    'success': False,
-                    'msg': 'number_of_boxes must be a positive integer'
-                }, 400
-
             current_time = datetime.utcnow()
 
             # STEP 1: CREATE FINAL ORDER RECORD
+            # box_count was stored on the PotentialOrder when the order was packed.
             final_order = Order(
                 potential_order_id=numeric_id,
                 order_number=f"ORD-{numeric_id}-{current_time.strftime('%Y%m%d%H%M')}",
                 status='Dispatch Ready',
+                box_count=potential_order.box_count,
                 created_at=current_time,
                 updated_at=current_time
             )
             final_order.save()
 
-            # STEP 2: CREATE N BOXES
-            for i in range(number_of_boxes):
-                order_box = OrderBox(
-                    order_id=final_order.order_id,
-                    name=f'Box-{i + 1}',
-                    created_at=current_time,
-                    updated_at=current_time
-                )
-                order_box.save()
-
-            # STEP 3: UPDATE POTENTIAL ORDER STATUS
-            potential_order.status = 'Invoiced'
+            # STEP 2: UPDATE POTENTIAL ORDER STATUS
+            # Bug 19 fix: set PotentialOrder to 'Dispatch Ready' to match the Order
+            # record so both records are always in sync. Bug 16 fix already handles
+            # the transition to Completed in CompleteDispatch.
+            potential_order.status = 'Dispatch Ready'
             potential_order.updated_at = current_time
             potential_order.save()
 
-            # STEP 4: CREATE STATE HISTORY
-            invoiced_state = OrderState.find_by_name('Invoiced')
-            if not invoiced_state:
-                invoiced_state = OrderState(
-                    state_name='Invoiced',
+            # STEP 3: CREATE STATE HISTORY
+            dispatch_ready_state = OrderState.find_by_name('Dispatch Ready')
+            if not dispatch_ready_state:
+                dispatch_ready_state = OrderState(
+                    state_name='Dispatch Ready',
                     description='Order invoiced and ready for dispatch'
                 )
-                invoiced_state.save()
+                dispatch_ready_state.save()
 
             invoiced_history = OrderStateHistory(
                 potential_order_id=numeric_id,
-                state_id=invoiced_state.state_id,
+                state_id=dispatch_ready_state.state_id,
                 changed_by=current_user.id,
                 changed_at=current_time
             )
@@ -1482,7 +1473,7 @@ class MoveToInvoiced(Resource):
                 'msg': 'Order moved to invoiced successfully',
                 'final_order_id': final_order.order_id,
                 'final_order_number': final_order.order_number,
-                'number_of_boxes': number_of_boxes,
+                'number_of_boxes': final_order.box_count,
                 'potential_order_status': potential_order.status,
                 'final_order_status': final_order.status
             }, 200
@@ -1555,17 +1546,18 @@ class CompleteDispatch(Resource):
                 )
                 completed_state.save()
 
-            # Add completion state history
+            # Add completion state history (Bug 14 fix: use current_user.id not hardcoded 1)
             completion_history = OrderStateHistory(
                 potential_order_id=numeric_id,
                 state_id=completed_state.state_id,
-                changed_by=1,
+                changed_by=current_user.id,
                 changed_at=current_time
             )
             completion_history.save()
 
-            # Update potential order if it's still in "Dispatch Ready"
-            if potential_order.status == 'Dispatch Ready':
+            # Bug 16 fix: PotentialOrder is set to 'Invoiced' by MoveToInvoiced, not
+            # 'Dispatch Ready', so check both states before transitioning to Completed.
+            if potential_order.status in ('Dispatch Ready', 'Invoiced'):
                 potential_order.status = 'Completed'
                 potential_order.updated_at = current_time
                 potential_order.save()
@@ -1636,7 +1628,9 @@ class InvoiceErrorDownload(Resource):
     Download error CSV from invoice upload
     """
 
-    def post(self):
+    @token_required
+    @active_required
+    def post(self, _current_user):
         try:
             from flask import request, make_response
 
@@ -1661,6 +1655,34 @@ class InvoiceErrorDownload(Resource):
                 'msg': f'Error creating error file: {str(e)}'
             }, 400
 
+@rest_api.route('/api/products/upload')
+class ProductUpload(Resource):
+    """Upload a product CSV/Excel file to attach product lines to existing orders."""
+
+    @rest_api.expect(product_upload_parser)
+    @rest_api.response(200, 'Success', product_upload_response)
+    @rest_api.response(400, 'Bad Request', product_upload_response)
+    @token_required
+    @active_required
+    @upload_permission_required('products')
+    def post(self, current_user):
+        try:
+            args = product_upload_parser.parse_args()
+            uploaded_file = args['file']
+            company_id = args['company_id']
+
+            company = Company.get_by_id(company_id)
+            if not company:
+                return {'success': False, 'msg': f'Company with ID {company_id} not found',
+                        'processed_count': 0, 'error_count': 0}, 400
+
+            return product_service.process_product_upload(uploaded_file, company_id, current_user.id)
+
+        except Exception as e:
+            return {'success': False, 'msg': f'Error processing upload: {str(e)}',
+                    'processed_count': 0, 'error_count': 0}, 400
+
+
 @rest_api.route('/api/invoices/statistics')
 class InvoiceStatistics(Resource):
     """
@@ -1669,7 +1691,9 @@ class InvoiceStatistics(Resource):
 
     @rest_api.response(200, 'Success', invoice_statistics_response)
     @rest_api.response(400, 'Error', error_response)
-    def get(self):
+    @token_required
+    @active_required
+    def get(self, _current_user):
         """Get invoice statistics"""
         try:
             warehouse_id = request.args.get('warehouse_id', type=int)
@@ -1701,7 +1725,9 @@ class InvoiceList(Resource):
 
     @rest_api.response(200, 'Success', invoice_list_response)
     @rest_api.response(400, 'Error', error_response)
-    def get(self):
+    @token_required
+    @active_required
+    def get(self, _current_user):
         """Get list of invoices"""
         try:
             warehouse_id = request.args.get('warehouse_id', type=int)

@@ -12,7 +12,6 @@ import {
     MenuItem,
     Select,
     Typography,
-    useMediaQuery,
 } from '@material-ui/core';
 import { makeStyles, useTheme } from '@material-ui/styles';
 import CloudUploadIcon from '@material-ui/icons/CloudUpload';
@@ -95,7 +94,6 @@ const useStyles = makeStyles((theme) => ({
 const InvoiceUpload = () => {
     const classes = useStyles();
     const theme = useTheme();
-    const matchDownSM = useMediaQuery(theme.breakpoints.down('sm'));
 
     // State variables
     const [file, setFile] = useState(null);

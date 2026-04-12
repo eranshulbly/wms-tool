@@ -41,7 +41,7 @@ def analyze_errors(errors):
         error_lower = error.lower()
         if 'no matching order found' in error_lower:
             error_types['missing_orders'] += 1
-        elif 'status' in error_lower and ('invoiced' in error_lower or 'dispatch ready' in error_lower):
+        elif 'already invoiced' in error_lower or 'dispatch ready' in error_lower or 'partially completed' in error_lower:
             error_types['wrong_status'] += 1
         elif 'missing' in error_lower:
             error_types['missing_data'] += 1
@@ -55,7 +55,7 @@ def analyze_errors(errors):
         summary_parts.append(f"{error_types['missing_orders']} invoices had no matching orders in the system")
 
     if error_types['wrong_status'] > 0:
-        summary_parts.append(f"{error_types['wrong_status']} orders were not in 'Invoiced' status")
+        summary_parts.append(f"{error_types['wrong_status']} orders were already invoiced or in a terminal state")
 
     if error_types['missing_data'] > 0:
         summary_parts.append(f"{error_types['missing_data']} rows had missing required data")

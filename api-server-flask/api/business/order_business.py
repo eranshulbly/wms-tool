@@ -5,7 +5,7 @@ One row = one order (no product rows).
 """
 
 from datetime import datetime
-from ..models import PotentialOrder, OrderState, OrderStateHistory, Order, OrderBox, Dealer
+from ..models import PotentialOrder, OrderState, OrderStateHistory, Order, Dealer
 from . import dealer_business
 
 
@@ -31,7 +31,6 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
 
     for index, row in df.iterrows():
         try:
-            print(f"Processing row {index}: {dict(row)}")
 
             # --- Required field ---
             sales_order_id = str(row.get('Sales Order #', '') or '').strip()
@@ -221,7 +220,7 @@ _FRONTEND_TO_DB_STATUS = {
 }
 
 
-def process_bulk_status_update(df, target_status, warehouse_id, company_id, user_id):
+def process_bulk_status_update(df, target_status, _warehouse_id, _company_id, user_id):
     """
     Bulk-transition orders from an uploaded Excel DataFrame.
 
@@ -329,6 +328,9 @@ def process_bulk_status_update(df, target_status, warehouse_id, company_id, user
         # Perform the transition
         try:
             current_time = datetime.utcnow()
+            # Bug 10 fix: effective_target tracks the final state for THIS row only.
+            # db_target must stay unchanged for all subsequent rows in the loop.
+            effective_target = db_target
 
             # Use pre-fetched OrderState objects (no extra DB query per row)
             potential_order.status = db_target
@@ -342,47 +344,36 @@ def process_bulk_status_update(df, target_status, warehouse_id, company_id, user
                 changed_at=current_time
             ).save()
 
-            # When moving to Packed: create the Order record + boxes
+            # When moving to Packed: save box_count on PotentialOrder only.
+            # The Order record is NOT created here — it is created at Invoice
+            # upload time, since an order is only "finalized" once invoiced.
             if db_target == 'Packed':
-                final_order = None
-                existing_order = Order.find_by_potential_order_id(
-                    potential_order.potential_order_id
-                )
-                if not existing_order:
+                potential_order.box_count = number_of_boxes
+                potential_order.updated_at = current_time
+                potential_order.save()
+
+                # Auto-transition: invoice was already submitted while order was
+                # in Open/Picking — Packed state history is already recorded above;
+                # now transition straight to Invoiced. Create Order here because
+                # the invoice already exists at this point.
+                if potential_order.invoice_submitted:
                     final_order = Order(
                         potential_order_id=potential_order.potential_order_id,
                         order_number=(
                             f"ORD-{potential_order.potential_order_id}"
                             f"-{current_time.strftime('%Y%m%d%H%M')}"
                         ),
-                        status='Packed',
+                        status='Invoiced',
+                        box_count=potential_order.box_count,
                         created_at=current_time,
                         updated_at=current_time
                     )
                     final_order.save()
-                    for i in range(number_of_boxes):
-                        OrderBox(
-                            order_id=final_order.order_id,
-                            name=f'Box-{i + 1}',
-                            created_at=current_time,
-                            updated_at=current_time
-                        ).save()
-                else:
-                    final_order = existing_order
 
-                # Auto-transition: invoice was already submitted while order was
-                # in Open/Picking — Packed state history is already recorded above;
-                # now transition straight to Invoiced.
-                if potential_order.invoice_submitted:
                     potential_order.status = 'Invoiced'
                     potential_order.invoice_submitted = False
                     potential_order.updated_at = current_time
                     potential_order.save()
-
-                    if final_order:
-                        final_order.status = 'Invoiced'
-                        final_order.updated_at = current_time
-                        final_order.save()
 
                     # Record the Invoiced state history entry (use pre-fetched state)
                     OrderStateHistory(
@@ -391,10 +382,10 @@ def process_bulk_status_update(df, target_status, warehouse_id, company_id, user
                         changed_by=user_id,
                         changed_at=current_time
                     ).save()
-                    db_target = 'Invoiced'
+                    effective_target = 'Invoiced'
 
             # When moving to Completed: update final Order record
-            if db_target == 'Completed':
+            if effective_target == 'Completed':
                 final_order = Order.find_by_potential_order_id(
                     potential_order.potential_order_id
                 )
@@ -405,7 +396,7 @@ def process_bulk_status_update(df, target_status, warehouse_id, company_id, user
                     final_order.save()
 
             orders_processed += 1
-            print(f"Bulk: moved order {original_order_id} → {db_target}")
+            print(f"Bulk: moved order {original_order_id} → {effective_target}")
 
         except Exception as e:
             # Best-effort rollback

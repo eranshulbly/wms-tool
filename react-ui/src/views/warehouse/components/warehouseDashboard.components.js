@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Grid,
   Card,
@@ -14,7 +14,9 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  TablePagination,
   CircularProgress,
+  Skeleton,
   Box,
   Chip,
   Dialog,
@@ -68,7 +70,7 @@ export const FilterControls = ({
                 label="Warehouse"
               >
                 {warehouses.map((wh) => (
-                  <MenuItem key={wh.id} value={wh.id}>
+                  <MenuItem key={wh.warehouse_id} value={wh.warehouse_id}>
                     {wh.name}
                   </MenuItem>
                 ))}
@@ -257,56 +259,82 @@ export const OrdersTable = ({
   statusFilter,
   onOrderClick,
   classes
-}) => (
-  <TableContainer className={classes.tableContainer}>
-    <Table stickyHeader aria-label="recent activity table">
-      <TableHead>
-        <TableRow>
-          {TABLE_COLUMNS.map((column) => (
-            <TableCell key={column.id}>{column.label}</TableCell>
-          ))}
-        </TableRow>
-      </TableHead>
-      <TableBody>
-        {loading ? (
-          <TableRow>
-            <TableCell colSpan={TABLE_COLUMNS.length}>
-              <Box className={classes.loadingContainer}>
-                <CircularProgress />
-              </Box>
-            </TableCell>
-          </TableRow>
-        ) : filteredOrders.length === 0 ? (
-          <TableRow>
-            <TableCell colSpan={TABLE_COLUMNS.length} align="center">
-              {statusFilter === 'all'
-                ? 'No recent orders found'
-                : `No orders found with status: ${statusFilter}`
-              }
-            </TableCell>
-          </TableRow>
-        ) : (
-          filteredOrders.map((order) => (
-            <TableRow
-              key={order.order_request_id}
-              hover
-              onClick={() => onOrderClick(order)}
-              className={classes.tableRow}
-            >
-              <TableCell>{order.dealer_name}</TableCell>
-              <TableCell>
-                <StatusChip status={order.status} classes={classes} />
-              </TableCell>
-              <TableCell>{formatDate(order.order_date)}</TableCell>
-              <TableCell>{getTimeInState(order.current_state_time)}</TableCell>
-              <TableCell>{order.assigned_to || 'Unassigned'}</TableCell>
+}) => {
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
+
+  const handlePageChange = (event, newPage) => setPage(newPage);
+  const handleRowsPerPageChange = (event) => {
+    setRowsPerPage(parseInt(event.target.value, 10));
+    setPage(0);
+  };
+
+  const pagedOrders = filteredOrders.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage);
+
+  return (
+    <>
+      <TableContainer className={classes.tableContainer}>
+        <Table stickyHeader aria-label="recent activity table">
+          <TableHead>
+            <TableRow>
+              {TABLE_COLUMNS.map((column) => (
+                <TableCell key={column.id}>{column.label}</TableCell>
+              ))}
             </TableRow>
-          ))
-        )}
-      </TableBody>
-    </Table>
-  </TableContainer>
-);
+          </TableHead>
+          <TableBody>
+            {loading ? (
+              Array.from({ length: rowsPerPage }).map((_, i) => (
+                <TableRow key={i}>
+                  {TABLE_COLUMNS.map((col) => (
+                    <TableCell key={col.id}>
+                      <Skeleton variant="text" animation="wave" />
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))
+            ) : filteredOrders.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={TABLE_COLUMNS.length} align="center">
+                  {statusFilter === 'all'
+                    ? 'No recent orders found'
+                    : `No orders found with status: ${statusFilter}`
+                  }
+                </TableCell>
+              </TableRow>
+            ) : (
+              pagedOrders.map((order) => (
+                <TableRow
+                  key={order.order_request_id}
+                  hover
+                  onClick={() => onOrderClick(order)}
+                  className={classes.tableRow}
+                >
+                  <TableCell>{order.dealer_name}</TableCell>
+                  <TableCell>
+                    <StatusChip status={order.status} classes={classes} />
+                  </TableCell>
+                  <TableCell>{formatDate(order.order_date)}</TableCell>
+                  <TableCell>{getTimeInState(order.current_state_time)}</TableCell>
+                  <TableCell>{order.assigned_to || 'Unassigned'}</TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </TableContainer>
+      <TablePagination
+        component="div"
+        count={filteredOrders.length}
+        page={page}
+        onPageChange={handlePageChange}
+        rowsPerPage={rowsPerPage}
+        onRowsPerPageChange={handleRowsPerPageChange}
+        rowsPerPageOptions={[10, 25, 50, 100]}
+      />
+    </>
+  );
+};
 
 /**
  * Order Details Dialog Component

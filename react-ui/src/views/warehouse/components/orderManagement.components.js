@@ -13,8 +13,10 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  TablePagination,
   Paper,
   CircularProgress,
+  Skeleton,
   Box,
   Button,
   Chip,
@@ -28,23 +30,18 @@ import {
   Step,
   StepLabel,
   Divider,
-  List,
-  ListItem,
-  ListItemText,
   Tooltip
 } from '@material-ui/core';
 import {
   IconArrowRight,
   IconPackage,
   IconCheck,
-  IconTruck,
-  IconDownload,
   IconUpload,
   IconFileInvoice
 } from '@tabler/icons';
 import { STATUS_FILTER_OPTIONS, STATUS_LABELS, TABLE_COLUMNS, BULK_TARGET_STATUSES } from '../constants/orderManagement.constants';
-import UploadResultCard, { downloadErrorExcel } from '../../../components/UploadResultCard';
-import { formatDate, getTimeInCurrentStatus, getNextStatus, getStatusChipClass } from '../utils/orderManagement.utils';
+import UploadResultCard from '../../../components/UploadResultCard';
+import { formatDate, getTimeInCurrentStatus, getStatusChipClass } from '../utils/orderManagement.utils';
 import orderManagementService from '../../../services/orderManagementService';
 
 /**
@@ -195,7 +192,11 @@ export const StatusActionButton = ({ order, onStatusUpdate, classes }) => {
   const handleBoxConfirm = (e) => {
     e.stopPropagation();
     const boxes = parseInt(boxCount, 10);
-    if (!boxes || boxes < 1) return;
+    // Bug 33 fix: show error instead of silently returning on invalid input
+    if (!boxes || boxes < 1) {
+      alert('Please enter a valid number of boxes (minimum 1).');
+      return;
+    }
     setBoxDialogOpen(false);
     onStatusUpdate(order, 'packed', { number_of_boxes: boxes });
   };
@@ -246,6 +247,11 @@ export const StatusActionButton = ({ order, onStatusUpdate, classes }) => {
  */
 export const OrdersTable = ({
   orders,
+  totalCount,
+  page,
+  rowsPerPage,
+  onPageChange,
+  onRowsPerPageChange,
   loading,
   statusFilter,
   onOrderClick,
@@ -264,33 +270,38 @@ export const OrdersTable = ({
               component="span"
               className={classes.filterTitle}
             >
-              - Showing {STATUS_FILTER_OPTIONS.find(opt => opt.value === statusFilter)?.label} ({orders.length} orders)
+              - Showing {STATUS_FILTER_OPTIONS.find(opt => opt.value === statusFilter)?.label} ({totalCount} orders)
             </Typography>
           )}
         </Typography>
 
-        {loading ? (
-          <Box className={classes.loadingContainer}>
-            <CircularProgress />
-          </Box>
-        ) : (
-          <TableContainer className={classes.tableContainer} component={Paper}>
-            <Table stickyHeader aria-label="orders table">
-              <TableHead>
-                <TableRow>
-                  {TABLE_COLUMNS.map((column) => (
-                    <TableCell key={column.id}>{column.label}</TableCell>
-                  ))}
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {orders.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={TABLE_COLUMNS.length} align="center">
-                      <Typography variant="subtitle1">No orders found</Typography>
-                    </TableCell>
+        <TableContainer className={classes.tableContainer} component={Paper}>
+          <Table stickyHeader aria-label="orders table">
+            <TableHead>
+              <TableRow>
+                {TABLE_COLUMNS.map((column) => (
+                  <TableCell key={column.id}>{column.label}</TableCell>
+                ))}
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {loading ? (
+                Array.from({ length: rowsPerPage || 10 }).map((_, i) => (
+                  <TableRow key={i}>
+                    {TABLE_COLUMNS.map((col) => (
+                      <TableCell key={col.id}>
+                        <Skeleton variant="text" animation="wave" />
+                      </TableCell>
+                    ))}
                   </TableRow>
-                ) : (
+                ))
+              ) : orders.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={TABLE_COLUMNS.length} align="center">
+                    <Typography variant="subtitle1">No orders found</Typography>
+                  </TableCell>
+                </TableRow>
+              ) : (
                   orders.map((order) => (
                     <TableRow
                       key={order.order_request_id}
@@ -338,7 +349,15 @@ export const OrdersTable = ({
               </TableBody>
             </Table>
           </TableContainer>
-        )}
+          <TablePagination
+            component="div"
+            count={totalCount || 0}
+            page={page}
+            onPageChange={onPageChange}
+            rowsPerPage={rowsPerPage}
+            onRowsPerPageChange={onRowsPerPageChange}
+            rowsPerPageOptions={[10, 25, 50, 100]}
+          />
       </CardContent>
     </Card>
   </Grid>
