@@ -38,8 +38,8 @@ import {
     IconInfoCircle,
 } from '@tabler/icons';
 
-import adminService   from '../../../services/adminService';
-import dashboardService from '../../../services/dashboardService';
+import adminService from '../../../services/adminService';
+import { getWarehouses, getCompanies } from '../../../services/warehouseService';
 
 // ---------------------------------------------------------------------------
 // Styles
@@ -310,8 +310,8 @@ const DeleteUploads = () => {
 
     // Load warehouses + companies once on mount
     useEffect(() => {
-        dashboardService.getWarehouses().then((d) => setWarehouses(d.warehouses || [])).catch(() => {});
-        dashboardService.getCompanies().then((d)  => setCompanies(d.companies || [])).catch(()  => {});
+        getWarehouses().then((d) => setWarehouses(d.warehouses || [])).catch(() => {});
+        getCompanies().then((d)  => setCompanies(d.companies || [])).catch(()  => {});
     }, []);
 
     // Search

@@ -1,6 +1,5 @@
 import React from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import configData from '../../../../config';
 
 // material-ui
 import { makeStyles, useTheme } from '@material-ui/styles';
@@ -26,12 +25,12 @@ import ListItemButton from '@material-ui/core/ListItemButton';
 
 // third-party
 import PerfectScrollbar from 'react-perfect-scrollbar';
-import axios from 'axios';
 
 // project imports
 import MainCard from '../../../../ui-component/cards/MainCard';
 import Transitions from '../../../../ui-component/extended/Transitions';
 import { LOGOUT } from './../../../../store/actions';
+import { logout } from '../../../../services/authService';
 
 // assets
 import { IconLogout, IconSearch, IconSettings } from '@tabler/icons';
@@ -131,8 +130,7 @@ const ProfileSection = () => {
     const [open, setOpen] = React.useState(false);
     const anchorRef = React.useRef(null);
     const handleLogout = () => {
-        axios
-            .post(configData.API_SERVER + 'users/logout', {}, { headers: { Authorization: `${account.token}` } })
+        logout()
             .catch(function (error) {
                 console.log('Logout API error - ', error);
             })

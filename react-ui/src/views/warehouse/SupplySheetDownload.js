@@ -24,7 +24,7 @@ import {
     IconFilter, IconTable
 } from '@tabler/icons';
 import { gridSpacing } from '../../store/constant';
-import dashboardService from '../../services/dashboardService';
+import { getWarehouses, getCompanies } from '../../services/warehouseService';
 import config from '../../config';
 
 const useStyles = makeStyles((theme) => ({
@@ -104,8 +104,8 @@ const SupplySheetDownload = () => {
     const fetchInitialData = async () => {
       try {
         const [warehouseResponse, companyResponse] = await Promise.all([
-          dashboardService.getWarehouses(),
-          dashboardService.getCompanies()
+          getWarehouses(),
+          getCompanies()
         ]);
 
         if (warehouseResponse.success) {

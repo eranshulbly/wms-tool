@@ -2,8 +2,6 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { useDispatch } from 'react-redux';
 
-import configData from '../../../../config';
-
 // material-ui
 import { makeStyles } from '@material-ui/styles';
 import {
@@ -24,12 +22,12 @@ import {
 // third party
 import * as Yup from 'yup';
 import { Formik } from 'formik';
-import axios from 'axios';
 
 // project imports
 import useScriptRef from '../../../../hooks/useScriptRef';
 import AnimateButton from '../../../../ui-component/extended/AnimateButton';
 import { ACCOUNT_INITIALIZE } from './../../../../store/actions';
+import { login } from '../../../../services/authService';
 
 // assets
 import Visibility from '@material-ui/icons/Visibility';
@@ -106,45 +104,32 @@ const RestLogin = (props) => {
                     password: Yup.string().max(255).required('Password is required')
                 })}
                 onSubmit={(values, { setErrors, setStatus, setSubmitting }) => {
-                    try {
-                        axios
-                            .post( configData.API_SERVER + 'users/login', {
-                                password: values.password,
-                                email: values.email
-                            })
-                            .then(function (response) {
-                                if (response.data.success) {
-                                    dispatcher({
-                                        type: ACCOUNT_INITIALIZE,
-                                        payload: {
-                                            isLoggedIn: true,
-                                            user: response.data.user,
-                                            token: response.data.token
-                                        }
-                                    });
-                                    if (scriptedRef.current) {
-                                        setStatus({ success: true });
-                                        setSubmitting(false);
+                    login(values.email, values.password)
+                        .then(function (response) {
+                            if (response.data.success) {
+                                dispatcher({
+                                    type: ACCOUNT_INITIALIZE,
+                                    payload: {
+                                        isLoggedIn: true,
+                                        user: response.data.user,
+                                        token: response.data.token
                                     }
-                                } else {
-                                    setStatus({ success: false });
-                                    setErrors({ submit: response.data.msg });
+                                });
+                                if (scriptedRef.current) {
+                                    setStatus({ success: true });
                                     setSubmitting(false);
                                 }
-                            })
-                            .catch(function (error) {
+                            } else {
                                 setStatus({ success: false });
-                                setErrors({ submit: error?.response?.data?.msg || 'Unable to connect to server. Please try again.' });
+                                setErrors({ submit: response.data.msg });
                                 setSubmitting(false);
-                            });
-                    } catch (err) {
-                        console.error(err);
-                        if (scriptedRef.current) {
+                            }
+                        })
+                        .catch(function (error) {
                             setStatus({ success: false });
-                            setErrors({ submit: err.message });
+                            setErrors({ submit: error?.response?.data?.msg || 'Unable to connect to server. Please try again.' });
                             setSubmitting(false);
-                        }
-                    }
+                        });
                 }}
             >
                 {({ errors, handleBlur, handleChange, handleSubmit, isSubmitting, touched, values }) => (

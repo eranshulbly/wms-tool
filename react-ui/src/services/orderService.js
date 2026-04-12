@@ -1,126 +1,67 @@
-import axios from 'axios';
-import config from '../config';
+import api from './api';
 
-// Base API URL
-const API_BASE_URL = 'http://localhost:5000';
+export const getOrders = (warehouseId, companyId, status = null) => {
+  const params = {};
+  if (warehouseId) params.warehouse_id = warehouseId;
+  if (companyId) params.company_id = companyId;
+  if (status && status !== 'all') params.status = status;
 
-// This service handles all API calls related to order management
-const orderService = {
-  /**
-   * Fetch status counts for orders dashboard
-   * @param {number} warehouseId - ID of the selected warehouse
-   * @param {number} companyId - ID of the selected company
-   * @returns {Promise} Promise object that resolves to status counts data
-   */
-  getStatusCounts: async (warehouseId, companyId) => {
-    try {
-      const params = {
-        warehouse_id: warehouseId,
-        company_id: companyId
-      };
-
-      const response = await axios.get(`${API_BASE_URL}/api/orders/status-counts`, { params });
-      return response.data;
-    } catch (error) {
-      console.error('Error fetching status counts:', error);
-      throw error;
+  return api.get('orders', { params }).then((res) => {
+    const data = res.data;
+    if (data.success && data.orders) {
+      data.orders = data.orders.map((order) => ({
+        ...order,
+        current_state_time: order.current_state_time || order.updated_at || new Date().toISOString()
+      }));
     }
-  },
-
-  /**
-   * Fetch orders with optional filters
-   * @param {number} warehouseId - ID of the selected warehouse
-   * @param {number} companyId - ID of the selected company
-   * @param {string} status - Optional status filter
-   * @returns {Promise} Promise object that resolves to orders data
-   */
-  getOrders: async (warehouseId, companyId, status = null) => {
-    try {
-      const params = {
-        warehouse_id: warehouseId,
-        company_id: companyId
-      };
-
-      if (status && status !== 'all') {
-        params.status = status;
-      }
-
-      const response = await axios.get(`${API_BASE_URL}/api/orders`, { params });
-      return response.data;
-    } catch (error) {
-      console.error('Error fetching orders:', error);
-      throw error;
-    }
-  },
-
-  /**
-   * Fetch warehouses
-   * @returns {Promise} Promise object that resolves to warehouses data
-   */
-  getWarehouses: async () => {
-    try {
-      const response = await axios.get(`${API_BASE_URL}/api/warehouses`);
-      return response.data;
-    } catch (error) {
-      console.error('Error fetching warehouses:', error);
-      throw error;
-    }
-  },
-
-  /**
-   * Fetch companies
-   * @returns {Promise} Promise object that resolves to companies data
-   */
-  getCompanies: async () => {
-    try {
-      const response = await axios.get(`${API_BASE_URL}/api/companies`);
-      return response.data;
-    } catch (error) {
-      console.error('Error fetching companies:', error);
-      throw error;
-    }
-  },
-
-  /**
-   * Fetch a single order by ID
-   * @param {string} orderId - ID of the order to fetch
-   * @returns {Promise} Promise object that resolves to order data
-   */
-  getOrderById: async (orderId) => {
-    try {
-      const response = await axios.get(`${API_BASE_URL}/api/orders/${orderId}`);
-      return response.data;
-    } catch (error) {
-      console.error('Error fetching order details:', error);
-      throw error;
-    }
-  },
-
-  /**
-   * Update order status
-   * @param {string} orderId - ID of the order to update
-   * @param {string} newStatus - New status to set
-   * @param {Array} boxes - Optional boxes data (required when moving to dispatch status)
-   * @returns {Promise} Promise object that resolves to updated order data
-   */
-  updateOrderStatus: async (orderId, newStatus, boxes = null) => {
-    try {
-      const requestData = {
-        new_status: newStatus
-      };
-
-      // Include boxes data if provided (for packed to dispatch transition)
-      if (boxes) {
-        requestData.boxes = boxes;
-      }
-
-      const response = await axios.post(`${API_BASE_URL}/api/orders/${orderId}`, requestData);
-      return response.data;
-    } catch (error) {
-      console.error('Error updating order status:', error);
-      throw error;
-    }
-  }
+    return data;
+  });
 };
 
-export default orderService;
+export const getOrderStatusCounts = (warehouseId, companyId) => {
+  const params = {};
+  if (warehouseId) params.warehouse_id = warehouseId;
+  if (companyId) params.company_id = companyId;
+  return api.get('orders/status', { params }).then((res) => res.data);
+};
+
+export const getOrderDetails = (orderId) =>
+  api.get(`orders/${orderId}/details`).then((res) => {
+    const data = res.data;
+    if (data.success && data.order) {
+      data.order = {
+        ...data.order,
+        current_state_time: data.order.current_state_time || data.order.updated_at || new Date().toISOString()
+      };
+    }
+    return data;
+  });
+
+export const updateOrderStatus = (orderId, newStatus, additionalData = null) => {
+  const body = { new_status: newStatus };
+  if (additionalData) Object.assign(body, additionalData);
+  return api.post(`orders/${orderId}/status`, body).then((res) => res.data);
+};
+
+export const completeDispatch = (orderId) =>
+  api.post(`orders/${orderId}/complete-dispatch`).then((res) => res.data);
+
+export const bulkStatusUpdate = (file, targetStatus, warehouseId, companyId) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('target_status', targetStatus);
+  formData.append('warehouse_id', warehouseId);
+  formData.append('company_id', companyId);
+  return api
+    .post('orders/bulk-status-update', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    .then((res) => res.data);
+};
+
+export const getRecentActivity = (warehouseId, companyId, limit = 100) =>
+  api
+    .get('orders/recent', {
+      params: { warehouse_id: warehouseId, company_id: companyId, limit }
+    })
+    .then((res) => res.data);

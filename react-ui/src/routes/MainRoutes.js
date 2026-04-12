@@ -55,8 +55,8 @@ const MainRoutes = () => {
                         {/* Warehouse Management Routes */}
                         <Route path="/warehouse/upload-orders" component={OrderUpload} />
                         <Route path="/warehouse/manage-orders" component={OrderManagement} />
-                        <Route path="/warehouse/upload-invoices" component={InvoiceUpload} />
                         <Route path="/warehouse/upload-products" component={ProductUpload} />
+                        <Route path="/warehouse/upload-invoices" component={InvoiceUpload} />
                         <Route path="/warehouse/supply-sheet" component={SupplySheetDownload} />
                         <EwayFillingGuard>
                             <Route path="/warehouse/eway-bill" component={EwayBillGenerator} />

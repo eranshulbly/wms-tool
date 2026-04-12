@@ -16,6 +16,7 @@ import Sidebar from './Sidebar';
 import navigation from './../../menu-items';
 import { drawerWidth } from '../../store/constant';
 import { SET_MENU } from './../../store/actions';
+import { WarehouseProvider } from '../../context/WarehouseContext';
 
 // assets
 import { IconChevronRight } from '@tabler/icons';
@@ -93,40 +94,40 @@ const MainLayout = ({ children }) => {
     }, [matchDownMd]);
 
     return (
-        <div className={classes.root}>
-            <CssBaseline />
-            {/* header */}
-            <AppBar
-                enableColorOnDark
-                position="fixed"
-                color="inherit"
-                elevation={0}
-                className={leftDrawerOpened ? classes.appBarWidth : classes.appBar}
-            >
-                <Toolbar>
-                    <Header handleLeftDrawerToggle={handleLeftDrawerToggle} />
-                </Toolbar>
-            </AppBar>
+        <WarehouseProvider>
+            <div className={classes.root}>
+                <CssBaseline />
+                {/* header */}
+                <AppBar
+                    enableColorOnDark
+                    position="fixed"
+                    color="inherit"
+                    elevation={0}
+                    className={leftDrawerOpened ? classes.appBarWidth : classes.appBar}
+                >
+                    <Toolbar>
+                        <Header handleLeftDrawerToggle={handleLeftDrawerToggle} />
+                    </Toolbar>
+                </AppBar>
 
-            {/* drawer */}
-            <Sidebar drawerOpen={leftDrawerOpened} drawerToggle={handleLeftDrawerToggle} />
+                {/* drawer */}
+                <Sidebar drawerOpen={leftDrawerOpened} drawerToggle={handleLeftDrawerToggle} />
 
-            {/* main content */}
-            <main
-                className={clsx([
-                    classes.content,
-                    {
-                        [classes.contentShift]: leftDrawerOpened
-                    }
-                ])}
-            >
-                {/* <Main open={leftDrawerOpened}> */}
-                {/* breadcrumb */}
-                <Breadcrumbs separator={IconChevronRight} navigation={navigation} icon title rightAlign />
-                <div>{children}</div>
-                {/* </Main> */}
-            </main>
-        </div>
+                {/* main content */}
+                <main
+                    className={clsx([
+                        classes.content,
+                        {
+                            [classes.contentShift]: leftDrawerOpened
+                        }
+                    ])}
+                >
+                    {/* breadcrumb */}
+                    <Breadcrumbs separator={IconChevronRight} navigation={navigation} icon title rightAlign />
+                    <div>{children}</div>
+                </main>
+            </div>
+        </WarehouseProvider>
     );
 };
 
