@@ -1,0 +1,98 @@
+version: '3.8'
+
+# =============================================================================
+# WMS Tool - Base Docker Compose Configuration
+# Use with environment overrides:
+#   Dev:  docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+#   Prod: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# =============================================================================
+
+services:
+  mysql_db:
+    image: mysql:8.0
+    container_name: wms_mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME:-warehouse_management}
+      MYSQL_USER: ${DB_USERNAME}
+      MYSQL_PASSWORD: ${DB_PASS}
+      MYSQL_ROOT_HOST: '%'
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./api-server-flask/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --innodb-buffer-pool-size=1G
+      --innodb-log-file-size=256M
+      --max-connections=50
+      --query-cache-type=0
+      --slow-query-log=1
+      --slow-query-log-file=/var/log/mysql/slow.log
+      --long-query-time=2
+    networks:
+      - db_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 20s
+      retries: 10
+
+  backend:
+    container_name: wms_backend
+    restart: always
+    depends_on:
+      mysql_db:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      APP_VERSION: ${APP_VERSION:-1.0.0}
+      DB_ENGINE: ${DB_ENGINE:-mysql+pymysql}
+      DB_HOST: mysql_db
+      DB_PORT: ${DB_PORT:-3306}
+      DB_NAME: ${DB_NAME:-warehouse_management}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASS: ${DB_PASS}
+      SECRET_KEY: ${SECRET_KEY}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
+    networks:
+      - db_network
+      - web_network
+
+  frontend:
+    container_name: wms_frontend
+    restart: always
+    environment:
+      REACT_APP_BACKEND_SERVER: ${REACT_APP_BACKEND_SERVER}
+      REACT_APP_VERSION: ${APP_VERSION:-1.0.0}
+      REACT_APP_ENV: ${APP_ENV:-production}
+    networks:
+      - web_network
+
+  nginx:
+    image: nginx:alpine
+    container_name: wms_nginx
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx:/etc/nginx/conf.d:ro
+    networks:
+      - web_network
+    depends_on:
+      - backend
+      - frontend
+
+networks:
+  db_network:
+    driver: bridge
+  web_network:
+    driver: bridge
+
+volumes:
+  mysql_data:
+    driver: local

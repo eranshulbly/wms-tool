@@ -11,6 +11,7 @@ import jwt
 import hashlib
 from .config import BaseConfig
 from .models import Users, JWTTokenBlocklist, mysql_manager
+from .db_manager import partition_filter
 
 # Create a separate auth API namespace
 auth_api = Api(version="1.0", title="Authentication API")
@@ -73,8 +74,10 @@ def token_required(f):
                 return {"success": False, "msg": "User not found"}, 401
 
             # Check if token is blocklisted
+            pf_sql, pf_params = partition_filter('jwt_token_blocklist')
             blocked_token = mysql_manager.execute_query(
-                "SELECT id FROM jwt_token_blocklist WHERE jwt_token = %s", (token,)
+                f"SELECT id FROM jwt_token_blocklist WHERE jwt_token = %s AND {pf_sql}",
+                (token, *pf_params)
             )
             if blocked_token:
                 return {"success": False, "msg": "Token has been revoked"}, 401

@@ -1,0 +1,42 @@
+version: '3.8'
+
+# =============================================================================
+# WMS Tool - Production Overrides
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Images are pulled from Docker registry (built by CI on git tag push)
+# =============================================================================
+
+services:
+  backend:
+    image: ${DOCKER_REGISTRY}/wms-backend:${APP_VERSION:-latest}
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  frontend:
+    image: ${DOCKER_REGISTRY}/wms-frontend:${APP_VERSION:-latest}
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+
+  mysql_db:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  nginx:
+    volumes:
+      - ./nginx/prod.conf:/etc/nginx/conf.d/default.conf:ro
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: 64M

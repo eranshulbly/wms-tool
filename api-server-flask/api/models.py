@@ -5,7 +5,7 @@ MySQL Models - Direct MySQL implementation replacing SQLAlchemy
 
 from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
-from .db_manager import mysql_manager, MySQLModel
+from .db_manager import mysql_manager, MySQLModel, partition_filter
 
 
 class Users(MySQLModel):
@@ -475,9 +475,10 @@ class PotentialOrder(MySQLModel):
     @classmethod
     def get_by_id(cls, potential_order_id):
         """Get potential order by ID"""
+        pf_sql, pf_params = partition_filter('potential_order')
         result = mysql_manager.execute_query(
-            "SELECT * FROM potential_order WHERE potential_order_id = %s",
-            (potential_order_id,)
+            f"SELECT * FROM potential_order WHERE {pf_sql} AND potential_order_id = %s",
+            pf_params + (potential_order_id,)
         )
         if result:
             return cls(**result[0])
@@ -486,8 +487,9 @@ class PotentialOrder(MySQLModel):
     @classmethod
     def count_by_status(cls, status, warehouse_id=None, company_id=None):
         """Count orders by status with optional filters"""
-        query = "SELECT COUNT(*) as count FROM potential_order WHERE status = %s"
-        params = [status]
+        pf_sql, pf_params = partition_filter('potential_order')
+        query = f"SELECT COUNT(*) as count FROM potential_order WHERE {pf_sql} AND status = %s"
+        params = list(pf_params) + [status]
 
         if warehouse_id:
             query += " AND warehouse_id = %s"
@@ -502,14 +504,15 @@ class PotentialOrder(MySQLModel):
 
     @classmethod
     def find_by_filters(cls, status=None, warehouse_id=None, company_id=None, limit=1000):
-        """Find orders by filters"""
-        query = """
-        SELECT po.*, d.name as dealer_name 
-        FROM potential_order po 
-        LEFT JOIN dealer d ON po.dealer_id = d.dealer_id 
-        WHERE 1=1
+        """Find orders by filters — scoped to the active 4-month partition window."""
+        pf_sql, pf_params = partition_filter('potential_order', alias='po')
+        query = f"""
+        SELECT po.*, d.name as dealer_name
+        FROM potential_order po
+        LEFT JOIN dealer d ON po.dealer_id = d.dealer_id
+        WHERE {pf_sql}
         """
-        params = []
+        params = list(pf_params)
 
         if status:
             query += " AND po.status = %s"
@@ -530,18 +533,18 @@ class PotentialOrder(MySQLModel):
         return results
 
     @classmethod
-    def find_by_original_order_id(cls, original_order_id, warehouse_id=None, company_id=None):
-        """Find potential order by original order ID.
+    def find_by_original_order_id(cls, original_order_id, warehouse_id=None, company_id=None):  # noqa: ARG003
+        """Find potential order by original order ID within the active window.
 
         Searches by original_order_id only — the ID already encodes the warehouse
         (e.g. '30305-02-PSAO-0426-200'), so strict warehouse/company FK filtering
-        caused legitimate orders to be missed when their upload recorded a different
-        warehouse_id or company_id. warehouse_id/company_id args are kept for
-        backwards-compatibility but are no longer used in the query.
+        caused legitimate orders to be missed. warehouse_id/company_id are kept
+        for backwards-compatibility but are intentionally unused.
         """
+        pf_sql, pf_params = partition_filter('potential_order')
         result = mysql_manager.execute_query(
-            "SELECT * FROM potential_order WHERE original_order_id = %s",
-            (original_order_id,)
+            f"SELECT * FROM potential_order WHERE {pf_sql} AND original_order_id = %s",
+            pf_params + (original_order_id,)
         )
         if result:
             return cls(**result[0])
@@ -549,7 +552,7 @@ class PotentialOrder(MySQLModel):
 
     @classmethod
     def find_bulk_by_original_order_ids(cls, order_ids):
-        """Fetch multiple PotentialOrders in a single IN query.
+        """Fetch multiple PotentialOrders in a single IN query (active window only).
 
         Args:
             order_ids: list of original_order_id strings
@@ -559,10 +562,11 @@ class PotentialOrder(MySQLModel):
         """
         if not order_ids:
             return {}
+        pf_sql, pf_params = partition_filter('potential_order')
         placeholders = ','.join(['%s'] * len(order_ids))
         results = mysql_manager.execute_query(
-            f"SELECT * FROM potential_order WHERE original_order_id IN ({placeholders})",
-            tuple(order_ids)
+            f"SELECT * FROM potential_order WHERE {pf_sql} AND original_order_id IN ({placeholders})",
+            pf_params + tuple(order_ids)
         )
         return {r['original_order_id']: cls(**r) for r in results} if results else {}
 
@@ -611,9 +615,10 @@ class PotentialOrderProduct(MySQLModel):
     @classmethod
     def get_by_id(cls, potential_order_product_id):
         """Get potential order product by ID"""
+        pf_sql, pf_params = partition_filter('potential_order_product')
         result = mysql_manager.execute_query(
-            "SELECT * FROM potential_order_product WHERE potential_order_product_id = %s",
-            (potential_order_product_id,)
+            f"SELECT * FROM potential_order_product WHERE {pf_sql} AND potential_order_product_id = %s",
+            pf_params + (potential_order_product_id,)
         )
         if result:
             return cls(**result[0])
@@ -622,10 +627,11 @@ class PotentialOrderProduct(MySQLModel):
     @classmethod
     def find_by_order_and_product(cls, potential_order_id, product_id):
         """Find by order and product"""
+        pf_sql, pf_params = partition_filter('potential_order_product')
         result = mysql_manager.execute_query(
-            """SELECT * FROM potential_order_product 
-               WHERE potential_order_id = %s AND product_id = %s""",
-            (potential_order_id, product_id)
+            f"""SELECT * FROM potential_order_product
+               WHERE {pf_sql} AND potential_order_id = %s AND product_id = %s""",
+            pf_params + (potential_order_id, product_id)
         )
         if result:
             return cls(**result[0])
@@ -634,32 +640,35 @@ class PotentialOrderProduct(MySQLModel):
     @classmethod
     def get_products_for_order(cls, potential_order_id):
         """Get all products for an order with product details"""
+        pf_sql, pf_params = partition_filter('potential_order_product', alias='pop')
         results = mysql_manager.execute_query(
-            """SELECT pop.*, p.product_string, p.name, p.description, p.price 
+            f"""SELECT pop.*, p.product_string, p.name, p.description, p.price
                FROM potential_order_product pop
                JOIN product p ON pop.product_id = p.product_id
-               WHERE pop.potential_order_id = %s""",
-            (potential_order_id,)
+               WHERE {pf_sql} AND pop.potential_order_id = %s""",
+            pf_params + (potential_order_id,)
         )
         return results
 
     @classmethod
     def count_by_order(cls, potential_order_id):
         """Count products in an order"""
+        pf_sql, pf_params = partition_filter('potential_order_product')
         result = mysql_manager.execute_query(
-            "SELECT COUNT(*) as count FROM potential_order_product WHERE potential_order_id = %s",
-            (potential_order_id,)
+            f"SELECT COUNT(*) as count FROM potential_order_product WHERE {pf_sql} AND potential_order_id = %s",
+            pf_params + (potential_order_id,)
         )
         return result[0]['count'] if result else 0
 
     @classmethod
     def update_packed_quantity(cls, potential_order_id, product_id, quantity_packed):
         """Update packed quantity for a specific product"""
+        pf_sql, pf_params = partition_filter('potential_order_product')
         mysql_manager.execute_query(
-            """UPDATE potential_order_product 
-               SET quantity_packed = %s, updated_at = %s 
-               WHERE potential_order_id = %s AND product_id = %s""",
-            (quantity_packed, datetime.utcnow(), potential_order_id, product_id),
+            f"""UPDATE potential_order_product
+               SET quantity_packed = %s, updated_at = %s
+               WHERE {pf_sql} AND potential_order_id = %s AND product_id = %s""",
+            (quantity_packed, datetime.utcnow()) + pf_params + (potential_order_id, product_id),
             fetch=False
         )
 
@@ -703,8 +712,10 @@ class Order(MySQLModel):
     @classmethod
     def get_by_id(cls, order_id):
         """Get order by ID"""
+        pf_sql, pf_params = partition_filter('order')
         result = mysql_manager.execute_query(
-            "SELECT * FROM `order` WHERE order_id = %s", (order_id,)
+            f"SELECT * FROM `order` WHERE {pf_sql} AND order_id = %s",
+            pf_params + (order_id,)
         )
         if result:
             return cls(**result[0])
@@ -713,8 +724,10 @@ class Order(MySQLModel):
     @classmethod
     def find_by_potential_order_id(cls, potential_order_id):
         """Find order by potential order ID"""
+        pf_sql, pf_params = partition_filter('order')
         result = mysql_manager.execute_query(
-            "SELECT * FROM `order` WHERE potential_order_id = %s", (potential_order_id,)
+            f"SELECT * FROM `order` WHERE {pf_sql} AND potential_order_id = %s",
+            pf_params + (potential_order_id,)
         )
         if result:
             return cls(**result[0])
@@ -745,14 +758,15 @@ class OrderStateHistory(MySQLModel):
 
     @classmethod
     def get_history_for_order(cls, potential_order_id):
-        """Get state history for an order"""
+        """Get state history for an order (active window only)"""
+        pf_sql, pf_params = partition_filter('order_state_history', alias='osh')
         results = mysql_manager.execute_query(
-            """SELECT osh.*, os.state_name 
+            f"""SELECT osh.*, os.state_name
                FROM order_state_history osh
                JOIN order_state os ON osh.state_id = os.state_id
-               WHERE osh.potential_order_id = %s
+               WHERE {pf_sql} AND osh.potential_order_id = %s
                ORDER BY osh.changed_at""",
-            (potential_order_id,)
+            pf_params + (potential_order_id,)
         )
         return results
 
@@ -833,21 +847,23 @@ class BoxProduct(MySQLModel):
     @classmethod
     def get_for_order(cls, potential_order_id):
         """Get box products for an order"""
+        pf_sql, pf_params = partition_filter('box_product', alias='bp')
         results = mysql_manager.execute_query(
-            """SELECT bp.*, b.name as box_name 
+            f"""SELECT bp.*, b.name as box_name
                FROM box_product bp
                JOIN box b ON bp.box_id = b.box_id
-               WHERE bp.potential_order_id = %s""",
-            (potential_order_id,)
+               WHERE {pf_sql} AND bp.potential_order_id = %s""",
+            pf_params + (potential_order_id,)
         )
         return results
 
     @classmethod
     def delete_for_order(cls, potential_order_id):
         """Delete box products for an order"""
+        pf_sql, pf_params = partition_filter('box_product')
         mysql_manager.execute_query(
-            "DELETE FROM box_product WHERE potential_order_id = %s",
-            (potential_order_id,),
+            f"DELETE FROM box_product WHERE {pf_sql} AND potential_order_id = %s",
+            pf_params + (potential_order_id,),
             fetch=False
         )
 
@@ -903,8 +919,10 @@ class Invoice(MySQLModel):
     @classmethod
     def get_by_id(cls, invoice_id):
         """Get invoice by ID"""
+        pf_sql, pf_params = partition_filter('invoice')
         result = mysql_manager.execute_query(
-            "SELECT * FROM invoice WHERE invoice_id = %s", (invoice_id,)
+            f"SELECT * FROM invoice WHERE {pf_sql} AND invoice_id = %s",
+            pf_params + (invoice_id,)
         )
         if result:
             return cls(**result[0])
@@ -912,9 +930,10 @@ class Invoice(MySQLModel):
 
     @classmethod
     def get_statistics(cls, warehouse_id=None, company_id=None, batch_id=None):
-        """Get invoice statistics"""
-        base_query = "SELECT COUNT(*) as total_invoices FROM invoice WHERE 1=1"
-        params = []
+        """Get invoice statistics (active window only)"""
+        pf_sql, pf_params = partition_filter('invoice')
+        base_query = f"SELECT COUNT(*) as total_invoices FROM invoice WHERE {pf_sql}"
+        params = list(pf_params)
 
         if warehouse_id:
             base_query += " AND warehouse_id = %s"

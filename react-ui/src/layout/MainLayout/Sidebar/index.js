@@ -13,6 +13,7 @@ import { BrowserView, MobileView } from 'react-device-detect';
 import MenuList from './MenuList';
 import LogoSection from '../LogoSection';
 import { drawerWidth } from './../../../store/constant';
+import config from '../../../config';
 
 // style constant
 const useStyles = makeStyles((theme) => ({
@@ -54,6 +55,9 @@ const Sidebar = ({ drawerOpen, drawerToggle, window }) => {
     const theme = useTheme();
     const matchUpMd = useMediaQuery(theme.breakpoints.up('md'));
 
+    const envColor = { production: '#4caf50', staging: '#ff9800', development: '#2196f3' };
+    const versionBadgeColor = envColor[config.APP_ENV] || '#9e9e9e';
+
     const drawer = (
         <React.Fragment>
             <Box sx={{ display: { xs: 'block', md: 'none' } }}>
@@ -71,6 +75,38 @@ const Sidebar = ({ drawerOpen, drawerToggle, window }) => {
                     <MenuList />
                 </Box>
             </MobileView>
+            {/* Version badge at bottom of sidebar */}
+            <Box
+                sx={{
+                    px: 2,
+                    py: 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    borderTop: '1px solid rgba(0,0,0,0.08)',
+                    mt: 'auto'
+                }}
+            >
+                <Box
+                    component="span"
+                    sx={{
+                        fontSize: '10px',
+                        fontWeight: 600,
+                        px: '6px',
+                        py: '2px',
+                        borderRadius: '4px',
+                        backgroundColor: versionBadgeColor,
+                        color: '#fff',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.5px'
+                    }}
+                >
+                    {config.APP_ENV}
+                </Box>
+                <Box component="span" sx={{ fontSize: '11px', color: 'text.secondary' }}>
+                    v{config.APP_VERSION}
+                </Box>
+            </Box>
         </React.Fragment>
     );
 

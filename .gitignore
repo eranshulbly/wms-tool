@@ -10,5 +10,11 @@ tmp/
 __pycache__/
 *.pyc
 .env
+.env.dev
+.env.staging
+.env.prod
+*.env.bak
+.deployment_history
 venv/
 yarn.lock
+node_modules/

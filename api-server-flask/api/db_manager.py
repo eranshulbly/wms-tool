@@ -1,14 +1,149 @@
 """
-MySQL Database Connection Manager
+MySQL Database Connection Manager — with partition-aware query support.
+
+Partitioning strategy
+─────────────────────
+Tables that grow with daily orders are partitioned by RANGE COLUMNS on their
+date column (usually `created_at`).  MySQL prunes partitions automatically
+when the query WHERE clause includes the partition column.
+
+The helper  `partition_filter(table, alias)` returns a `(sql_fragment, params)`
+tuple that callers inject into WHERE clauses to guarantee partition pruning for
+every query on a partitioned table.
+
+Tables partitioned      │ Partition column
+────────────────────────┼────────────────
+potential_order         │ created_at
+potential_order_product │ created_at
+invoice                 │ created_at
+order_state_history     │ changed_at
+order                   │ created_at
+order_product           │ created_at
+order_box               │ created_at
+box_product             │ created_at
+upload_batches          │ uploaded_at
+jwt_token_blocklist     │ created_at
+
+Tables NOT partitioned  (constants / slow-growing reference data)
+────────────────────────
+warehouse, company, dealer, product, box, users, roles, order_state,
+transport_routes, customer_route_mappings, daily_route_manifests,
+company_schema_mappings, invoice_processing_config, user_warehouse_company
 """
 
 import os
 import pymysql
 import threading
 from contextlib import contextmanager
+from datetime import datetime, date
 
 # Install PyMySQL as MySQLdb for compatibility
 pymysql.install_as_MySQLdb()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Partition metadata
+# ─────────────────────────────────────────────────────────────────────────────
+
+PARTITION_WINDOW_MONTHS = 4   # how many past months to keep in active partitions
+
+# Map each partitioned table to its partition column
+PARTITION_COLUMN: dict = {
+    'potential_order':         'created_at',
+    'potential_order_product': 'created_at',
+    'invoice':                 'created_at',
+    'order_state_history':     'changed_at',
+    'order':                   'created_at',
+    'order_product':           'created_at',
+    'order_box':               'created_at',
+    'box_product':             'created_at',
+    'upload_batches':          'uploaded_at',
+    'jwt_token_blocklist':     'created_at',
+}
+
+PARTITIONED_TABLES = frozenset(PARTITION_COLUMN.keys())
+
+
+def partition_window_start() -> datetime:
+    """
+    Returns the first moment of the calendar month that is
+    PARTITION_WINDOW_MONTHS ago.
+
+    Example (today = 2026-04-10):  returns datetime(2025, 12, 1, 0, 0, 0)
+    """
+    today = date.today()
+    month = today.month - PARTITION_WINDOW_MONTHS
+    year  = today.year
+    while month <= 0:
+        month += 12
+        year  -= 1
+    return datetime(year, month, 1, 0, 0, 0)
+
+
+def partition_filter(table: str, alias: str = None) -> tuple:
+    """
+    Returns (sql_fragment, params_tuple) for injecting a partition-pruning
+    WHERE condition into a query on a partitioned table.
+
+    Usage
+    ─────
+        pf_sql, pf_params = partition_filter('potential_order', alias='po')
+        query  = f"SELECT * FROM potential_order po WHERE {pf_sql} AND po.status = %s"
+        result = mysql_manager.execute_query(query, pf_params + (status,))
+
+    For non-partitioned tables the function returns ('1=1', ()) so callers can
+    use it unconditionally without breaking anything.
+    """
+    col = PARTITION_COLUMN.get(table)
+    if not col:
+        return '1=1', ()
+    qualified = f"{alias}.{col}" if alias else col
+    return f"{qualified} >= %s", (partition_window_start(),)
+
+
+def _generate_monthly_partitions(col: str, months_back: int = None) -> str:
+    """
+    Build the PARTITION BY RANGE COLUMNS clause for CREATE TABLE.
+
+    Generates:
+      - p_archive  : catches all data older than the window (safe bucket)
+      - p_YYYY_MM  : one per month in the window + 1 extra buffer month
+      - p_future   : MAXVALUE catch-all for future inserts
+    """
+    if months_back is None:
+        months_back = PARTITION_WINDOW_MONTHS + 1   # 1 extra buffer month
+
+    today = date.today().replace(day=1)
+
+    # Compute archive boundary = start of (months_back) ago
+    month = today.month - months_back
+    year  = today.year
+    while month <= 0:
+        month += 12
+        year  -= 1
+    archive_cutoff = date(year, month, 1)
+
+    parts = [f"  PARTITION p_archive VALUES LESS THAN ('{archive_cutoff.isoformat()}')"]
+
+    for offset in range(months_back - 1, -2, -1):   # months_back-1 down to -1
+        m = today.month - offset
+        y = today.year
+        while m <= 0:
+            m += 12
+            y -= 1
+        while m > 12:
+            m -= 12
+            y += 1
+        # upper bound = first day of NEXT month
+        nm = m + 1
+        ny = y
+        if nm > 12:
+            nm = 1
+            ny += 1
+        name = f"p_{y:04d}_{m:02d}"
+        parts.append(f"  PARTITION {name} VALUES LESS THAN ('{ny:04d}-{nm:02d}-01')")
+
+    parts.append("  PARTITION p_future VALUES LESS THAN (MAXVALUE)")
+    return f"PARTITION BY RANGE COLUMNS ({col}) (\n" + ",\n".join(parts) + "\n)"
 
 
 class MySQLManager:
@@ -151,7 +286,7 @@ def initialize_database():
             with mysql_manager.get_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute('SELECT 1 as test')
-                    result = cursor.fetchone()
+                    cursor.fetchone()
                 print("✅ MySQL database connection successful!")
         except Exception as conn_error:
             print(f"❌ MySQL connection failed: {str(conn_error)}")
@@ -185,14 +320,17 @@ def create_all_tables():
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
 
-    # JWT Token Blocklist table
-    jwt_blocklist_sql = """
+    # JWT Token Blocklist — partitioned by created_at (grows with logins)
+    _jwt_parts = _generate_monthly_partitions('created_at')
+    jwt_blocklist_sql = f"""
     CREATE TABLE IF NOT EXISTS jwt_token_blocklist (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        jwt_token TEXT NOT NULL,
+        id         INT      NOT NULL AUTO_INCREMENT,
+        jwt_token  TEXT     NOT NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id, created_at),
         INDEX idx_jwt_token_created (created_at)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    {_jwt_parts};
     """
 
     # Warehouse table
@@ -266,192 +404,211 @@ def create_all_tables():
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
 
-    # Potential Order table
-    potential_order_sql = """
+    # ── Partitioned tables ────────────────────────────────────────────────────
+    # NOTE: FKs are intentionally absent on partitioned tables.
+    # MySQL requires the partition key in every UNIQUE index (including PK),
+    # which makes cross-table FK references impractical.
+    # Referential integrity is enforced at the application layer instead.
+    # ─────────────────────────────────────────────────────────────────────────
+
+    _po_parts   = _generate_monthly_partitions('created_at')
+    _osh_parts  = _generate_monthly_partitions('changed_at')
+
+    # Potential Order — partitioned by created_at
+    potential_order_sql = f"""
     CREATE TABLE IF NOT EXISTS potential_order (
-        potential_order_id INT AUTO_INCREMENT PRIMARY KEY,
-        original_order_id VARCHAR(100) NOT NULL,
-        b2b_po_number VARCHAR(100) NULL,
-        order_type VARCHAR(20) NULL,
-        vin_number VARCHAR(100) NULL,
-        shipping_address TEXT NULL,
-        source_created_by VARCHAR(100) NULL,
-        purchaser_sap_code VARCHAR(50) NULL,
-        purchaser_name VARCHAR(255) NULL,
-        warehouse_id INT,
-        company_id INT,
-        dealer_id INT,
-        order_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        requested_by INT,
-        status VARCHAR(50) DEFAULT 'Open',
-        invoice_submitted TINYINT(1) NOT NULL DEFAULT 0,
-        upload_batch_id INT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX idx_potential_order_status (status),
-        INDEX idx_potential_order_date (order_date),
-        INDEX idx_potential_order_composite (warehouse_id, company_id, status),
+        potential_order_id INT      NOT NULL AUTO_INCREMENT,
+        original_order_id  VARCHAR(100) NOT NULL,
+        b2b_po_number      VARCHAR(100) NULL,
+        order_type         VARCHAR(20)  NULL,
+        vin_number         VARCHAR(100) NULL,
+        shipping_address   TEXT         NULL,
+        source_created_by  VARCHAR(100) NULL,
+        purchaser_sap_code VARCHAR(50)  NULL,
+        purchaser_name     VARCHAR(255) NULL,
+        warehouse_id       INT,
+        company_id         INT,
+        dealer_id          INT,
+        order_date         DATETIME DEFAULT CURRENT_TIMESTAMP,
+        requested_by       INT,
+        status             VARCHAR(50) DEFAULT 'Open',
+        invoice_submitted  TINYINT(1)  NOT NULL DEFAULT 0,
+        upload_batch_id    INT NULL,
+        created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (potential_order_id, created_at),
+        INDEX idx_po_original_order_id (original_order_id),
+        INDEX idx_po_status            (status),
+        INDEX idx_po_order_date        (order_date),
+        INDEX idx_po_warehouse_status  (warehouse_id, status),
+        INDEX idx_po_company_status    (company_id, status),
         INDEX idx_po_invoice_submitted (invoice_submitted),
-        FOREIGN KEY (warehouse_id) REFERENCES warehouse(warehouse_id),
-        FOREIGN KEY (company_id) REFERENCES company(company_id),
-        FOREIGN KEY (dealer_id) REFERENCES dealer(dealer_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        INDEX idx_po_created_at        (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    {_po_parts};
     """
 
-    # Potential Order Product table
-    potential_order_product_sql = """
+    # Potential Order Product — partitioned by created_at
+    potential_order_product_sql = f"""
     CREATE TABLE IF NOT EXISTS potential_order_product (
-        potential_order_product_id INT AUTO_INCREMENT PRIMARY KEY,
-        potential_order_id INT,
-        product_id INT,
-        quantity INT NOT NULL,
-        quantity_packed INT DEFAULT 0,
-        quantity_remaining INT,
-        mrp DECIMAL(10,2),
-        total_price DECIMAL(10,2),
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        potential_order_product_id INT NOT NULL AUTO_INCREMENT,
+        potential_order_id         INT,
+        product_id                 INT,
+        quantity                   INT NOT NULL,
+        quantity_packed            INT DEFAULT 0,
+        quantity_remaining         INT,
+        mrp                        DECIMAL(10,2),
+        total_price                DECIMAL(10,2),
+        created_at                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at                 DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (potential_order_product_id, created_at),
         INDEX idx_pop_order_product (potential_order_id, product_id),
-        FOREIGN KEY (potential_order_id) REFERENCES potential_order(potential_order_id),
-        FOREIGN KEY (product_id) REFERENCES product(product_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        INDEX idx_pop_created_at    (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    {_po_parts};
     """
 
-    # Order table
-    order_sql = """
+    # Order — partitioned by created_at
+    order_sql = f"""
     CREATE TABLE IF NOT EXISTS `order` (
-        order_id INT AUTO_INCREMENT PRIMARY KEY,
+        order_id           INT      NOT NULL AUTO_INCREMENT,
         potential_order_id INT,
-        order_number VARCHAR(255) NOT NULL,
-        dispatched_date DATETIME,
-        delivery_date DATETIME,
-        status VARCHAR(50) DEFAULT 'In Transit',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX idx_order_number (order_number),
-        INDEX idx_order_status (status),
-        FOREIGN KEY (potential_order_id) REFERENCES potential_order(potential_order_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        order_number       VARCHAR(255) NOT NULL,
+        dispatched_date    DATETIME,
+        delivery_date      DATETIME,
+        status             VARCHAR(50) DEFAULT 'In Transit',
+        created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (order_id, created_at),
+        INDEX idx_order_number     (order_number),
+        INDEX idx_order_status     (status),
+        INDEX idx_order_po_id      (potential_order_id),
+        INDEX idx_order_created_at (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    {_po_parts};
     """
 
-    # Order State History table
-    order_state_history_sql = """
+    # Order State History — partitioned by changed_at
+    order_state_history_sql = f"""
     CREATE TABLE IF NOT EXISTS order_state_history (
-        order_state_history_id INT AUTO_INCREMENT PRIMARY KEY,
-        potential_order_id INT,
-        state_id INT,
-        changed_by INT,
-        changed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        order_state_history_id INT      NOT NULL AUTO_INCREMENT,
+        potential_order_id     INT,
+        state_id               INT,
+        changed_by             INT,
+        changed_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (order_state_history_id, changed_at),
         INDEX idx_osh_order_state (potential_order_id, state_id),
-        INDEX idx_osh_changed_at (changed_at),
-        FOREIGN KEY (potential_order_id) REFERENCES potential_order(potential_order_id),
-        FOREIGN KEY (state_id) REFERENCES order_state(state_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        INDEX idx_osh_changed_at  (changed_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    {_osh_parts};
     """
 
-    # Order Box table
-    order_box_sql = """
+    # Order Box — partitioned by created_at
+    order_box_sql = f"""
     CREATE TABLE IF NOT EXISTS order_box (
-        box_id INT AUTO_INCREMENT PRIMARY KEY,
-        order_id INT,
-        name VARCHAR(255) NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        box_id     INT      NOT NULL AUTO_INCREMENT,
+        order_id   INT,
+        name       VARCHAR(255) NOT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX idx_order_box_order (order_id),
-        FOREIGN KEY (order_id) REFERENCES `order`(order_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        PRIMARY KEY (box_id, created_at),
+        INDEX idx_order_box_order      (order_id),
+        INDEX idx_order_box_created_at (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    {_po_parts};
     """
 
-    # Order Product table
-    order_product_sql = """
+    # Order Product — partitioned by created_at
+    order_product_sql = f"""
     CREATE TABLE IF NOT EXISTS order_product (
-        order_product_id INT AUTO_INCREMENT PRIMARY KEY,
-        order_id INT,
-        product_id INT,
-        quantity INT NOT NULL,
-        mrp DECIMAL(10,2),
-        total_price DECIMAL(10,2),
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        order_product_id INT      NOT NULL AUTO_INCREMENT,
+        order_id         INT,
+        product_id       INT,
+        quantity         INT NOT NULL,
+        mrp              DECIMAL(10,2),
+        total_price      DECIMAL(10,2),
+        created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (order_product_id, created_at),
         INDEX idx_order_product_composite (order_id, product_id),
-        FOREIGN KEY (order_id) REFERENCES `order`(order_id),
-        FOREIGN KEY (product_id) REFERENCES product(product_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        INDEX idx_order_product_created   (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    {_po_parts};
     """
 
-    # Box Product table
-    box_product_sql = """
+    # Box Product — partitioned by created_at
+    box_product_sql = f"""
     CREATE TABLE IF NOT EXISTS box_product (
-        box_product_id INT AUTO_INCREMENT PRIMARY KEY,
-        box_id INT,
-        product_id INT,
-        quantity INT NOT NULL,
+        box_product_id     INT      NOT NULL AUTO_INCREMENT,
+        box_id             INT,
+        product_id         INT,
+        quantity           INT NOT NULL,
         potential_order_id INT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (box_product_id, created_at),
         INDEX idx_box_product_composite (box_id, product_id),
-        INDEX idx_box_product_order (potential_order_id),
-        FOREIGN KEY (box_id) REFERENCES box(box_id),
-        FOREIGN KEY (product_id) REFERENCES product(product_id),
-        FOREIGN KEY (potential_order_id) REFERENCES potential_order(potential_order_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        INDEX idx_box_product_order     (potential_order_id),
+        INDEX idx_box_product_created   (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    {_po_parts};
     """
 
-    # Invoice table — new format (one record per invoice header, no line items)
-    invoice_sql = """
+    # Invoice — partitioned by created_at
+    _inv_parts = _generate_monthly_partitions('created_at')
+    invoice_sql = f"""
     CREATE TABLE IF NOT EXISTS invoice (
-        invoice_id INT AUTO_INCREMENT PRIMARY KEY,
-        potential_order_id INT,
-        warehouse_id INT,
-        company_id INT,
-        dealer_id INT NULL,
-        invoice_number VARCHAR(255) NOT NULL,
-        original_order_id VARCHAR(255) NOT NULL,
-        invoice_date DATETIME,
-        invoice_type VARCHAR(50),
-        cancellation_date DATETIME,
-        total_invoice_amount DECIMAL(12,2),
-        invoice_header_type VARCHAR(50),
-        order_date DATETIME NULL,
-        b2b_purchase_order_number VARCHAR(100),
-        b2b_order_type VARCHAR(50),
-        account_tin VARCHAR(50),
-        cash_customer_name VARCHAR(255),
-        contact_first_name VARCHAR(100),
-        contact_last_name VARCHAR(100),
-        customer_category VARCHAR(100),
-        round_off_amount DECIMAL(10,2),
-        invoice_round_off_amount DECIMAL(10,2),
-        short_amount DECIMAL(10,2),
-        realized_amount DECIMAL(10,2),
-        hmcgl_card_no VARCHAR(100),
-        campaign VARCHAR(100),
+        invoice_id                   INT          NOT NULL AUTO_INCREMENT,
+        potential_order_id           INT,
+        warehouse_id                 INT,
+        company_id                   INT,
+        dealer_id                    INT NULL,
+        invoice_number               VARCHAR(255) NOT NULL,
+        original_order_id            VARCHAR(255) NOT NULL,
+        invoice_date                 DATETIME,
+        invoice_type                 VARCHAR(50),
+        cancellation_date            DATETIME,
+        total_invoice_amount         DECIMAL(12,2),
+        invoice_header_type          VARCHAR(50),
+        order_date                   DATETIME NULL,
+        b2b_purchase_order_number    VARCHAR(100),
+        b2b_order_type               VARCHAR(50),
+        account_tin                  VARCHAR(50),
+        cash_customer_name           VARCHAR(255),
+        contact_first_name           VARCHAR(100),
+        contact_last_name            VARCHAR(100),
+        customer_category            VARCHAR(100),
+        round_off_amount             DECIMAL(10,2),
+        invoice_round_off_amount     DECIMAL(10,2),
+        short_amount                 DECIMAL(10,2),
+        realized_amount              DECIMAL(10,2),
+        hmcgl_card_no                VARCHAR(100),
+        campaign                     VARCHAR(100),
         packaging_forwarding_charges DECIMAL(10,2),
-        tax_on_pf DECIMAL(10,2),
-        type_of_tax_pf VARCHAR(50),
-        irn_number VARCHAR(100),
-        irn_status VARCHAR(50),
-        ack_number VARCHAR(100),
-        ack_date DATETIME,
-        credit_note_number VARCHAR(100),
-        irn_cancel VARCHAR(100),
-        irn_status_cancel VARCHAR(50),
-        ack_number_cancel VARCHAR(100),
-        ack_date_cancel DATETIME,
-        uploaded_by INT,
-        upload_batch_id VARCHAR(100),
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX idx_invoice_number (invoice_number),
+        tax_on_pf                    DECIMAL(10,2),
+        type_of_tax_pf               VARCHAR(50),
+        irn_number                   VARCHAR(100),
+        irn_status                   VARCHAR(50),
+        ack_number                   VARCHAR(100),
+        ack_date                     DATETIME,
+        credit_note_number           VARCHAR(100),
+        irn_cancel                   VARCHAR(100),
+        irn_status_cancel            VARCHAR(50),
+        ack_number_cancel            VARCHAR(100),
+        ack_date_cancel              DATETIME,
+        uploaded_by                  INT,
+        upload_batch_id              VARCHAR(100),
+        created_at                   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at                   DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (invoice_id, created_at),
+        INDEX idx_invoice_number         (invoice_number),
         INDEX idx_invoice_original_order (original_order_id),
-        INDEX idx_invoice_batch (upload_batch_id),
-        INDEX idx_invoice_date (invoice_date),
-        INDEX idx_invoice_composite (warehouse_id, company_id, invoice_date),
-        FOREIGN KEY (potential_order_id) REFERENCES potential_order(potential_order_id),
-        FOREIGN KEY (warehouse_id) REFERENCES warehouse(warehouse_id),
-        FOREIGN KEY (company_id) REFERENCES company(company_id),
-        FOREIGN KEY (dealer_id) REFERENCES dealer(dealer_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        INDEX idx_invoice_batch          (upload_batch_id),
+        INDEX idx_invoice_date           (invoice_date),
+        INDEX idx_invoice_composite      (warehouse_id, company_id, invoice_date),
+        INDEX idx_invoice_created_at     (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    {_inv_parts};
     """
 
     # User-Warehouse-Company access table (paired access)
@@ -504,25 +661,27 @@ def create_all_tables():
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
 
-    upload_batches_sql = """
+    # Upload Batches — partitioned by uploaded_at
+    _ub_parts = _generate_monthly_partitions('uploaded_at')
+    upload_batches_sql = f"""
     CREATE TABLE IF NOT EXISTS upload_batches (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        upload_type VARCHAR(20) NOT NULL,
-        filename VARCHAR(255),
+        id           INT          NOT NULL AUTO_INCREMENT,
+        upload_type  VARCHAR(20)  NOT NULL,
+        filename     VARCHAR(255),
         warehouse_id INT,
-        company_id INT,
-        uploaded_by INT,
-        uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        company_id   INT,
+        uploaded_by  INT,
+        uploaded_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         record_count INT DEFAULT 0,
-        status VARCHAR(20) DEFAULT 'active',
-        reverted_by INT NULL,
-        reverted_at DATETIME NULL,
-        FOREIGN KEY (warehouse_id) REFERENCES warehouse(warehouse_id),
-        FOREIGN KEY (company_id) REFERENCES company(company_id),
-        FOREIGN KEY (uploaded_by) REFERENCES users(id),
-        INDEX idx_upload_batches_type (upload_type),
-        INDEX idx_upload_batches_status (status)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        status       VARCHAR(20) DEFAULT 'active',
+        reverted_by  INT NULL,
+        reverted_at  DATETIME NULL,
+        PRIMARY KEY (id, uploaded_at),
+        INDEX idx_upload_batches_type    (upload_type),
+        INDEX idx_upload_batches_status  (status),
+        INDEX idx_upload_batches_date    (uploaded_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    {_ub_parts};
     """
 
     # E-way bill automation tables

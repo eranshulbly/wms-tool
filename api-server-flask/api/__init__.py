@@ -17,8 +17,9 @@ from . import eway_bill_routes
 
 app = Flask(__name__, template_folder='templates')
 
-# Load configuration
-app.config.from_object('api.config.BaseConfig')
+# Load environment-specific configuration
+from .config import get_config
+app.config.from_object(get_config())
 
 # Flask sessions need a fixed secret key (used by Flask-Admin login)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'AnshulWMSSecretKey2024')
@@ -125,3 +126,12 @@ def api_status():
             "connection": "failed",
             "error": str(e)
         }, 500
+
+
+@app.route('/api/version')
+def api_version():
+    """Returns current deployed version and environment — used by frontend version badge"""
+    return {
+        "version": os.getenv('APP_VERSION', '1.0.0'),
+        "env":     os.getenv('APP_ENV', 'production'),
+    }, 200

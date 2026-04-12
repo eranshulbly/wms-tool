@@ -28,7 +28,7 @@ from flask import request
 from flask_restx import Resource
 
 from .routes import rest_api, token_required, active_required
-from .db_manager import mysql_manager
+from .db_manager import mysql_manager, partition_filter
 
 # States that permanently block reverting an order upload.
 BLOCKING_STATES = ('Invoiced', 'Dispatch Ready', 'Completed', 'Partially Completed')
@@ -88,7 +88,8 @@ class UploadBatchList(Resource):
             date_from    = request.args.get('date_from')
             date_to      = request.args.get('date_to')
 
-            query = """
+            pf_ub_sql, pf_ub_params = partition_filter('upload_batches', alias='ub')
+            query = f"""
                 SELECT
                     ub.id,
                     ub.upload_type,
@@ -106,9 +107,9 @@ class UploadBatchList(Resource):
                 LEFT JOIN company   c  ON ub.company_id   = c.company_id
                 LEFT JOIN users     u  ON ub.uploaded_by  = u.id
                 LEFT JOIN users     rv ON ub.reverted_by  = rv.id
-                WHERE 1=1
+                WHERE {pf_ub_sql}
             """
-            params = []
+            params = list(pf_ub_params)
 
             if upload_type:
                 query += " AND ub.upload_type = %s"
@@ -162,8 +163,10 @@ class UploadBatchDetails(Resource):
     def get(self, current_user, batch_id):
         """Return the full record details for a single upload batch."""
         try:
+            pf_sql, pf_params = partition_filter('upload_batches')
             batch_rows = mysql_manager.execute_query(
-                "SELECT * FROM upload_batches WHERE id = %s", (batch_id,)
+                f"SELECT * FROM upload_batches WHERE id = %s AND {pf_sql}",
+                (batch_id, *pf_params)
             )
             if not batch_rows:
                 return {'success': False, 'msg': 'Batch not found.'}, 404
@@ -202,8 +205,10 @@ class UploadBatchDelete(Resource):
         because orders have already progressed past the Invoiced state.
         """
         try:
+            pf_sql, pf_params = partition_filter('upload_batches')
             batch_rows = mysql_manager.execute_query(
-                "SELECT * FROM upload_batches WHERE id = %s", (batch_id,)
+                f"SELECT * FROM upload_batches WHERE id = %s AND {pf_sql}",
+                (batch_id, *pf_params)
             )
             if not batch_rows:
                 return {'success': False, 'msg': 'Batch not found.'}, 404
@@ -250,8 +255,10 @@ def _fetch_batch_records(batch_id: int, upload_type: str) -> list:
     """Return the detailed rows for a batch depending on its upload type."""
 
     if upload_type == 'orders':
+        pf_po_sql, pf_po_params = partition_filter('potential_order', alias='po')
+        pf_pop_sql, pf_pop_params = partition_filter('potential_order_product', alias='pop')
         rows = mysql_manager.execute_query(
-            """
+            f"""
             SELECT
                 po.potential_order_id,
                 po.original_order_id,
@@ -272,20 +279,23 @@ def _fetch_batch_records(batch_id: int, upload_type: str) -> list:
                     SELECT COUNT(*)
                     FROM potential_order_product pop
                     WHERE pop.potential_order_id = po.potential_order_id
+                      AND {pf_pop_sql}
                 ) AS product_count,
                 (
                     SELECT COALESCE(SUM(pop.quantity), 0)
                     FROM potential_order_product pop
                     WHERE pop.potential_order_id = po.potential_order_id
+                      AND {pf_pop_sql}
                 ) AS total_quantity
             FROM potential_order po
             LEFT JOIN dealer    d ON po.dealer_id    = d.dealer_id
             LEFT JOIN warehouse w ON po.warehouse_id = w.warehouse_id
             LEFT JOIN company   c ON po.company_id   = c.company_id
             WHERE po.upload_batch_id = %s
+              AND {pf_po_sql}
             ORDER BY po.potential_order_id
             """,
-            (batch_id,),
+            (batch_id, *pf_po_params, *pf_pop_params, *pf_pop_params),
         )
         return [
             {
@@ -311,8 +321,10 @@ def _fetch_batch_records(batch_id: int, upload_type: str) -> list:
         ]
 
     elif upload_type == 'invoices':
+        pf_inv_sql, pf_inv_params = partition_filter('invoice', alias='inv')
+        pf_po_sql, pf_po_params = partition_filter('potential_order', alias='po')
         rows = mysql_manager.execute_query(
-            """
+            f"""
             SELECT
                 inv.invoice_id,
                 inv.invoice_number,
@@ -340,13 +352,15 @@ def _fetch_batch_records(batch_id: int, upload_type: str) -> list:
                 c.name         AS company_name
             FROM invoice inv
             LEFT JOIN potential_order po ON inv.potential_order_id = po.potential_order_id
+                AND {pf_po_sql}
             LEFT JOIN dealer    d ON po.dealer_id     = d.dealer_id
             LEFT JOIN warehouse w ON inv.warehouse_id = w.warehouse_id
             LEFT JOIN company   c ON inv.company_id   = c.company_id
             WHERE inv.upload_batch_id = %s
+              AND {pf_inv_sql}
             ORDER BY inv.invoice_id
             """,
-            (batch_id,),
+            (batch_id, *pf_po_params, *pf_inv_params),
         )
         return [
             {
@@ -392,14 +406,19 @@ def _delete_order_batch(batch_id: int) -> None:
     Raises DeleteBlockedError if any order has progressed to
     'Invoiced' or any state beyond it.
     """
+    pf_po_sql, pf_po_params = partition_filter('potential_order', alias='po')
+    pf_osh_sql, pf_osh_params = partition_filter('order_state_history', alias='osh')
+    pf_pop_sql, pf_pop_params = partition_filter('potential_order_product', alias='pop')
+
     blocking = mysql_manager.execute_query(
         f"""
-        SELECT potential_order_id, original_order_id, status
-        FROM potential_order
-        WHERE upload_batch_id = %s
-          AND status IN ({', '.join(['%s'] * len(BLOCKING_STATES))})
+        SELECT po.potential_order_id, po.original_order_id, po.status
+        FROM potential_order po
+        WHERE po.upload_batch_id = %s
+          AND po.status IN ({', '.join(['%s'] * len(BLOCKING_STATES))})
+          AND {pf_po_sql}
         """,
-        (batch_id, *BLOCKING_STATES),
+        (batch_id, *BLOCKING_STATES, *pf_po_params),
     )
 
     if blocking:
@@ -415,22 +434,26 @@ def _delete_order_batch(batch_id: int) -> None:
     # order_state_history is deleted here because the FK prevents deleting the
     # parent potential_order row while history rows still reference it.
     mysql_manager.execute_query(
-        """DELETE osh FROM order_state_history osh
+        f"""DELETE osh FROM order_state_history osh
            INNER JOIN potential_order po ON osh.potential_order_id = po.potential_order_id
-           WHERE po.upload_batch_id = %s""",
-        (batch_id,),
+           WHERE po.upload_batch_id = %s
+             AND {pf_osh_sql}
+             AND {pf_po_sql}""",
+        (batch_id, *pf_osh_params, *pf_po_params),
         fetch=False,
     )
     mysql_manager.execute_query(
-        """DELETE pop FROM potential_order_product pop
+        f"""DELETE pop FROM potential_order_product pop
            INNER JOIN potential_order po ON pop.potential_order_id = po.potential_order_id
-           WHERE po.upload_batch_id = %s""",
-        (batch_id,),
+           WHERE po.upload_batch_id = %s
+             AND {pf_pop_sql}
+             AND {pf_po_sql}""",
+        (batch_id, *pf_pop_params, *pf_po_params),
         fetch=False,
     )
     mysql_manager.execute_query(
-        "DELETE FROM potential_order WHERE upload_batch_id = %s",
-        (batch_id,),
+        f"DELETE FROM potential_order WHERE upload_batch_id = %s AND {pf_po_sql}",
+        (batch_id, *pf_po_params),
         fetch=False,
     )
 
@@ -447,9 +470,10 @@ def _delete_invoice_batch(batch_id: int) -> None:
 
     order_state_history rows are intentionally left intact for audit.
     """
+    pf_inv_sql, pf_inv_params = partition_filter('invoice')
     invoices = mysql_manager.execute_query(
-        "SELECT invoice_id, potential_order_id FROM invoice WHERE upload_batch_id = %s",
-        (batch_id,),
+        f"SELECT invoice_id, potential_order_id FROM invoice WHERE upload_batch_id = %s AND {pf_inv_sql}",
+        (batch_id, *pf_inv_params),
     )
     if not invoices:
         return
@@ -469,8 +493,8 @@ def _delete_invoice_batch(batch_id: int) -> None:
         )
 
     mysql_manager.execute_query(
-        "DELETE FROM invoice WHERE upload_batch_id = %s",
-        (batch_id,),
+        f"DELETE FROM invoice WHERE upload_batch_id = %s AND {pf_inv_sql}",
+        (batch_id, *pf_inv_params),
         fetch=False,
     )
 
@@ -482,16 +506,18 @@ def _state_before_invoiced(potential_order_id: int) -> str:
 
     Returns 'Packed' as a safe default if no earlier state is found.
     """
+    pf_osh_sql, pf_osh_params = partition_filter('order_state_history', alias='osh')
     rows = mysql_manager.execute_query(
-        """
+        f"""
         SELECT os.state_name
         FROM order_state_history osh
         JOIN order_state os ON osh.state_id = os.state_id
         WHERE osh.potential_order_id = %s
           AND os.state_name != 'Invoiced'
+          AND {pf_osh_sql}
         ORDER BY osh.changed_at DESC
         LIMIT 1
         """,
-        (potential_order_id,),
+        (potential_order_id, *pf_osh_params),
     )
     return rows[0]['state_name'] if rows else 'Packed'

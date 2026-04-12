@@ -22,6 +22,7 @@ from .models import (
     Dealer, Box, Order, OrderProduct, OrderBox, BoxProduct, Invoice,
     mysql_manager
 )
+from .db_manager import partition_filter
 
 rest_api = Api(version="1.0", title="MySQL Warehouse Management API")
 
@@ -239,8 +240,10 @@ def token_required(f):
             if not current_user:
                 return {"success": False, "msg": "User does not exist."}, 401
 
+            pf_sql, pf_params = partition_filter('jwt_token_blocklist')
             blocked_token = mysql_manager.execute_query(
-                "SELECT id FROM jwt_token_blocklist WHERE jwt_token = %s", (token,)
+                f"SELECT id FROM jwt_token_blocklist WHERE jwt_token = %s AND {pf_sql}",
+                (token, *pf_params)
             )
             if blocked_token:
                 return {"success": False, "msg": "Token revoked."}, 401
@@ -580,12 +583,13 @@ class OrderDetailWithProducts(Resource):
             numeric_id = int(order_id.replace('PO', '')) if order_id.startswith('PO') else int(order_id)
 
             # Get potential order with dealer info using MySQL
+            pf_sql, pf_params = partition_filter('potential_order', alias='po')
             order_query = mysql_manager.execute_query(
-                """SELECT po.*, d.name as dealer_name 
-                   FROM potential_order po 
-                   LEFT JOIN dealer d ON po.dealer_id = d.dealer_id 
-                   WHERE po.potential_order_id = %s""",
-                (numeric_id,)
+                f"""SELECT po.*, d.name as dealer_name
+                   FROM potential_order po
+                   LEFT JOIN dealer d ON po.dealer_id = d.dealer_id
+                   WHERE po.potential_order_id = %s AND {pf_sql}""",
+                (numeric_id, *pf_params)
             )
 
             if not order_query:
@@ -1309,9 +1313,10 @@ class OrderDispatchFinal(Resource):
                         remaining_quantity = potential_product.quantity - quantity_packed
                         if remaining_quantity <= 0:
                             # Remove the potential order product if fully packed
+                            pf_sql, pf_params = partition_filter('potential_order_product')
                             mysql_manager.execute_query(
-                                "DELETE FROM potential_order_product WHERE potential_order_product_id = %s",
-                                (potential_product.potential_order_product_id,),
+                                f"DELETE FROM potential_order_product WHERE potential_order_product_id = %s AND {pf_sql}",
+                                (potential_product.potential_order_product_id, *pf_params),
                                 fetch=False
                             )
                         else:
@@ -1709,9 +1714,10 @@ class InvoiceList(Resource):
             per_page = min(per_page, 100)
 
             # Build query using MySQL
-            base_query = "SELECT * FROM invoice WHERE 1=1"
-            count_query = "SELECT COUNT(*) as count FROM invoice WHERE 1=1"
-            params = []
+            pf_sql, pf_params = partition_filter('invoice')
+            base_query = f"SELECT * FROM invoice WHERE {pf_sql}"
+            count_query = f"SELECT COUNT(*) as count FROM invoice WHERE {pf_sql}"
+            params = list(pf_params)
 
             if warehouse_id:
                 base_query += " AND warehouse_id = %s"
@@ -1863,8 +1869,9 @@ class SupplySheetDownload(Resource):
             batch_id = request.args.get('batch_id')
 
             # Get invoice data
-            query = """
-                SELECT 
+            pf_sql, pf_params = partition_filter('invoice')
+            query = f"""
+                SELECT
                     invoice_number,
                     original_order_id,
                     customer_name,
@@ -1873,10 +1880,10 @@ class SupplySheetDownload(Resource):
                     invoice_date,
                     part_no,
                     part_name
-                FROM invoice 
-                WHERE 1=1
+                FROM invoice
+                WHERE {pf_sql}
             """
-            params = []
+            params = list(pf_params)
 
             if warehouse_id:
                 query += " AND warehouse_id = %s"
