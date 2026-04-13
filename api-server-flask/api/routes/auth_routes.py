@@ -118,6 +118,7 @@ class Login(Resource):
                         "all_warehouses":           perms['all_warehouses'],
                         "eway_bill_admin":          perms.get('eway_bill_admin',   False),
                         "eway_bill_filling":        perms.get('eway_bill_filling', False),
+                        "supply_sheet":             perms.get('supply_sheet',      False),
                         "warehouse_company_access": wh_access,
                     }
                 }}, 200

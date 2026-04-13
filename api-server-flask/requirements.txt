@@ -15,6 +15,7 @@ PyJWT==2.10.1
 # MySQL Database Dependencies
 PyMySQL==1.0.2
 mysqlclient==2.1.1
+cryptography>=41.0.0
 
 # Excel and CSV Processing Dependencies - REQUIRED for file uploads
 openpyxl>=3.1.5
@@ -45,6 +46,7 @@ setuptools==75.6.0
 pandas>=2.0.0
 
 Pillow>=10.0.0  # For PNG image generation
+reportlab>=4.0.0  # For PDF supply sheet generation
 # Note: Removed all SQLAlchemy dependencies
 # Removed: Flask-SQLAlchemy, SQLAlchemy, greenlet
 # This application now uses direct MySQL connectivity via PyMySQL

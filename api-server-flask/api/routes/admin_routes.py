@@ -31,6 +31,9 @@ from flask_restx import Resource
 from ..extensions import rest_api
 from ..core.auth import token_required, active_required
 from ..db_manager import mysql_manager, partition_filter
+from ..core.logging import get_logger
+
+logger = get_logger(__name__)
 
 # States that permanently block reverting an order upload.
 BLOCKING_STATES = ('Invoiced', 'Dispatch Ready', 'Completed', 'Partially Completed')
@@ -539,3 +542,395 @@ def _state_before_invoiced(potential_order_id: int) -> str:
         (potential_order_id, *pf_osh_params),
     )
     return rows[0]['state_name'] if rows else 'Packed'
+
+
+# ---------------------------------------------------------------------------
+# Dealer Town Upload — admin only
+# ---------------------------------------------------------------------------
+
+@rest_api.route('/api/admin/dealer-town')
+class DealerTownUpload(Resource):
+    """
+    POST /api/admin/dealer-town
+    Upload an Excel/CSV file that maps dealer codes to towns.
+
+    Expected columns:
+      - 'Dealer Code'  (matched against dealer.dealer_code)
+      - 'Town'
+
+    Rows whose dealer_code does not exist are created as new dealers
+    (name defaults to the dealer code until overridden by an order upload).
+    Existing dealers are updated with the new town value.
+
+    Returns:
+      { success, updated, created, skipped, errors: [{row, reason}] }
+    """
+
+    @token_required
+    @active_required
+    @_admin_required
+    def post(self, current_user):
+        import pandas as pd
+        from io import BytesIO
+
+        uploaded_file = request.files.get('file')
+        if not uploaded_file:
+            return {'success': False, 'msg': 'No file uploaded'}, 400
+
+        filename = uploaded_file.filename or ''
+        ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+        if ext not in ('csv', 'xls', 'xlsx'):
+            return {'success': False, 'msg': 'File must be CSV, XLS, or XLSX'}, 400
+
+        try:
+            raw = uploaded_file.read()
+            if ext == 'csv':
+                df = pd.read_csv(BytesIO(raw), dtype=str)
+            else:
+                df = pd.read_excel(BytesIO(raw), dtype=str)
+        except Exception as e:
+            return {'success': False, 'msg': f'Could not parse file: {str(e)}'}, 400
+
+        df.columns = [c.strip() for c in df.columns]
+
+        required = {'Dealer Code', 'Town'}
+        missing  = required - set(df.columns)
+        if missing:
+            return {
+                'success': False,
+                'msg':     f'Missing required columns: {", ".join(sorted(missing))}',
+            }, 400
+
+        df = df.dropna(subset=['Dealer Code'])
+        df['Dealer Code'] = df['Dealer Code'].str.strip()
+        df['Town']        = df['Town'].fillna('').str.strip()
+
+        updated  = 0
+        created  = 0
+        skipped  = 0
+        errors   = []
+
+        for idx, row in df.iterrows():
+            dealer_code = row['Dealer Code']
+            town        = row['Town']
+            row_num     = idx + 2  # 1-based + header
+
+            if not dealer_code:
+                skipped += 1
+                continue
+
+            try:
+                existing = mysql_manager.execute_query(
+                    "SELECT dealer_id FROM dealer WHERE dealer_code = %s",
+                    (dealer_code,)
+                )
+                if existing:
+                    mysql_manager.execute_query(
+                        "UPDATE dealer SET town = %s, updated_at = %s WHERE dealer_code = %s",
+                        (town, datetime.utcnow(), dealer_code),
+                        fetch=False
+                    )
+                    updated += 1
+                else:
+                    # Create dealer with code as placeholder name
+                    with mysql_manager.get_cursor() as cursor:
+                        cursor.execute(
+                            """INSERT INTO dealer (name, dealer_code, town, created_at, updated_at)
+                               VALUES (%s, %s, %s, %s, %s)""",
+                            (dealer_code, dealer_code, town,
+                             datetime.utcnow(), datetime.utcnow())
+                        )
+                    created += 1
+            except Exception as e:
+                errors.append({'row': row_num, 'dealer_code': dealer_code, 'reason': str(e)})
+
+        return {
+            'success': True,
+            'updated': updated,
+            'created': created,
+            'skipped': skipped,
+            'errors':  errors,
+        }, 200
+
+
+# ---------------------------------------------------------------------------
+# Dealer list + individual town update — admin only
+# ---------------------------------------------------------------------------
+
+@rest_api.route('/api/admin/dealers')
+class AdminDealerList(Resource):
+    """
+    GET /api/admin/dealers
+    Returns all dealers (regardless of order status) with their current town.
+    Used to populate the editable dealer table in the admin panel.
+
+    Query params (all optional):
+      search  — filter by dealer name or dealer code (case-insensitive)
+    """
+
+    @token_required
+    @active_required
+    @_admin_required
+    def get(self, current_user):
+        search = (request.args.get('search') or '').strip()
+        try:
+            if search:
+                rows = mysql_manager.execute_query(
+                    """
+                    SELECT dealer_id, name, dealer_code, town
+                    FROM dealer
+                    WHERE LOWER(name) LIKE %s OR LOWER(dealer_code) LIKE %s
+                    ORDER BY name
+                    """,
+                    (f'%{search.lower()}%', f'%{search.lower()}%')
+                )
+            else:
+                rows = mysql_manager.execute_query(
+                    "SELECT dealer_id, name, dealer_code, town FROM dealer ORDER BY name"
+                )
+            dealers = [
+                {
+                    'dealer_id':   r['dealer_id'],
+                    'name':        r['name'],
+                    'dealer_code': r['dealer_code'] or '',
+                    'town':        r['town'] or '',
+                }
+                for r in (rows or [])
+            ]
+            return {'success': True, 'dealers': dealers}, 200
+
+        except Exception as e:
+            logger.exception("Error in GET /api/admin/dealers")
+            return {'success': False, 'msg': f'Error fetching dealers: {str(e)}'}, 400
+
+
+@rest_api.route('/api/admin/dealers/<int:dealer_id>/town')
+class AdminDealerTown(Resource):
+    """
+    PATCH /api/admin/dealers/<dealer_id>/town
+    Update the town for a single dealer.
+
+    JSON body:
+      { "town": "New Town Name" }
+    """
+
+    @token_required
+    @active_required
+    @_admin_required
+    def patch(self, current_user, dealer_id):
+        data = request.get_json(force=True) or {}
+        town = (data.get('town') or '').strip()
+
+        try:
+            existing = mysql_manager.execute_query(
+                "SELECT dealer_id, name FROM dealer WHERE dealer_id = %s",
+                (dealer_id,)
+            )
+            if not existing:
+                return {'success': False, 'msg': 'Dealer not found'}, 404
+
+            mysql_manager.execute_query(
+                "UPDATE dealer SET town = %s, updated_at = %s WHERE dealer_id = %s",
+                (town or None, datetime.utcnow(), dealer_id),
+                fetch=False
+            )
+            return {
+                'success': True,
+                'dealer_id': dealer_id,
+                'town':      town,
+            }, 200
+
+        except Exception as e:
+            logger.exception("Error in PATCH /api/admin/dealers/<dealer_id>/town")
+            return {'success': False, 'msg': f'Error updating town: {str(e)}'}, 400
+
+
+# ---------------------------------------------------------------------------
+# Product Nickname — admin only
+# ---------------------------------------------------------------------------
+
+@rest_api.route('/api/admin/products')
+class AdminProductList(Resource):
+    """
+    GET /api/admin/products
+    Returns all products with their current nickname.
+    Used to populate the editable product table in the admin panel.
+
+    Query params (all optional):
+      search  — filter by product name, description, or product_string (case-insensitive)
+    """
+
+    @token_required
+    @active_required
+    @_admin_required
+    def get(self, current_user):
+        search = (request.args.get('search') or '').strip()
+        try:
+            if search:
+                rows = mysql_manager.execute_query(
+                    """
+                    SELECT product_id, product_string, name, description, nickname
+                    FROM product
+                    WHERE LOWER(name) LIKE %s
+                       OR LOWER(description) LIKE %s
+                       OR LOWER(product_string) LIKE %s
+                    ORDER BY name
+                    """,
+                    (f'%{search.lower()}%', f'%{search.lower()}%', f'%{search.lower()}%')
+                )
+            else:
+                rows = mysql_manager.execute_query(
+                    "SELECT product_id, product_string, name, description, nickname FROM product ORDER BY name"
+                )
+            products = [
+                {
+                    'product_id':     r['product_id'],
+                    'product_string': r['product_string'] or '',
+                    'name':           r['name'] or '',
+                    'description':    r['description'] or '',
+                    'nickname':       r['nickname'] or '',
+                }
+                for r in (rows or [])
+            ]
+            return {'success': True, 'products': products}, 200
+
+        except Exception as e:
+            logger.exception("Error in GET /api/admin/products")
+            return {'success': False, 'msg': f'Error fetching products: {str(e)}'}, 400
+
+
+@rest_api.route('/api/admin/product-nickname')
+class ProductNicknameUpload(Resource):
+    """
+    POST /api/admin/product-nickname
+    Upload an Excel/CSV file that maps product strings to nicknames.
+
+    Expected columns:
+      - 'Product String'  (matched against product.product_string)
+      - 'Nickname'
+
+    Returns:
+      { success, updated, skipped, errors: [{row, product_string, reason}] }
+    """
+
+    @token_required
+    @active_required
+    @_admin_required
+    def post(self, current_user):
+        import pandas as pd
+        from io import BytesIO as _BytesIO
+
+        uploaded_file = request.files.get('file')
+        if not uploaded_file:
+            return {'success': False, 'msg': 'No file uploaded'}, 400
+
+        filename = uploaded_file.filename or ''
+        ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+        if ext not in ('csv', 'xls', 'xlsx'):
+            return {'success': False, 'msg': 'File must be CSV, XLS, or XLSX'}, 400
+
+        try:
+            raw = uploaded_file.read()
+            if ext == 'csv':
+                df = pd.read_csv(_BytesIO(raw), dtype=str)
+            else:
+                df = pd.read_excel(_BytesIO(raw), dtype=str)
+        except Exception as e:
+            return {'success': False, 'msg': f'Could not parse file: {str(e)}'}, 400
+
+        df.columns = [c.strip() for c in df.columns]
+
+        required = {'Product String', 'Nickname'}
+        missing  = required - set(df.columns)
+        if missing:
+            return {
+                'success': False,
+                'msg':     f'Missing required columns: {", ".join(sorted(missing))}',
+            }, 400
+
+        df = df.dropna(subset=['Product String'])
+        df['Product String'] = df['Product String'].str.strip()
+        df['Nickname']       = df['Nickname'].fillna('').str.strip()
+
+        updated = 0
+        skipped = 0
+        errors  = []
+
+        for idx, row in df.iterrows():
+            product_string = row['Product String']
+            nickname       = row['Nickname']
+            row_num        = idx + 2  # 1-based + header
+
+            if not product_string:
+                skipped += 1
+                continue
+
+            try:
+                existing = mysql_manager.execute_query(
+                    "SELECT product_id FROM product WHERE product_string = %s",
+                    (product_string,)
+                )
+                if existing:
+                    mysql_manager.execute_query(
+                        "UPDATE product SET nickname = %s, updated_at = %s WHERE product_string = %s",
+                        (nickname or None, datetime.utcnow(), product_string),
+                        fetch=False
+                    )
+                    updated += 1
+                else:
+                    skipped += 1
+                    errors.append({
+                        'row':            row_num,
+                        'product_string': product_string,
+                        'reason':         'Product not found',
+                    })
+            except Exception as e:
+                errors.append({'row': row_num, 'product_string': product_string, 'reason': str(e)})
+
+        return {
+            'success': True,
+            'updated': updated,
+            'skipped': skipped,
+            'errors':  errors,
+        }, 200
+
+
+@rest_api.route('/api/admin/products/<int:product_id>/nickname')
+class AdminProductNickname(Resource):
+    """
+    PATCH /api/admin/products/<product_id>/nickname
+    Update the nickname for a single product.
+
+    JSON body:
+      { "nickname": "Short Name" }
+    """
+
+    @token_required
+    @active_required
+    @_admin_required
+    def patch(self, current_user, product_id):
+        data     = request.get_json(force=True) or {}
+        nickname = (data.get('nickname') or '').strip()
+
+        try:
+            existing = mysql_manager.execute_query(
+                "SELECT product_id, name FROM product WHERE product_id = %s",
+                (product_id,)
+            )
+            if not existing:
+                return {'success': False, 'msg': 'Product not found'}, 404
+
+            mysql_manager.execute_query(
+                "UPDATE product SET nickname = %s, updated_at = %s WHERE product_id = %s",
+                (nickname or None, datetime.utcnow(), product_id),
+                fetch=False
+            )
+            return {
+                'success':    True,
+                'product_id': product_id,
+                'nickname':   nickname,
+            }, 200
+
+        except Exception as e:
+            logger.exception("Error in PATCH /api/admin/products/<product_id>/nickname")
+            return {'success': False, 'msg': f'Error updating nickname: {str(e)}'}, 400

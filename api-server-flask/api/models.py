@@ -222,6 +222,7 @@ class Dealer(MySQLModel):
         self.dealer_id = kwargs.get('dealer_id')
         self.name = kwargs.get('name')
         self.dealer_code = kwargs.get('dealer_code')
+        self.town = kwargs.get('town')
         self.created_at = kwargs.get('created_at')
         self.updated_at = kwargs.get('updated_at')
 
@@ -229,15 +230,15 @@ class Dealer(MySQLModel):
         """Save dealer"""
         if self.dealer_id:
             mysql_manager.execute_query(
-                "UPDATE dealer SET name=%s, dealer_code=%s, updated_at=%s WHERE dealer_id=%s",
-                (self.name, self.dealer_code, datetime.utcnow(), self.dealer_id),
+                "UPDATE dealer SET name=%s, dealer_code=%s, town=%s, updated_at=%s WHERE dealer_id=%s",
+                (self.name, self.dealer_code, self.town, datetime.utcnow(), self.dealer_id),
                 fetch=False
             )
         else:
             with mysql_manager.get_cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO dealer (name, dealer_code, created_at, updated_at) VALUES (%s, %s, %s, %s)",
-                    (self.name, self.dealer_code, datetime.utcnow(), datetime.utcnow())
+                    "INSERT INTO dealer (name, dealer_code, town, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)",
+                    (self.name, self.dealer_code, self.town, datetime.utcnow(), datetime.utcnow())
                 )
                 self.dealer_id = cursor.lastrowid
 
@@ -272,6 +273,41 @@ class Dealer(MySQLModel):
         return None
 
 
+class SupplySheetCounter(MySQLModel):
+    """Per-warehouse auto-incrementing supply sheet counter.
+
+    Each call to next_for_warehouse() atomically increments the counter and
+    returns the new value formatted as 'SS-{counter:03d}'.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.counter_id   = kwargs.get('counter_id')
+        self.warehouse_id = kwargs.get('warehouse_id')
+        self.counter      = kwargs.get('counter', 0)
+
+    @classmethod
+    def next_for_warehouse(cls, warehouse_id: int) -> str:
+        """Atomically increment and return the next supply sheet number.
+
+        Returns a string like 'SS-001'.
+        """
+        with mysql_manager.get_cursor() as cursor:
+            cursor.execute(
+                """INSERT INTO supply_sheet_counter (warehouse_id, counter)
+                   VALUES (%s, 1)
+                   ON DUPLICATE KEY UPDATE counter = counter + 1""",
+                (warehouse_id,)
+            )
+            cursor.execute(
+                "SELECT counter FROM supply_sheet_counter WHERE warehouse_id = %s",
+                (warehouse_id,)
+            )
+            row = cursor.fetchone()
+        value = row['counter'] if row else 1
+        return f"SS-{value:03d}"
+
+
 class Product(MySQLModel):
     """Product model"""
 
@@ -281,6 +317,7 @@ class Product(MySQLModel):
         self.product_string = kwargs.get('product_string')
         self.name = kwargs.get('name')
         self.description = kwargs.get('description')
+        self.nickname = kwargs.get('nickname')
         self.price = kwargs.get('price')
         self.created_at = kwargs.get('created_at')
         self.updated_at = kwargs.get('updated_at')
@@ -289,19 +326,19 @@ class Product(MySQLModel):
         """Save product"""
         if self.product_id:
             mysql_manager.execute_query(
-                """UPDATE product SET product_string=%s, name=%s, description=%s, 
-                   price=%s, updated_at=%s WHERE product_id=%s""",
-                (self.product_string, self.name, self.description, self.price,
-                 datetime.utcnow(), self.product_id),
+                """UPDATE product SET product_string=%s, name=%s, description=%s,
+                   nickname=%s, price=%s, updated_at=%s WHERE product_id=%s""",
+                (self.product_string, self.name, self.description, self.nickname,
+                 self.price, datetime.utcnow(), self.product_id),
                 fetch=False
             )
         else:
             with mysql_manager.get_cursor() as cursor:
                 cursor.execute(
-                    """INSERT INTO product (product_string, name, description, price, 
-                       created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s)""",
-                    (self.product_string, self.name, self.description, self.price,
-                     datetime.utcnow(), datetime.utcnow())
+                    """INSERT INTO product (product_string, name, description, nickname,
+                       price, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                    (self.product_string, self.name, self.description, self.nickname,
+                     self.price, datetime.utcnow(), datetime.utcnow())
                 )
                 self.product_id = cursor.lastrowid
 
@@ -504,7 +541,7 @@ class PotentialOrder(MySQLModel):
         return result[0]['count'] if result else 0
 
     @classmethod
-    def find_by_filters(cls, status=None, warehouse_id=None, company_id=None, limit=1000, offset=0):
+    def find_by_filters(cls, status=None, warehouse_id=None, company_id=None, limit=1000, offset=0, sort_by='created_at'):
         """Find orders by filters — scoped to the active 4-month partition window."""
         pf_sql, pf_params = partition_filter('potential_order', alias='po')
         query = f"""
@@ -528,7 +565,8 @@ class PotentialOrder(MySQLModel):
             query += " AND po.company_id = %s"
             params.append(company_id)
 
-        query += " ORDER BY po.created_at DESC LIMIT %s OFFSET %s"
+        sort_col = 'updated_at' if sort_by == 'updated_at' else 'created_at'
+        query += f" ORDER BY po.{sort_col} DESC LIMIT %s OFFSET %s"
         params.append(limit)
         params.append(offset)
 

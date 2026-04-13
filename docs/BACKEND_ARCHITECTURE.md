@@ -81,7 +81,8 @@ api-server-flask/api/
 │   ├── invoice_routes.py         # /api/invoices/* (6 endpoints)
 │   ├── product_routes.py         # /api/products/upload
 │   ├── dashboard_routes.py       # /api/warehouses, /api/companies, /api/orders (listing)
-│   ├── admin_routes.py           # /api/admin/upload-batches/*
+│   ├── admin_routes.py           # /api/admin/upload-batches/*, /api/admin/dealers/*, /api/admin/products/*
+│   ├── supply_sheet_routes.py    # /api/supply-sheet/* (dealers, routes, generate PDF)
 │   └── eway_bill_routes.py       # /api/eway/* (11 endpoints)
 │
 └── utils/
@@ -276,7 +277,7 @@ class PotentialOrder:
 | `Warehouse` | `warehouses` | Reference data |
 | `Company` | `companies` | Reference data |
 | `Dealer` | `dealers` | Lookup/create via `dealer_business` |
-| `Product` | `products` | Lookup/create via `product_business` |
+| `Product` | `products` | Lookup/create via `product_business`; has `nickname` column (overrides `description` in supply sheet PDF) |
 | `Box` | `boxes` | Reference data |
 | `PotentialOrder` | `potential_order` | Primary order entity; partitioned |
 | `PotentialOrderProduct` | `potential_order_product` | Order-product links; partitioned |
@@ -284,6 +285,7 @@ class PotentialOrder:
 | `OrderStateHistory` | `order_state_history` | Audit trail; partitioned |
 | `Order` | `order` | Final shipped order; partitioned |
 | `Invoice` | `invoice` | Invoice data; partitioned |
+| `SupplySheetCounter` | `supply_sheet_counter` | Per-warehouse auto-incrementing sheet number; `next_for_warehouse(warehouse_id)` |
 | `TransportRoute` | `transport_routes` | E-way bill routes |
 | `CustomerRouteMapping` | `customer_route_mappings` | E-way bill customer assignments |
 | `DailyRouteManifest` | `daily_route_manifests` | E-way bill manifests |
@@ -359,6 +361,7 @@ class OrderUpload(Resource):
 | `@token_required` | Valid non-expired, non-revoked JWT token | 400 (missing) or 401 (invalid) |
 | `@active_required` | User status != 'pending' | 403 with `status='pending'` |
 | `@upload_permission_required(type)` | Role has upload permission for this type | 403 |
+| `@supply_sheet_required` | Role has `supply_sheet = True` boolean flag | 403 |
 
 `@token_required` injects `current_user: Users` as the second positional argument (after `self`).
 
@@ -647,7 +650,7 @@ from ..core.auth import (
 def register_all_routes():
     """Import all route modules — @rest_api.route() decorators fire on import."""
     from . import auth_routes, order_routes, invoice_routes, product_routes
-    from . import dashboard_routes, admin_routes, eway_bill_routes
+    from . import dashboard_routes, admin_routes, supply_sheet_routes, eway_bill_routes
 ```
 
 ### Route File Pattern
@@ -686,7 +689,8 @@ class SomeResource(Resource):
 | `invoice_routes` | POST `/api/invoices/upload`; GET `/api/invoices`, `/statistics`, `/<id>`, `/download-errors`, `/supply-sheet/download` |
 | `product_routes` | POST `/api/products/upload` |
 | `dashboard_routes` | GET `/api/warehouses`, `/api/companies`, `/api/orders`, `/api/orders/status`, `/api/orders/recent`, `/api/orders/bulk-export`; POST `/api/orders/bulk-import` |
-| `admin_routes` | GET/DELETE `/api/admin/upload-batches`, `/<id>`, `/<id>/details` |
+| `admin_routes` | GET/DELETE `/api/admin/upload-batches`, `/<id>`, `/<id>/details`; GET/POST `/api/admin/dealers`; PATCH `/api/admin/dealers/<id>/town`; GET/POST `/api/admin/products`; PATCH `/api/admin/products/<id>/nickname`; POST `/api/admin/dealer-town`, `/api/admin/product-nickname` |
+| `supply_sheet_routes` | GET `/api/supply-sheet/dealers`, `/api/supply-sheet/routes`, `/api/supply-sheet/routes/<id>/dealers`; POST `/api/supply-sheet/generate` (body: `warehouse_id`, `company_id`, `dealer_ids`, `finalize: bool`) |
 | `eway_bill_routes` | 11 endpoints under `/api/eway/*` |
 
 ---
@@ -794,14 +798,15 @@ Permissions are DB-driven, cached on Flask `g` per request:
 perms = get_permissions(current_user.role)
 # {
 #   order_states: [...],     # which states this role can see
-#   uploads: [...],          # which upload types allowed
+#   uploads: [...],          # which upload types (orders/invoices/products) allowed
 #   all_warehouses: bool,    # bypass warehouse scoping
-#   eway_bill_admin: bool,
-#   eway_bill_filling: bool,
+#   eway_bill_admin: bool,   # can configure e-way bill routes/mappings
+#   eway_bill_filling: bool, # can fill vehicle numbers and generate e-way files
+#   supply_sheet: bool,      # can access supply sheet page and download PDFs
 # }
 ```
 
-Tables: `roles`, `role_order_states`, `role_uploads`
+Tables: `roles` (columns: `all_warehouses`, `eway_bill_admin`, `eway_bill_filling`, `supply_sheet`), `role_order_states`, `role_uploads`
 
 ### Warehouse/Company Scoping
 
@@ -821,7 +826,7 @@ PICKING       ← warehouse picking started
 PACKED        ← picking complete, boxes assigned
     ↓ (invoice upload)
 INVOICED      ← invoice linked (terminal-ish, pre-dispatch)
-    ↓ (dispatch process)
+    ↓ (supply sheet download  OR  manual dispatch process)
 DISPATCH_READY ← ready for handoff
     ↓ (complete dispatch)
 COMPLETED     ← delivered
@@ -836,6 +841,12 @@ State changes always write a row to `order_state_history` (audit trail).
 - Order must be in `PACKED` (or bypass order type) to receive invoice
 - Terminal states (`INVOICED`, `DISPATCH_READY`, `COMPLETED`, `PARTIALLY_COMPLETED`) cannot receive invoices
 - Pre-packed states (`OPEN`, `PICKING`) can receive `invoice_submitted` flag for later auto-invoicing
+
+**Supply sheet download → Dispatch Ready transition:**
+- When `POST /api/supply-sheet/generate` is called with `finalize: true`, `_finalize_orders()` bulk-transitions all `Invoiced` potential_orders for the selected dealers to `Dispatch Ready` and inserts `order_state_history` audit rows.
+- The dealer list endpoint (`GET /api/supply-sheet/dealers`) only returns dealers that have orders currently in `Invoiced` state — once finalized, those dealers no longer appear.
+- `finalize: false` (preview) generates the PDF without any state changes.
+- The `_finalize_orders()` helper resolves the `Dispatch Ready` state ID from the `order_states` table at runtime, joins `potential_order` with `invoice` through `original_order_id`, and uses bulk `UPDATE` + `executemany INSERT` for audit rows.
 
 ---
 

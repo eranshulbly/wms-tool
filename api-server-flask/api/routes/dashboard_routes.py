@@ -716,7 +716,8 @@ class RecentOrders(Resource):
             potential_orders = PotentialOrder.find_by_filters(
                 warehouse_id=warehouse_id,
                 company_id=company_id,
-                limit=limit
+                limit=limit,
+                sort_by='updated_at'
             )
             potential_orders = [o for o in potential_orders if o['status'] in allowed_states]
 

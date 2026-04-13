@@ -14,6 +14,7 @@ import menuItem from './../../../../menu-items';
 const UPLOAD_PERMISSION_MAP = {
     'upload-orders': 'orders',
     'upload-invoices': 'invoices',
+    'upload-products': 'products',
 };
 
 const MenuList = () => {
@@ -32,6 +33,9 @@ const MenuList = () => {
                 children: item.children.filter((child) => {
                     if (child.id === 'eway-bills') {
                         return user?.permissions?.eway_bill_admin || user?.permissions?.eway_bill_filling || user?.role === 'admin';
+                    }
+                    if (child.id === 'supply-sheet') {
+                        return user?.permissions?.supply_sheet === true || user?.role === 'admin';
                     }
                     const requiredPerm = UPLOAD_PERMISSION_MAP[child.id];
                     // If item doesn't require an upload permission, always show it

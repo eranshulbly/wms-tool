@@ -20,10 +20,11 @@ from ..core.auth import (          # noqa: F401
 
 def register_all_routes():
     """Import all route modules so @rest_api.route() decorators fire."""
-    from . import auth_routes       # noqa: F401
-    from . import order_routes      # noqa: F401
-    from . import invoice_routes    # noqa: F401
-    from . import product_routes    # noqa: F401
-    from . import dashboard_routes  # noqa: F401
-    from . import admin_routes      # noqa: F401
-    from . import eway_bill_routes  # noqa: F401
+    from . import auth_routes           # noqa: F401
+    from . import order_routes          # noqa: F401
+    from . import invoice_routes        # noqa: F401
+    from . import product_routes        # noqa: F401
+    from . import dashboard_routes      # noqa: F401
+    from . import admin_routes          # noqa: F401
+    from . import eway_bill_routes      # noqa: F401
+    from . import supply_sheet_routes   # noqa: F401

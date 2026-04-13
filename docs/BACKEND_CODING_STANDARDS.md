@@ -55,6 +55,22 @@ These rules exist because of past incidents or deliberate architectural decision
 **Why:** `api/routes.py` no longer exists. Python now uses the `api/routes/` package.  
 **Instead:** Use `from ..extensions import rest_api` and `from ..core.auth import token_required`.
 
+### Always define and apply user-level authorization for every new feature
+**Why:** Features added without access control are visible and usable by all authenticated users regardless of their role. This has caused operational mistakes (e.g. warehouse staff accessing admin-only pages) and is a security risk.  
+**Rule:** Every new endpoint must answer: *which roles / permissions can call this?* Then enforce it at the decorator level — never rely on the frontend hiding a button.
+
+| Feature type | Required decorator |
+|---|---|
+| Any authenticated endpoint | `@token_required` |
+| Any write or state-changing endpoint | `@token_required` + `@active_required` |
+| Upload endpoints (`orders`, `invoices`, `products`) | + `@upload_permission_required('type')` |
+| Supply sheet endpoints | + `@supply_sheet_required` |
+| E-way bill config/admin endpoints | + `@eway_admin_required` |
+| E-way bill filling endpoints | + `@eway_filling_required` |
+| Admin-only endpoints | Check `current_user.role != 'admin'` and return 403 |
+
+If the feature introduces a brand-new access boundary (not covered by the existing decorators above), **add a new boolean column to the `roles` table** (like `supply_sheet`) and a new decorator in `core/auth.py`. Do not bolt new access rules onto existing unrelated permissions.
+
 ---
 
 ## 2. Adding a New API Endpoint
@@ -70,6 +86,7 @@ These rules exist because of past incidents or deliberate architectural decision
 | `/api/invoices/*` | `routes/invoice_routes.py` |
 | `/api/products/*` | `routes/product_routes.py` |
 | `/api/admin/*` | `routes/admin_routes.py` |
+| `/api/supply-sheet/*` | `routes/supply_sheet_routes.py` |
 | `/api/eway/*` | `routes/eway_bill_routes.py` |
 | `/api/warehouses`, `/api/companies`, `/api/orders` (listing) | `routes/dashboard_routes.py` |
 | New domain entirely | Create `routes/new_domain_routes.py` |
@@ -500,19 +517,38 @@ Never rearrange. `@token_required` must run first because it injects `current_us
 
 ### When to use each decorator
 
-| Decorator | Use when |
-|---|---|
-| `@token_required` | Any endpoint that requires a logged-in user |
-| `@active_required` | Any write endpoint (upload, status update, etc.) |
-| `@upload_permission_required(type)` | Upload endpoints only |
+| Decorator | Defined in | Use when |
+|---|---|---|
+| `@token_required` | `core/auth.py` | Any endpoint that requires a logged-in user |
+| `@active_required` | `core/auth.py` | Any write endpoint (upload, status update, etc.) |
+| `@upload_permission_required(type)` | `core/auth.py` | Upload endpoints — `'orders'`, `'invoices'`, `'products'` |
+| `@supply_sheet_required` | `core/auth.py` | All supply sheet endpoints (boolean `supply_sheet` column on `roles`) |
+| `@eway_admin_required` | `routes/eway_bill_routes.py` | E-way bill config/admin endpoints |
+| `@eway_filling_required` | `routes/eway_bill_routes.py` | E-way bill filling endpoints |
 
-### E-way bill specific decorators
+### Feature-specific decorators
 
 `eway_bill_routes.py` has its own local decorators:
 
 ```python
 @eway_admin_required    # checks perms.eway_bill_admin
 @eway_filling_required  # checks perms.eway_bill_filling
+```
+
+`core/auth.py` has the supply sheet decorator:
+
+```python
+@supply_sheet_required  # checks perms.supply_sheet (boolean column on roles table)
+```
+
+All feature-specific decorators stack **after** `@token_required` and `@active_required`:
+
+```python
+@token_required
+@active_required
+@supply_sheet_required
+def post(self, current_user):
+    ...
 ```
 
 These are defined locally in `routes/eway_bill_routes.py` and stack on top of `@token_required`.
@@ -610,6 +646,29 @@ order_repo.create_state_history(
     changed_at=datetime.now(timezone.utc),
 )
 ```
+
+For bulk transitions (many orders at once) use `executemany` directly, as done in `_finalize_orders()` in `supply_sheet_routes.py` and `InvoiceRepository.bulk_transition_to_invoiced()`:
+
+```python
+hist_params = [(po_id, state_id, user_id, now) for po_id in po_ids]
+with mysql_manager.get_cursor() as cursor:
+    cursor.executemany(
+        """INSERT INTO order_state_history
+           (potential_order_id, state_id, changed_by, changed_at)
+           VALUES (%s, %s, %s, %s)""",
+        hist_params
+    )
+```
+
+### Supply sheet finalize pattern (INVOICED → DISPATCH_READY via document download)
+
+The `INVOICED → DISPATCH_READY` transition can be triggered in two ways:
+1. Manual dispatch process (existing order management flow, governed by `OrderStateMachine`)
+2. **Supply sheet download** — when `POST /api/supply-sheet/generate` is called with `finalize: true`, `_finalize_orders()` bulk-transitions all `Invoiced` orders for the selected dealers
+
+The supply sheet path bypasses `OrderStateMachine` intentionally — it is a document-driven dispatch, not an individual-order state operation. The pattern is: resolve state ID from `order_states` table at runtime, bulk-UPDATE `potential_order`, bulk-INSERT `order_state_history`.
+
+The dealer list (`GET /api/supply-sheet/dealers`) is filtered to `po.status = 'Invoiced'` via a JOIN on `potential_order`, so once orders are finalized they disappear from future supply sheet selections automatically.
 
 ---
 

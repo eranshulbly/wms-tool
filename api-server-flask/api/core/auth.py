@@ -99,6 +99,24 @@ def active_required(f):
     return decorator
 
 
+def supply_sheet_required(f):
+    """
+    Decorator that checks whether the authenticated user's role has the
+    supply_sheet boolean permission set to True.
+    """
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        current_user = args[1] if len(args) > 1 else kwargs.get('current_user')
+        from ..permissions import get_permissions
+        if current_user and not get_permissions(current_user.role).get('supply_sheet', False):
+            return {
+                "success": False,
+                "msg": "You do not have permission to access supply sheet."
+            }, 403
+        return f(*args, **kwargs)
+    return wrapper
+
+
 def upload_permission_required(upload_type: str):
     """
     Decorator factory that checks whether the authenticated user's role

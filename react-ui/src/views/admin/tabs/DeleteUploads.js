@@ -421,9 +421,9 @@ const DeleteUploads = () => {
                                     onChange={(e) => setFilters((f) => ({ ...f, upload_type: e.target.value }))}
                                     label="Upload Type"
                                 >
-                                    <MenuItem value="">All</MenuItem>
-                                    <MenuItem value="orders">Orders</MenuItem>
-                                    <MenuItem value="invoices">Invoices</MenuItem>
+                                    <MenuItem key="all" value="">All</MenuItem>
+                                    <MenuItem key="orders" value="orders">Orders</MenuItem>
+                                    <MenuItem key="invoices" value="invoices">Invoices</MenuItem>
                                 </Select>
                             </FormControl>
                         </Grid>
@@ -436,9 +436,9 @@ const DeleteUploads = () => {
                                     onChange={(e) => setFilters((f) => ({ ...f, warehouse_id: e.target.value }))}
                                     label="Warehouse"
                                 >
-                                    <MenuItem value="">All Warehouses</MenuItem>
+                                    <MenuItem key="all-warehouses" value="">All Warehouses</MenuItem>
                                     {warehouses.map((w) => (
-                                        <MenuItem key={w.warehouse_id} value={w.warehouse_id}>
+                                        <MenuItem key={w.id} value={w.id}>
                                             {w.name}
                                         </MenuItem>
                                     ))}
@@ -454,9 +454,9 @@ const DeleteUploads = () => {
                                     onChange={(e) => setFilters((f) => ({ ...f, company_id: e.target.value }))}
                                     label="Company"
                                 >
-                                    <MenuItem value="">All Companies</MenuItem>
+                                    <MenuItem key="all-companies" value="">All Companies</MenuItem>
                                     {companies.map((c) => (
-                                        <MenuItem key={c.company_id} value={c.company_id}>
+                                        <MenuItem key={c.id} value={c.id}>
                                             {c.name}
                                         </MenuItem>
                                     ))}

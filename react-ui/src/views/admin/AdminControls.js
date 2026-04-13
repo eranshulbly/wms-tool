@@ -8,9 +8,11 @@ import {
     Paper,
 } from '@material-ui/core';
 import { makeStyles } from '@material-ui/styles';
-import { IconTrash } from '@tabler/icons';
+import { IconTrash, IconMapPin, IconTag } from '@tabler/icons';
 
 import DeleteUploads from './tabs/DeleteUploads';
+import DealerTownUpload from './tabs/DealerTownUpload';
+import ProductNicknameUpload from './tabs/ProductNicknameUpload';
 
 // ---------------------------------------------------------------------------
 // Tab registry — add future admin tabs here only.
@@ -22,8 +24,18 @@ const TABS = [
         icon:      <IconTrash size={16} />,
         component: DeleteUploads,
     },
-    // Future example:
-    // { id: 'user-management', label: 'User Management', icon: <IconUsers size={16} />, component: UserManagement },
+    {
+        id:        'dealer-town',
+        label:     'Dealer Town Master',
+        icon:      <IconMapPin size={16} />,
+        component: DealerTownUpload,
+    },
+    {
+        id:        'product-nickname',
+        label:     'Product Nickname',
+        icon:      <IconTag size={16} />,
+        component: ProductNicknameUpload,
+    },
 ];
 
 // ---------------------------------------------------------------------------

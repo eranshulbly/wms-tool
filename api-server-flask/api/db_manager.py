@@ -650,6 +650,7 @@ def create_all_tables():
         all_warehouses BOOLEAN DEFAULT FALSE,
         eway_bill_admin BOOLEAN DEFAULT FALSE,
         eway_bill_filling BOOLEAN DEFAULT FALSE,
+        supply_sheet BOOLEAN DEFAULT FALSE,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
@@ -787,6 +788,7 @@ def create_all_tables():
     _migrate_potential_order_table()
     _migrate_box_count()
     _drop_city_tables()
+    _migrate_roles_table()
 
     # Insert default order states
     insert_default_states()
@@ -828,6 +830,18 @@ def _migrate_box_count():
     migrations = [
         "ALTER TABLE potential_order ADD COLUMN box_count INT NOT NULL DEFAULT 1 AFTER status",
         "ALTER TABLE `order` ADD COLUMN box_count INT NOT NULL DEFAULT 1 AFTER status",
+    ]
+    for sql in migrations:
+        try:
+            mysql_manager.execute_query(sql, fetch=False)
+        except Exception:
+            pass  # Column already exists
+
+
+def _migrate_roles_table():
+    """Add new boolean columns to existing roles table if missing (idempotent)."""
+    migrations = [
+        "ALTER TABLE roles ADD COLUMN supply_sheet BOOLEAN DEFAULT FALSE",
     ]
     for sql in migrations:
         try:
@@ -885,7 +899,7 @@ def insert_default_states():
 
 
 ALL_ORDER_STATES = ['Open', 'Picking', 'Packed', 'Invoiced', 'Dispatch Ready', 'Completed', 'Partially Completed']
-ALL_UPLOAD_TYPES = ['orders', 'invoices']
+ALL_UPLOAD_TYPES = ['orders', 'invoices', 'products']
 
 
 def seed_default_roles():
@@ -897,6 +911,7 @@ def seed_default_roles():
             'all_warehouses': True,
             'eway_bill_admin': True,
             'eway_bill_filling': True,
+            'supply_sheet': True,
             'order_states': ALL_ORDER_STATES,
             'uploads': ALL_UPLOAD_TYPES,
         },
@@ -904,6 +919,7 @@ def seed_default_roles():
             'name': 'manager',
             'description': 'All order states and uploads. Assigned warehouses only.',
             'all_warehouses': False,
+            'supply_sheet': True,
             'order_states': ALL_ORDER_STATES,
             'uploads': ALL_UPLOAD_TYPES,
         },
@@ -940,8 +956,8 @@ def seed_default_roles():
 
         with mysql_manager.get_cursor() as cursor:
             cursor.execute(
-                "INSERT INTO roles (name, description, all_warehouses, eway_bill_admin, eway_bill_filling) VALUES (%s, %s, %s, %s, %s)",
-                (role['name'], role['description'], role['all_warehouses'], role.get('eway_bill_admin', False), role.get('eway_bill_filling', False))
+                "INSERT INTO roles (name, description, all_warehouses, eway_bill_admin, eway_bill_filling, supply_sheet) VALUES (%s, %s, %s, %s, %s, %s)",
+                (role['name'], role['description'], role['all_warehouses'], role.get('eway_bill_admin', False), role.get('eway_bill_filling', False), role.get('supply_sheet', False))
             )
             role_id = cursor.lastrowid
 

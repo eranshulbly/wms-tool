@@ -7,9 +7,7 @@ import { makeStyles } from '@material-ui/styles';
 import {
     Box,
     Button,
-    Checkbox,
     FormControl,
-    FormControlLabel,
     FormHelperText,
     IconButton,
     InputAdornment,
