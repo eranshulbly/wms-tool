@@ -1,4 +1,4 @@
-const BACKEND_SERVER = process.env.REACT_APP_BACKEND_SERVER || 'http://localhost:5000/api/';
+const BACKEND_SERVER = process.env.REACT_APP_BACKEND_SERVER || '/api/';
 
 const config = {
     basename: '',
