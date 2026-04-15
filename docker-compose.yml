@@ -30,7 +30,6 @@ services:
       --innodb-flush-method=O_DIRECT
       --max-connections=20
       --thread-stack=192K
-      --query-cache-type=0
       --performance-schema=OFF
       --slow-query-log=0
     networks:
