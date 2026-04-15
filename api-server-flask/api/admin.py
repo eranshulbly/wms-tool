@@ -6,7 +6,6 @@ Login with your email/password (admin role required).
 
 from flask import redirect, url_for, request, session, flash
 from flask_admin import Admin, AdminIndexView, expose
-from flask_admin.contrib.sqla import ModelView
 from flask_admin.base import BaseView
 import pymysql
 from wtforms import SelectField, StringField, PasswordField
