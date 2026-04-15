@@ -56,4 +56,4 @@ services:
     ports:
       - "5001:80"     # dev nginx on 5001 to avoid conflicts
     volumes:
-      - ./nginx/dev.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/dev:/etc/nginx/conf.d:ro

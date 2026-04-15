@@ -79,8 +79,6 @@ services:
     restart: always
     ports:
       - "80:80"
-    volumes:
-      - ./nginx:/etc/nginx/conf.d:ro
     networks:
       - web_network
     depends_on:
