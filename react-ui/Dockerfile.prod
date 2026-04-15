@@ -1,11 +1,10 @@
 # =============================================================================
 # WMS Tool Frontend - Production Dockerfile
 # Multi-stage: 1) Build React app  2) Serve with Nginx
-# Build args: REACT_APP_BACKEND_SERVER, REACT_APP_VERSION, REACT_APP_ENV
 # =============================================================================
 
 # --- Stage 1: Build ---
-FROM node:14-alpine AS builder
+FROM node:18-alpine AS builder
 
 WORKDIR /app
 
@@ -17,8 +16,8 @@ ENV REACT_APP_BACKEND_SERVER=$REACT_APP_BACKEND_SERVER
 ENV REACT_APP_VERSION=$REACT_APP_VERSION
 ENV REACT_APP_ENV=$REACT_APP_ENV
 
-COPY package.json ./
-RUN npm install --silent
+COPY package.json package-lock.json ./
+RUN npm ci --silent
 
 COPY . ./
 RUN npm run build
