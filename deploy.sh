@@ -63,12 +63,12 @@ echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ")  $ENV  $VERSION  (was: $PREVIOUS_VERSION)
 # ---- Pull images (skipped for dev which builds locally) ----
 if [[ "$ENV" != "dev" ]]; then
     echo ">>> Pulling images for version $VERSION..."
-    APP_VERSION="$VERSION" docker-compose -f docker-compose.yml -f "$OVERRIDE" --env-file "$ENV_FILE" pull backend frontend
+    APP_VERSION="$VERSION" docker compose -f docker-compose.yml -f "$OVERRIDE" --env-file "$ENV_FILE" pull backend frontend
 fi
 
 # ---- Deploy ----
 echo ">>> Starting services..."
-APP_VERSION="$VERSION" docker-compose -f docker-compose.yml -f "$OVERRIDE" --env-file "$ENV_FILE" up -d
+APP_VERSION="$VERSION" docker compose -f docker-compose.yml -f "$OVERRIDE" --env-file "$ENV_FILE" up -d
 
 # ---- Health check ----
 echo ">>> Waiting for backend health check..."
@@ -78,7 +78,7 @@ until curl -sf http://localhost:${HEALTH_PORT:-80}/health > /dev/null 2>&1; do
     if [[ $RETRIES -le 0 ]]; then
         echo "ERROR: Health check failed after deployment. Rolling back to $PREVIOUS_VERSION..."
         sed -i.bak "s/^APP_VERSION=.*/APP_VERSION=$PREVIOUS_VERSION/" "$ENV_FILE"
-        APP_VERSION="$PREVIOUS_VERSION" docker-compose -f docker-compose.yml -f "$OVERRIDE" --env-file "$ENV_FILE" up -d
+        APP_VERSION="$PREVIOUS_VERSION" docker compose -f docker-compose.yml -f "$OVERRIDE" --env-file "$ENV_FILE" up -d
         echo "Rolled back to $PREVIOUS_VERSION."
         exit 1
     fi
