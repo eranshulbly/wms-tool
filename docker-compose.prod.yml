@@ -1,7 +1,7 @@
 version: '3.8'
 
 # =============================================================================
-# WMS Tool - Production Overrides
+# WMS Tool - Production Overrides (optimised for t3.micro / 1GB RAM)
 # Usage: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 # Images are pulled from Docker registry (built by CI on git tag push)
 # =============================================================================
@@ -9,34 +9,20 @@ version: '3.8'
 services:
   backend:
     image: ${DOCKER_REGISTRY}/wms-backend:${APP_VERSION:-latest}
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          memory: 256M
+    mem_limit: 150m
+    memswap_limit: 150m       # disable swap for this container
 
   frontend:
     image: ${DOCKER_REGISTRY}/wms-frontend:${APP_VERSION:-latest}
-    deploy:
-      resources:
-        limits:
-          cpus: '0.25'
-          memory: 128M
+    mem_limit: 32m
+    memswap_limit: 32m
 
   mysql_db:
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
+    mem_limit: 320m
+    memswap_limit: 320m
 
   nginx:
     volumes:
       - ./nginx/prod.conf:/etc/nginx/conf.d/default.conf:ro
-    deploy:
-      resources:
-        limits:
-          cpus: '0.1'
-          memory: 64M
+    mem_limit: 24m
+    memswap_limit: 24m

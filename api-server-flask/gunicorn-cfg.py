@@ -1,11 +1,11 @@
-# -*- encoding: utf-8 -*-
-"""
-Copyright (c) 2019 - present AppSeed.us
-"""
-
 bind = '0.0.0.0:5000'
 workers = 1
+worker_class = 'sync'
+preload_app = True          # load app once, share memory across workers
+max_requests = 500          # recycle worker periodically to prevent memory leaks
+max_requests_jitter = 50
+timeout = 120
 accesslog = '-'
-loglevel = 'debug'
+loglevel = 'warning'        # was 'debug' — saves significant I/O and memory
 capture_output = True
 enable_stdio_inheritance = True
