@@ -32,6 +32,8 @@ const BulkActionsBar = ({ warehouse, company, onUploadComplete }) => {
   const [uploadResult, setUploadResult] = useState(null);
 
   const selectedConfig = BULK_TARGET_STATUSES.find((s) => s.value === targetStatus);
+  // A bulk move targets one warehouse+company, so it can't run against an "All" scope.
+  const scopeIsAll = warehouse === 'all' || company === 'all';
 
   const handleFileChange = async (e) => {
     const file = e.target.files[0];
@@ -104,11 +106,22 @@ const BulkActionsBar = ({ warehouse, company, onUploadComplete }) => {
               startIcon={
                 uploading ? <CircularProgress size={16} color="inherit" /> : <IconUpload size={16} />
               }
-              disabled={uploading || !targetStatus}
+              disabled={uploading || !targetStatus || scopeIsAll}
             >
               {uploading ? 'Uploading…' : 'Upload Excel'}
-              <input type="file" accept=".xlsx,.xls,.csv" hidden onChange={handleFileChange} />
+              <input
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                hidden
+                onChange={handleFileChange}
+                disabled={scopeIsAll}
+              />
             </Button>
+            {scopeIsAll && (
+              <Typography variant="caption" color="textSecondary">
+                Select a specific warehouse and company to run a bulk update.
+              </Typography>
+            )}
           </Box>
 
           <Typography variant="caption" color="textSecondary" style={{ marginTop: 8, display: 'block' }}>

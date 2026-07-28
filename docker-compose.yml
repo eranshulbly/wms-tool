@@ -20,7 +20,6 @@ services:
       MYSQL_ROOT_HOST: '%'
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./api-server-flask/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     command: >
       --default-authentication-plugin=mysql_native_password
       --character-set-server=utf8mb4

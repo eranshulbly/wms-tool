@@ -12,14 +12,23 @@ import EwayFillingGuard from './../utils/route-guard/EwayFillingGuard';
 import UploadPermissionGuard from './../utils/route-guard/UploadPermissionGuard';
 import SupplySheetGuard from './../utils/route-guard/SupplySheetGuard';
 
+// system launcher (tile home)
+const Launcher = Loadable(lazy(() => import('../views/launcher/Launcher')));
+
 // warehouse management routing
 const OrderUpload = Loadable(lazy(() => import('../views/warehouse/OrderUpload')));
 const WarehouseDashboard = Loadable(lazy(() => import('../views/warehouse/WarehouseDashboard')));
 const OrderManagement = Loadable(lazy(() => import('../views/warehouse/OrderManagement')));
+const SubmittedOrders = Loadable(lazy(() => import('../views/warehouse/SubmittedOrders')));
+const DownloadDmsInput = Loadable(lazy(() => import('../views/warehouse/DownloadDmsInput')));
 const SupplySheetDownload = Loadable(lazy(() => import('../views/warehouse/SupplySheetDownload')));
 const InvoiceUpload = Loadable(lazy(() => import('../views/warehouse/InvoiceUpload')));
 const ProductUpload = Loadable(lazy(() => import('../views/warehouse/ProductUpload')));
 const EwayBillGenerator = Loadable(lazy(() => import('../views/warehouse/EwayBillGenerator')));
+
+// analytics routing
+const Analytics = Loadable(lazy(() => import('../views/analytics/Analytics')));
+const SalesExecutiveAnalytics = Loadable(lazy(() => import('../views/analytics/SalesExecutiveAnalytics')));
 
 // admin routing
 const AdminControls = Loadable(lazy(() => import('../views/admin/AdminControls')));
@@ -32,29 +41,31 @@ const MainRoutes = () => {
     return (
         <Route
             path={[
+                '/home',
                 '/dashboard/default',
-                '/utils/util-typography',
-                '/utils/util-color',
-                '/utils/util-shadow',
-                '/icons/tabler-icons',
-                '/icons/material-icons',
-                '/sample-page',
+                '/warehouse/submitted-orders',
+                '/warehouse/download-dms',
                 '/warehouse/upload-orders',
-                '/warehouse/dashboard',
                 '/warehouse/manage-orders',
                 '/warehouse/upload-invoices',
                 '/warehouse/upload-products',
                 '/warehouse/supply-sheet',
                 '/warehouse/eway-bill',
+                '/analytics',
+                '/analytics/sales-executives',
                 // Admin routes
-                '/admin/controls',
+                '/admin-controls',
             ]}
         >
             <MainLayout>
                 <Switch location={location} key={location.pathname}>
+                    {/* System launcher — the post-login landing */}
+                    <Route path="/home" render={() => <AuthGuard><Launcher /></AuthGuard>} />
                     <Route path="/dashboard/default" render={() => <AuthGuard><WarehouseDashboard /></AuthGuard>} />
 
                     {/* Warehouse Management Routes */}
+                    <Route path="/warehouse/submitted-orders" render={() => <AuthGuard><SubmittedOrders /></AuthGuard>} />
+                    <Route path="/warehouse/download-dms" render={() => <AuthGuard><DownloadDmsInput /></AuthGuard>} />
                     <Route path="/warehouse/upload-orders" render={() => <AuthGuard><OrderUpload /></AuthGuard>} />
                     <Route path="/warehouse/manage-orders" render={() => <AuthGuard><OrderManagement /></AuthGuard>} />
                     <Route
@@ -89,9 +100,13 @@ const MainRoutes = () => {
                         )}
                     />
 
+                    {/* Analytics */}
+                    <Route path="/analytics/sales-executives" render={() => <AuthGuard><SalesExecutiveAnalytics /></AuthGuard>} />
+                    <Route path="/analytics" render={() => <AuthGuard><Analytics /></AuthGuard>} />
+
                     {/* Admin routes */}
                     <Route
-                        path="/admin/controls"
+                        path="/admin-controls"
                         render={() => (
                             <AuthGuard>
                                 <AdminGuard>

@@ -53,6 +53,7 @@ const FilterControls = ({
                   onChange={onWarehouseChange}
                   label="Warehouse"
                 >
+                  <MenuItem value="all">All Warehouses</MenuItem>
                   {warehouses.map((wh) => {
                     const id = wh.warehouse_id ?? wh.id;
                     return (
@@ -75,6 +76,7 @@ const FilterControls = ({
                   onChange={onCompanyChange}
                   label="Company"
                 >
+                  <MenuItem value="all">All Companies</MenuItem>
                   {companies.map((comp) => (
                     <MenuItem key={comp.id} value={comp.id}>
                       {comp.name}

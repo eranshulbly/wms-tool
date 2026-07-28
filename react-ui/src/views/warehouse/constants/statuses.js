@@ -4,11 +4,18 @@ import {
   IconBoxSeam,
   IconClipboardList,
   IconUxCircle,
-  IconClipboardCheck
+  IconClipboardCheck,
+  IconDeviceMobile
 } from '@tabler/icons';
 
 // Order status data: icons, labels, chip class names
 export const ORDER_STATUS_DATA = {
+  // App-submitted orders (from submitted_orders) — precede the warehouse flow.
+  submitted: {
+    icon: <IconDeviceMobile size={42} color="#00897b" />,
+    label: 'Submitted',
+    chipClass: 'chipSubmitted'
+  },
   open: {
     icon: <IconClipboardList size={42} color="#ed6c02" />,
     label: 'Open Orders',
@@ -48,6 +55,9 @@ export const ORDER_STATUS_DATA = {
 
 // Human-readable labels for frontend slug keys
 export const STATUS_LABELS = {
+  // App-entry state (mobile app / photo capture) that precedes the warehouse flow
+  'submitted': 'Submitted',
+  // Warehouse flow
   'open': 'Open',
   'picking': 'Picking',
   'packed': 'Packed',

@@ -12,7 +12,7 @@ const EwayFillingGuard = ({ children }) => {
     
     // Fallback block for admins with old session
     if (!hasFillingOrAdmin && user?.role !== 'admin') {
-        return <Redirect to="/dashboard/default" />;
+        return <Redirect to="/home" />;
     }
 
     return children;

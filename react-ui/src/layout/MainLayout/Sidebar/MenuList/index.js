@@ -1,63 +1,63 @@
 import React from 'react';
 import { useSelector } from 'react-redux';
+import { useLocation } from 'react-router-dom';
 
 // material-ui
 import { Typography } from '@material-ui/core';
 
 // project imports
 import NavGroup from './NavGroup';
-import menuItem from './../../../../menu-items';
+import menuItem, { sectionForPath } from './../../../../menu-items';
 
 //-----------------------|| SIDEBAR MENU LIST ||-----------------------//
 
-// Map menu item id to the upload permission name it requires
+// Map order-tracking upload items to the upload permission they require.
 const UPLOAD_PERMISSION_MAP = {
     'upload-orders': 'orders',
     'upload-invoices': 'invoices',
-    'upload-products': 'products',
+    'upload-products': 'products'
+};
+
+// Filter an order-tracking group's children by the user's upload permissions.
+const filterOrderTracking = (group, allowedUploads) => {
+    if (!group.children || allowedUploads === null) return group;
+    return {
+        ...group,
+        children: group.children.filter((child) => {
+            const requiredPerm = UPLOAD_PERMISSION_MAP[child.id];
+            if (!requiredPerm) return true; // dashboard / manage-orders always shown
+            return allowedUploads.includes(requiredPerm);
+        })
+    };
 };
 
 const MenuList = () => {
     const user = useSelector((state) => state.account.user);
+    const { pathname } = useLocation();
     const allowedUploads = user?.permissions?.uploads || null;
 
-    const navItems = menuItem.items.map((item) => {
-        // Hide the entire admin menu group from non-admins
-        if (item.id === 'admin' && user?.role !== 'admin') return null;
+    // Only the current section's menu is shown (plus a Home link back to the
+    // launcher). The launcher itself (/home) hides the sidebar entirely.
+    const section = sectionForPath(pathname);
+    const homeGroup = menuItem.items.find((g) => g.id === 'home');
+    let sectionGroup = menuItem.items.find((g) => g.id === section);
 
-        // Filter upload menu items based on permissions
-        let filteredItem = item;
-        if (item.id === 'warehouse' && item.children && allowedUploads !== null) {
-            filteredItem = {
-                ...item,
-                children: item.children.filter((child) => {
-                    if (child.id === 'eway-bills') {
-                        return user?.permissions?.eway_bill_admin || user?.permissions?.eway_bill_filling || user?.role === 'admin';
-                    }
-                    if (child.id === 'supply-sheet') {
-                        return user?.permissions?.supply_sheet === true || user?.role === 'admin';
-                    }
-                    const requiredPerm = UPLOAD_PERMISSION_MAP[child.id];
-                    // If item doesn't require an upload permission, always show it
-                    if (!requiredPerm) return true;
-                    return allowedUploads.includes(requiredPerm);
-                })
-            };
-        }
+    if (sectionGroup && sectionGroup.id === 'order-tracking') {
+        sectionGroup = filterOrderTracking(sectionGroup, allowedUploads);
+    }
 
-        switch (filteredItem.type) {
-            case 'group':
-                return <NavGroup key={filteredItem.id} item={filteredItem} />;
-            default:
-                return (
-                    <Typography key={filteredItem.id} variant="h6" color="error" align="center">
-                        Menu Items Error
-                    </Typography>
-                );
+    const groups = [homeGroup, sectionGroup].filter(Boolean);
+
+    return groups.map((group) => {
+        if (group.type === 'group') {
+            return <NavGroup key={group.id} item={group} />;
         }
+        return (
+            <Typography key={group.id} variant="h6" color="error" align="center">
+                Menu Items Error
+            </Typography>
+        );
     });
-
-    return navItems;
 };
 
 export default MenuList;

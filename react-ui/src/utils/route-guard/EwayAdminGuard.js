@@ -12,7 +12,7 @@ const EwayAdminGuard = ({ children }) => {
     
     // As a fallback for old sessions without permissions structure, or super admin override:
     if (!hasAdmin && user?.role !== 'admin') {
-        return <Redirect to="/dashboard/default" />;
+        return <Redirect to="/home" />;
     }
 
     return children;

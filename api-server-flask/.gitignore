@@ -9,3 +9,6 @@ env/
 env__/
 .vscode/symbols.json
 app/db.sqlite3
+
+# Uploaded order photos (served via the API, not committed)
+media/

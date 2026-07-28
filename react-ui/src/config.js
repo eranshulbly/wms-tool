@@ -2,7 +2,7 @@ const BACKEND_SERVER = process.env.REACT_APP_BACKEND_SERVER || '/api/';
 
 const config = {
     basename: '',
-    defaultPath: '/dashboard/default',
+    defaultPath: '/home',
     fontFamily: `'Roboto', sans-serif`,
     borderRadius: 12,
     API_SERVER: BACKEND_SERVER,
