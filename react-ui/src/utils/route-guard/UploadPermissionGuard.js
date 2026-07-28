@@ -18,7 +18,7 @@ const UploadPermissionGuard = ({ uploadType, children }) => {
 
     const allowedUploads = user?.permissions?.uploads || [];
     if (user?.role !== 'admin' && !allowedUploads.includes(uploadType)) {
-        return <Redirect to="/dashboard/default" />;
+        return <Redirect to="/home" />;
     }
 
     return children;

@@ -1,24 +1,40 @@
-// Updated menu items for warehouse management
+// Order Tracking menu group — order upload, invoicing, and the manage/track table.
 
-import { IconFileUpload, IconPackage, IconTruckDelivery, IconBoxSeam, IconDashboard, IconTable } from '@tabler/icons';
+import { IconFileUpload, IconTable, IconDashboard, IconPackage, IconClipboardList, IconFileDownload } from '@tabler/icons';
 
-// constant
-const icons = {
-    IconFileUpload,
-    IconPackage,
-    IconTruckDelivery,
-    IconBoxSeam,
-    IconDashboard,
-    IconTable
-};
+const icons = { IconFileUpload, IconTable, IconDashboard, IconPackage, IconClipboardList, IconFileDownload };
 
-// ==============================|| WAREHOUSE MENU ITEMS ||============================== //
+// ==============================|| ORDER TRACKING MENU ITEMS ||============================== //
 
 const warehouse = {
-    id: 'warehouse',
-    title: 'Warehouse Management',
+    id: 'order-tracking',
+    title: 'Order Tracking',
     type: 'group',
     children: [
+        {
+            id: 'default',
+            title: 'Dashboard',
+            type: 'item',
+            url: '/dashboard/default',
+            icon: icons.IconDashboard,
+            breadcrumbs: false
+        },
+        {
+            id: 'submitted-orders',
+            title: 'Submitted Orders',
+            type: 'item',
+            url: '/warehouse/submitted-orders',
+            icon: icons.IconClipboardList,
+            breadcrumbs: false
+        },
+        {
+            id: 'download-dms',
+            title: 'Download DMS Input',
+            type: 'item',
+            url: '/warehouse/download-dms',
+            icon: icons.IconFileDownload,
+            breadcrumbs: false
+        },
         {
             id: 'upload-orders',
             title: 'Upload Orders',
@@ -36,14 +52,6 @@ const warehouse = {
             breadcrumbs: false
         },
         {
-            id: 'upload-products',
-            title: 'Upload Products',
-            type: 'item',
-            url: '/warehouse/upload-products',
-            icon: icons.IconFileUpload,
-            breadcrumbs: false
-        },
-        {
             id: 'manage-orders',
             title: 'Manage Orders',
             type: 'item',
@@ -51,36 +59,12 @@ const warehouse = {
             icon: icons.IconTable,
             breadcrumbs: false
         },
-        // {
-        //     id: 'pick-tickets',
-        //     title: 'Pick Tickets',
-        //     type: 'item',
-        //     url: '/warehouse/pick-tickets',
-        //     icon: icons.IconBoxSeam,
-        //     breadcrumbs: false
-        // },
-        // {
-        //     id: 'dispatch',
-        //     title: 'Dispatch',
-        //     type: 'item',
-        //     url: '/warehouse/dispatch',
-        //     icon: icons.IconTruckDelivery,
-        //     breadcrumbs: false
-        // },
         {
-           id: 'supply-sheet',
-            title: 'Supply Sheet',
+            id: 'upload-products',
+            title: 'Upload Products',
             type: 'item',
-            url: '/warehouse/supply-sheet',
-            icon: icons.IconTable,
-            breadcrumbs: false
-        },
-        {
-            id: 'eway-bills',
-            title: 'E-Way Bills',
-            type: 'item',
-            url: '/warehouse/eway-bill',
-            icon: icons.IconTruckDelivery,
+            url: '/warehouse/upload-products',
+            icon: icons.IconPackage,
             breadcrumbs: false
         }
     ]

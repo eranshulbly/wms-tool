@@ -1,6 +1,7 @@
 import PropTypes from 'prop-types';
 import React from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { useLocation } from 'react-router-dom';
 
 // material-ui
 import { makeStyles, useTheme } from '@material-ui/styles';
@@ -71,6 +72,28 @@ const useStyles = makeStyles((theme) => ({
         [theme.breakpoints.down('sm')]: {
             marginLeft: '10px'
         }
+    },
+    // Launcher (/home): no sidebar, full-width content.
+    contentHome: {
+        ...theme.typography.mainContent,
+        borderBottomLeftRadius: 0,
+        borderBottomRightRadius: 0,
+        width: '100%',
+        marginLeft: 0,
+        [theme.breakpoints.up('md')]: {
+            marginLeft: 0,
+            width: '100%'
+        },
+        [theme.breakpoints.down('md')]: {
+            marginLeft: 0,
+            width: '100%',
+            padding: '16px'
+        },
+        [theme.breakpoints.down('sm')]: {
+            marginLeft: 0,
+            width: '100%',
+            padding: '16px'
+        }
     }
 }));
 
@@ -80,6 +103,10 @@ const MainLayout = ({ children }) => {
     const classes = useStyles();
     const theme = useTheme();
     const matchDownMd = useMediaQuery(theme.breakpoints.down('md'));
+    const { pathname } = useLocation();
+
+    // The launcher is a chooser screen — no sidebar, full-width tiles.
+    const isHome = pathname === '/home';
 
     // Handle left drawer
     const leftDrawerOpened = useSelector((state) => state.customization.opened);
@@ -103,24 +130,28 @@ const MainLayout = ({ children }) => {
                     position="fixed"
                     color="inherit"
                     elevation={0}
-                    className={leftDrawerOpened ? classes.appBarWidth : classes.appBar}
+                    className={isHome || leftDrawerOpened ? classes.appBar : classes.appBarWidth}
                 >
                     <Toolbar>
-                        <Header handleLeftDrawerToggle={handleLeftDrawerToggle} />
+                        <Header handleLeftDrawerToggle={handleLeftDrawerToggle} hideMenuButton={isHome} />
                     </Toolbar>
                 </AppBar>
 
-                {/* drawer */}
-                <Sidebar drawerOpen={leftDrawerOpened} drawerToggle={handleLeftDrawerToggle} />
+                {/* drawer — hidden on the launcher */}
+                {!isHome && <Sidebar drawerOpen={leftDrawerOpened} drawerToggle={handleLeftDrawerToggle} />}
 
                 {/* main content */}
                 <main
-                    className={clsx([
-                        classes.content,
-                        {
-                            [classes.contentShift]: leftDrawerOpened
-                        }
-                    ])}
+                    className={
+                        isHome
+                            ? classes.contentHome
+                            : clsx([
+                                  classes.content,
+                                  {
+                                      [classes.contentShift]: leftDrawerOpened
+                                  }
+                              ])
+                    }
                 >
                     {/* breadcrumb */}
                     <Breadcrumbs separator={IconChevronRight} navigation={navigation} icon title rightAlign />

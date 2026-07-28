@@ -1,6 +1,6 @@
 import PropTypes from 'prop-types';
 import React from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 
 // material-ui
@@ -52,6 +52,7 @@ const NavItem = ({ item, level }) => {
     const dispatch = useDispatch();
     const customization = useSelector((state) => state.customization);
     const matchesSM = useMediaQuery((theme) => theme.breakpoints.down('md'));
+    const { pathname } = useLocation();
 
     const Icon = item.icon;
     const itemIcon = item.icon ? (
@@ -83,17 +84,19 @@ const NavItem = ({ item, level }) => {
         matchesSM && dispatch({ type: SET_MENU, opened: false });
     };
 
-    // active menu item on page load
+    // Highlight the item whose URL matches the current route, and re-evaluate on
+    // every navigation. (The previous version compared item.id to a path segment
+    // and only ran on mount, so items like 'eway-bills' -> /warehouse/eway-bill or
+    // 'admin-controls' -> /admin/controls never matched, leaving the previously
+    // selected item — usually Home — highlighted.)
     React.useEffect(() => {
-        const currentIndex = document.location.pathname
-            .toString()
-            .split('/')
-            .findIndex((id) => id === item.id);
-        if (currentIndex > -1) {
+        if (!item.url) return;
+        const isActive = pathname === item.url || pathname.startsWith(item.url + '/');
+        if (isActive) {
             dispatch({ type: MENU_OPEN, id: item.id });
         }
         // eslint-disable-next-line
-    }, []);
+    }, [pathname, item.url, item.id]);
 
     return (
         <ListItemButton

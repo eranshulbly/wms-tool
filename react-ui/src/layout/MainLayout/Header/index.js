@@ -39,7 +39,7 @@ const useStyles = makeStyles((theme) => ({
 
 //-----------------------|| MAIN NAVBAR / HEADER ||-----------------------//
 
-const Header = ({ handleLeftDrawerToggle }) => {
+const Header = ({ handleLeftDrawerToggle, hideMenuButton }) => {
     const classes = useStyles();
 
     return (
@@ -49,11 +49,13 @@ const Header = ({ handleLeftDrawerToggle }) => {
                 <Box component="span" sx={{ display: { xs: 'none', md: 'block' }, flexGrow: 1 }}>
                     <LogoSection />
                 </Box>
-                <ButtonBase sx={{ borderRadius: '12px', overflow: 'hidden' }}>
-                    <Avatar variant="rounded" className={classes.headerAvatar} onClick={handleLeftDrawerToggle} color="inherit">
-                        <IconMenu2 stroke={1.5} size="1.3rem" />
-                    </Avatar>
-                </ButtonBase>
+                {!hideMenuButton && (
+                    <ButtonBase sx={{ borderRadius: '12px', overflow: 'hidden' }}>
+                        <Avatar variant="rounded" className={classes.headerAvatar} onClick={handleLeftDrawerToggle} color="inherit">
+                            <IconMenu2 stroke={1.5} size="1.3rem" />
+                        </Avatar>
+                    </ButtonBase>
+                )}
             </div>
 
             {/* header search */}
@@ -69,7 +71,8 @@ const Header = ({ handleLeftDrawerToggle }) => {
 };
 
 Header.propTypes = {
-    handleLeftDrawerToggle: PropTypes.func
+    handleLeftDrawerToggle: PropTypes.func,
+    hideMenuButton: PropTypes.bool
 };
 
 export default Header;

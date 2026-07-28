@@ -12,7 +12,7 @@ const SupplySheetGuard = ({ children }) => {
     if (!isLoggedIn) return <Redirect to="/login" />;
 
     if (user?.role !== 'admin' && !user?.permissions?.supply_sheet) {
-        return <Redirect to="/dashboard/default" />;
+        return <Redirect to="/home" />;
     }
 
     return children;
