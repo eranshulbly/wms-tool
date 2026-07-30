@@ -23,7 +23,7 @@ from datetime import datetime
 
 from api.shared.db_manager import mysql_manager
 from api.shared.logging import get_logger
-from api.modules.order.constants import OrderStatus
+from api.modules.fulfillment.order.constants import OrderStatus
 from api.shared.timeutil import now_local
 
 logger = get_logger(__name__)
@@ -175,7 +175,7 @@ def create_order(dealer_id, items, created_by, warehouse_id=None,
     if warehouse_id is not None and not inventory_service.warehouse_exists(warehouse_id):
         raise ValidationError(f"warehouse {warehouse_id} not found or inactive")
 
-    from api.modules.catalog.router_v1 import get_sku
+    from api.modules.platform.catalog.router_v1 import get_sku
     resolved = []
     for it in items:
         sku = get_sku(it['sku_code'])
@@ -224,7 +224,7 @@ def create_order(dealer_id, items, created_by, warehouse_id=None,
                               created_by, "Order created")
 
     from api.shared.events import event_bus
-    from api.modules.assignment.events import OrderSubmitted
+    from api.modules.fulfillment.assignment.events import OrderSubmitted
     event_bus.publish(OrderSubmitted(order_id=order_id, dealer_id=dealer_id))
     return get_order(order_id)
 
@@ -378,7 +378,7 @@ def update_order(order_id, items=None, notes=None, expected_delivery_date=None,
     if items is not None:
         if not items:
             raise ValidationError("an order needs at least one item")
-        from api.modules.catalog.router_v1 import get_sku
+        from api.modules.platform.catalog.router_v1 import get_sku
         resolved = []
         for it in items:
             sku = get_sku(it['sku_code'])
@@ -439,7 +439,7 @@ def fulfillment_preview(order_id):
         return None
 
     from api.modules.inventory import service as inventory_service
-    from api.modules.catalog.router_v1 import sku_id_for_code
+    from api.modules.platform.catalog.router_v1 import sku_id_for_code
 
     wh = order['warehouse_id']
     planogram_id = inventory_service.planogram_for_warehouse(wh) if wh is not None else None

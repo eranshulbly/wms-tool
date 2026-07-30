@@ -1,8 +1,8 @@
 // Analytics menu group — dashboards and reports (built out over time).
 
-import { IconChartBar, IconTargetArrow } from '@tabler/icons';
+import { IconTargetArrow } from '@tabler/icons';
 
-const icons = { IconChartBar, IconTargetArrow };
+const icons = { IconTargetArrow };
 
 // ==============================|| ANALYTICS MENU ITEMS ||============================== //
 
@@ -11,14 +11,6 @@ const analytics = {
     title: 'Analytics',
     type: 'group',
     children: [
-        {
-            id: 'analytics-overview',
-            title: 'Overview',
-            type: 'item',
-            url: '/analytics',
-            icon: icons.IconChartBar,
-            breadcrumbs: false
-        },
         {
             id: 'analytics-target-tracker',
             title: 'Target Tracker Analytics',

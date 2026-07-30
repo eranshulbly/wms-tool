@@ -1,7 +1,7 @@
 // Updated MainRoutes.js file with Invoice Management routes
 
 import React, { lazy } from 'react';
-import { Route, Switch, useLocation } from 'react-router-dom';
+import { Route, Switch, Redirect, useLocation } from 'react-router-dom';
 
 // project imports
 import MainLayout from './../layout/MainLayout';
@@ -27,11 +27,13 @@ const ProductUpload = Loadable(lazy(() => import('../views/warehouse/ProductUplo
 const EwayBillGenerator = Loadable(lazy(() => import('../views/warehouse/EwayBillGenerator')));
 
 // analytics routing
-const Analytics = Loadable(lazy(() => import('../views/analytics/Analytics')));
 const SalesExecutiveAnalytics = Loadable(lazy(() => import('../views/analytics/SalesExecutiveAnalytics')));
 
 // admin routing
 const AdminControls = Loadable(lazy(() => import('../views/admin/AdminControls')));
+
+// monthly data upload (top-level, admin only)
+const MonthlyDataUpload = Loadable(lazy(() => import('../views/monthly/MonthlyDataUpload')));
 
 //-----------------------|| MAIN ROUTING ||-----------------------//
 
@@ -55,6 +57,8 @@ const MainRoutes = () => {
                 '/analytics/sales-executives',
                 // Admin routes
                 '/admin-controls',
+                // Monthly data upload (top-level, admin only)
+                '/monthly-data-upload',
             ]}
         >
             <MainLayout>
@@ -100,9 +104,9 @@ const MainRoutes = () => {
                         )}
                     />
 
-                    {/* Analytics */}
+                    {/* Analytics — /analytics lands straight on Target Tracker */}
                     <Route path="/analytics/sales-executives" render={() => <AuthGuard><SalesExecutiveAnalytics /></AuthGuard>} />
-                    <Route path="/analytics" render={() => <AuthGuard><Analytics /></AuthGuard>} />
+                    <Route exact path="/analytics" render={() => <Redirect to="/analytics/sales-executives" />} />
 
                     {/* Admin routes */}
                     <Route
@@ -111,6 +115,18 @@ const MainRoutes = () => {
                             <AuthGuard>
                                 <AdminGuard>
                                     <AdminControls />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+
+                    {/* Monthly Data Upload — top-level, admin only */}
+                    <Route
+                        path="/monthly-data-upload"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard>
+                                    <MonthlyDataUpload />
                                 </AdminGuard>
                             </AuthGuard>
                         )}

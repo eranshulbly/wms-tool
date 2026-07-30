@@ -14,7 +14,7 @@ from api.extensions import rest_api
 from api.core.auth import token_required, active_required
 from api.shared.db_manager import mysql_manager
 from api.core.logging import get_logger
-from api.modules.analytics import service
+from api.modules.sales.analytics import service
 
 logger = get_logger(__name__)
 
@@ -263,6 +263,7 @@ class SalesExplorer(Resource):
                 dealer_id=a.get('dealer_id', type=int),
                 part_group=(a.get('part_group') or '').strip() or None,
                 part=(a.get('part') or '').strip() or None,
+                period=(a.get('period') or '').strip() or 'this_month',
             ), 200
         except Exception as e:
             logger.exception("Error in /api/analytics/sales")

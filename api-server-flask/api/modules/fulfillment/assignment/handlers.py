@@ -9,7 +9,7 @@ When implemented, on_picklist_generated would create a 'picking' job, etc.
 
 from api.shared.events import event_bus
 from api.shared.logging import get_logger
-from api.modules.assignment.events import PicklistGenerated, PickingCompleted
+from api.modules.fulfillment.assignment.events import PicklistGenerated, PickingCompleted
 
 logger = get_logger(__name__)
 

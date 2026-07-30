@@ -883,7 +883,7 @@ class SubmittedOrdersList(Resource):
                         'url': f"/orders/submitted/{a['submitted_order_id']}/photo/{a['attachment_id']}",
                     })
 
-            from api.modules.order import dms
+            from api.modules.fulfillment.order import dms
 
             def _iso(v):
                 return v.isoformat() if hasattr(v, 'isoformat') else v
@@ -965,7 +965,7 @@ class SubmittedOrderPartConvertor(Resource):
     @token_required
     @active_required
     def post(self, current_user, order_id):
-        from api.modules.order import dms
+        from api.modules.fulfillment.order import dms
 
         head = mysql_manager.execute_query(
             "SELECT submitted_order_id FROM submitted_orders WHERE submitted_order_id = %s",
@@ -1031,7 +1031,7 @@ class SubmittedOrderDmsFile(Resource):
     @token_required
     @active_required
     def get(self, current_user, order_id):
-        from api.modules.order import dms
+        from api.modules.fulfillment.order import dms
 
         head = mysql_manager.execute_query(
             """SELECT so.submitted_order_id, so.order_number, c.name AS company_name

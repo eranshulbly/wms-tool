@@ -8,4 +8,4 @@ Each validator returns (True, None) on success or
 """
 
 from api.shared.upload_validators import validate_warehouse_company_access, validate_file_extension  # noqa: F401
-from api.modules.order.validators import validate_warehouse_exists, validate_company_exists          # noqa: F401
+from api.modules.fulfillment.order.validators import validate_warehouse_exists, validate_company_exists          # noqa: F401

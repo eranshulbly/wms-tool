@@ -739,10 +739,10 @@ def create_all_tables():
 
     # Create tables owned by newer modules via the schema registry. Import each
     # module's schema so its register_table() calls fire, then create them.
-    import api.modules.catalog.schema      # noqa: F401
-    import api.modules.order.schema        # noqa: F401
+    import api.modules.platform.catalog.schema      # noqa: F401
+    import api.modules.fulfillment.order.schema        # noqa: F401
     import api.modules.inventory.schema    # noqa: F401
-    import api.modules.assignment.schema   # noqa: F401
+    import api.modules.fulfillment.assignment.schema   # noqa: F401
     from api.shared import schema_registry
     for _t in schema_registry.registered_tables():
         mysql_manager.execute_query(_t.ddl, fetch=False)

@@ -27,7 +27,20 @@ const Launcher = () => {
     const { user } = useSelector((state) => state.account);
 
     const isAdmin = user?.role === 'admin';
+    const isPartConvertor = user?.role === 'part_convertor';
     const perms = user?.permissions || {};
+
+    // The part convertor is scoped to Submitted Orders only.
+    const submittedTile = {
+        key: 'submitted',
+        title: 'Submitted Orders',
+        description: 'Review submitted (photo / app) orders and build part-convertor sheets.',
+        icon: IconClipboardList,
+        color: theme.palette.success.dark,
+        tint: theme.palette.success.light,
+        path: '/warehouse/submitted-orders',
+        show: true
+    };
 
     // Tiles are gated by the same permission flags the route guards use, so a
     // user only sees the systems they can actually open.
@@ -69,7 +82,7 @@ const Launcher = () => {
             icon: IconChartBar,
             color: theme.palette.error.dark,
             tint: theme.palette.error.light,
-            path: '/analytics',
+            path: '/analytics/sales-executives',
             // Visible to everyone for now; gate with a permission when analytics grow.
             show: true
         },
@@ -85,7 +98,8 @@ const Launcher = () => {
         }
     ];
 
-    const tiles = allTiles.filter((t) => t.show);
+    // Part convertor sees only Submitted Orders; everyone else sees their permitted systems.
+    const tiles = isPartConvertor ? [submittedTile] : allTiles.filter((t) => t.show);
 
     return (
         <Box>

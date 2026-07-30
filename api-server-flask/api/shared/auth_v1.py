@@ -36,7 +36,7 @@ def _resolve_current_user():
 
     token = header.split(' ', 1)[1].strip()
 
-    from api.modules.user_auth import tokens, rbac
+    from api.modules.platform.user_auth import tokens, rbac
     try:
         payload = tokens.decode_token(token)
     except jwt.PyJWTError:

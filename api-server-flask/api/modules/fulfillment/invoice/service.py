@@ -11,7 +11,7 @@ import os
 import pandas as pd
 
 from api.models import mysql_manager
-from api.modules.invoice.business import process_invoice_dataframe
+from api.modules.fulfillment.invoice.business import process_invoice_dataframe
 from api.core.logging import get_logger
 from api.shared.upload_base import BaseUploadService
 

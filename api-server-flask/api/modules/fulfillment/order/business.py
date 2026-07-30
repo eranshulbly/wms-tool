@@ -6,9 +6,9 @@ One row = one order (no product rows).
 
 from datetime import datetime
 from api.models import PotentialOrder, Order
-from api.modules.catalog import dealer_business  # cross-module: catalog owns dealers
-from api.modules.order.state_machine import OrderStateMachine
-from api.modules.order.constants import OrderStatus
+from api.modules.platform.catalog import dealer_business  # cross-module: catalog owns dealers
+from api.modules.fulfillment.order.state_machine import OrderStateMachine
+from api.modules.fulfillment.order.constants import OrderStatus
 from api.repositories import order_repo
 from api.core.logging import get_logger
 

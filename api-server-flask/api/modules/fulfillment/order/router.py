@@ -200,7 +200,7 @@ class BulkStatusUpdate(Resource):
                 save_temp_file, read_upload_file, cleanup_temp_file,
                 make_upload_response
             )
-            from api.modules.order.business import process_bulk_status_update
+            from api.modules.fulfillment.order.business import process_bulk_status_update
 
             args = bulk_status_update_parser.parse_args()
             uploaded_file = args['file']
@@ -389,8 +389,8 @@ class OrderStatusUpdate(Resource):
             if not new_status:
                 return {'success': False, 'msg': 'new_status is required'}, 400
 
-            from api.modules.order.state_machine import OrderStateMachine
-            from api.modules.order.constants import OrderStatus
+            from api.modules.fulfillment.order.state_machine import OrderStateMachine
+            from api.modules.fulfillment.order.constants import OrderStatus
 
             try:
                 db_status = OrderStatus.from_frontend_slug(new_status.lower())

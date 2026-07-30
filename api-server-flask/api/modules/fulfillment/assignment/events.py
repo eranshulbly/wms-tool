@@ -8,7 +8,7 @@ publisher's event types.
 """
 
 from api.modules.inventory.events import PicklistGenerated, PickingCompleted  # noqa: F401
-from api.modules.order.events import OrderSubmitted  # noqa: F401
+from api.modules.fulfillment.order.events import OrderSubmitted  # noqa: F401
 
 __all__ = [
     'PicklistGenerated', 'PickingCompleted', 'OrderSubmitted',

@@ -12,18 +12,18 @@ from the owning module (preferably via that module's service.py).
 # mysql_manager`) — kept re-exported for backward compatibility.
 from api.shared.db_manager import mysql_manager, MySQLModel, partition_filter
 
-from api.modules.user_auth.models import (
+from api.modules.platform.user_auth.models import (
     Users, JWTTokenBlocklist, UserWarehouseCompany,
 )
 from api.modules.inventory.models import Warehouse
-from api.modules.catalog.models import Company, Dealer, Product
-from api.modules.supply_sheet.models import SupplySheetCounter
-from api.modules.order.models import (
+from api.modules.platform.catalog.models import Company, Dealer, Product
+from api.modules.logistics.supply_sheet.models import SupplySheetCounter
+from api.modules.fulfillment.order.models import (
     OrderState, PotentialOrder, PotentialOrderProduct, Order,
     OrderStateHistory, OrderProduct,
 )
-from api.modules.invoice.models import Invoice, InvoiceProcessingConfig
-from api.modules.eway_bill.models import (
+from api.modules.fulfillment.invoice.models import Invoice, InvoiceProcessingConfig
+from api.modules.logistics.eway_bill.models import (
     TransportRoute, CustomerRouteMapping, DailyRouteManifest, CompanySchemaMapping,
 )
 

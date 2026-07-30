@@ -9,8 +9,8 @@ Backward-compatible module-level function kept so existing route calls
 import os
 
 from api.models import mysql_manager
-from api.modules.order.business import process_order_dataframe
-from api.modules.catalog.dealer_business import clear_dealer_cache
+from api.modules.fulfillment.order.business import process_order_dataframe
+from api.modules.platform.catalog.dealer_business import clear_dealer_cache
 from api.core.logging import get_logger
 from api.shared.upload_base import BaseUploadService
 

@@ -1,4 +1,4 @@
-import { IconSettings } from '@tabler/icons';
+import { IconSettings, IconCalendarStats } from '@tabler/icons';
 
 const adminMenu = {
     id: 'admin',
@@ -14,6 +14,15 @@ const adminMenu = {
             // direct load or refresh. '/admin-controls' falls through to the React app.
             url: '/admin-controls',
             icon: IconSettings,
+            breadcrumbs: false,
+        },
+        {
+            id: 'monthly-data-upload',
+            title: 'Monthly Data Upload',
+            type: 'item',
+            // Same nginx caveat as above — path avoids the '/admin/*' prefix.
+            url: '/monthly-data-upload',
+            icon: IconCalendarStats,
             breadcrumbs: false,
         },
         // Future admin menu items go here.

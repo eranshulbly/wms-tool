@@ -27,7 +27,7 @@ from api.shared.logging import get_logger
 from api.shared.timeutil import now_local
 from api.shared.auth_v1 import (v1_auth_required, v1_require_permission,
                                 company_filter, company_scope)
-from api.modules.user_auth import rbac, tokens
+from api.modules.platform.user_auth import rbac, tokens
 
 logger = get_logger(__name__)
 
