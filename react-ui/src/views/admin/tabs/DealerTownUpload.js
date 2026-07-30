@@ -34,6 +34,36 @@ import {
   IconRefresh,
 } from '@tabler/icons';
 import api from '../../../services/api';
+import UploadFormatHelp from '../UploadFormatHelp';
+
+// ---------------------------------------------------------------------------
+// File format spec — drives both the "required format" dialog and the
+// downloadable sample template.
+// ---------------------------------------------------------------------------
+const FORMAT_SPEC = {
+  id: 'dealer_town',
+  label: 'Dealer Town Master',
+  table: 'dealer',
+  blurb:
+    "Upload a file with columns Dealer Code and Town to update multiple dealers at once. " +
+    "Dealers that don't exist will be created.",
+  columns: [
+    { name: 'Dealer Code', required: true, note: 'Matched against the dealer code already in the system' },
+    { name: 'Town', required: true, note: 'Town the dealer belongs to — leave blank to clear it' },
+  ],
+  sample: [
+    ['D-1042', 'Meerganj'],
+    ['D-1043', 'Bareilly'],
+  ],
+  info: (
+    <>
+      Column headers must be spelled exactly <strong>Dealer Code</strong> and <strong>Town</strong> (leading
+      and trailing spaces are ignored). Each row <strong>overwrites</strong> the town on the matching dealer;
+      a dealer code that isn't found is <strong>created</strong> with the code as its placeholder name until an
+      order upload fills in the real one. Rows with an empty dealer code are skipped.
+    </>
+  ),
+};
 
 const useStyles = makeStyles((theme) => ({
   section: {
@@ -72,13 +102,6 @@ const useStyles = makeStyles((theme) => ({
     fontSize: '1.8rem',
     fontWeight: 700,
     lineHeight: 1.2,
-  },
-  instructions: {
-    backgroundColor: theme.palette.grey[50],
-    border: `1px solid ${theme.palette.divider}`,
-    borderRadius: theme.shape.borderRadius,
-    padding: theme.spacing(2),
-    marginBottom: theme.spacing(2),
   },
   tableContainer: {
     maxHeight: 520,
@@ -258,12 +281,7 @@ const DealerTownUpload = () => {
           Bulk Upload (CSV / Excel)
         </Typography>
 
-        <Box className={classes.instructions}>
-          <Typography variant="body2" color="textSecondary">
-            Upload a file with columns <code>Dealer Code</code> and <code>Town</code> to
-            update multiple dealers at once. Dealers that don't exist will be created.
-          </Typography>
-        </Box>
+        <UploadFormatHelp spec={FORMAT_SPEC} />
 
         {/* Drop zone */}
         <Box

@@ -18,7 +18,7 @@ const adminMenu = {
         },
         {
             id: 'monthly-data-upload',
-            title: 'Monthly Data Upload',
+            title: 'Order Uploads',
             type: 'item',
             // Same nginx caveat as above — path avoids the '/admin/*' prefix.
             url: '/monthly-data-upload',

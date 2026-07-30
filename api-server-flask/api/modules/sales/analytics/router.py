@@ -289,3 +289,22 @@ class DealerSuggestions(Resource):
         except Exception as e:
             logger.exception("Error in /api/analytics/dealer-suggestions")
             return {'success': False, 'msg': f'Error computing suggestions: {str(e)}'}, 400
+
+
+@rest_api.route('/api/analytics/dealer-suggestions/<int:dealer_id>')
+class DealerSuggestionsByDealer(Resource):
+    """Part suggestions for a dealer (path-param variant). Thin wrapper over the
+    shared analytics.service.dealer_suggestions — identical data to the mobile
+    API (/api/v1/analytics/*); the grouping into cards happens in the UI layer."""
+
+    @token_required
+    @active_required
+    def get(self, current_user, dealer_id):
+        try:
+            data = service.dealer_suggestions(dealer_id)
+            if data is None:
+                return {'success': False, 'msg': 'dealer not found'}, 404
+            return data, 200
+        except Exception as e:
+            logger.exception("Error in /api/analytics/dealer-suggestions/<id>")
+            return {'success': False, 'msg': f'Error computing suggestions: {str(e)}'}, 400

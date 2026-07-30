@@ -12,7 +12,7 @@ export const getAnalyticsFilters = () => api.get('analytics/filters').then((res)
 
 // Part suggestions for a dealer visit (company part-qty targets + dealer/peer history).
 export const getDealerSuggestions = (dealerId) =>
-  api.get('analytics/dealer-suggestions', { params: { dealer_id: dealerId } }).then((res) => res.data);
+  api.get(`analytics/dealer-suggestions/${dealerId}`).then((res) => res.data);
 
 // Filtered sales analytics — summary + breakdowns by executive / dealer / part group / part.
 export const getSalesAnalytics = (filters = {}) => {

@@ -22,6 +22,7 @@ from flask_restx import Resource
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from api.extensions import rest_api
+from api.shared import media
 from api.shared.db_manager import mysql_manager
 from api.shared.logging import get_logger
 from api.shared.timeutil import now_local
@@ -218,17 +219,39 @@ class V1Dealers(Resource):
     @v1_require_permission(rbac.P.DEALER_READ)
     def get(self, current_user):
         # Dealers belong to a company; one with no company stays hidden until assigned.
-        frag, params = company_filter(current_user)
-        where = "WHERE status = 'active'" + (f" AND {frag}" if frag else "")
+        # The dealer table is aliased below, so scope the filter to that alias.
+        frag, params = company_filter(current_user, column='d.company_id')
+        where = "WHERE d.status = 'active'" + (f" AND {frag}" if frag else "")
+        # No LIMIT: the app needs every dealer a rep might check into, and a
+        # truncated list silently hides dealers (there are already more than the
+        # old cap of 100). Active dealers are in the hundreds, not thousands.
+        #
+        # location_status tells the app whether to offer the "capture location"
+        # action: 'stored' (coordinates known), 'pending' (a submission awaits
+        # admin approval) or 'missing' (offer capture).
         rows = mysql_manager.execute_query(
-            f"""SELECT dealer_id, dealer_code, name, email, phone, town, status, created_at
-                FROM dealer {where} ORDER BY name LIMIT 100""",
+            f"""SELECT d.dealer_id, d.dealer_code, d.name, d.email, d.phone, d.town,
+                       d.status, d.created_at, d.latitude, d.longitude,
+                       EXISTS(SELECT 1 FROM dealer_location_submissions s
+                               WHERE s.dealer_id = d.dealer_id
+                                 AND s.status = 'pending') AS has_pending
+                FROM dealer d {where}
+                ORDER BY d.name""",
             tuple(params),
         ) or []
+
+        def _loc_status(r):
+            if r['latitude'] is not None and r['longitude'] is not None:
+                return 'stored'
+            return 'pending' if r['has_pending'] else 'missing'
+
         return [{
             "dealer_id": r['dealer_id'], "dealer_code": r['dealer_code'], "name": r['name'],
             "email": r['email'], "phone": r['phone'], "town": r['town'],
             "status": r['status'], "created_at": _iso(r['created_at']),
+            "latitude": float(r['latitude']) if r['latitude'] is not None else None,
+            "longitude": float(r['longitude']) if r['longitude'] is not None else None,
+            "location_status": _loc_status(r),
         } for r in rows], 200
 
     @v1_require_permission(rbac.P.DEALER_MANAGE)
@@ -272,3 +295,67 @@ class V1Dealers(Resource):
             "email": r['email'], "phone": r['phone'], "town": r['town'],
             "status": r['status'], "created_at": _iso(r['created_at']),
         }, 201
+
+
+@rest_api.route('/api/v1/dealers/<int:dealer_id>/location-photo')
+class V1DealerLocationPhoto(Resource):
+    """A rep's proof-of-location capture for a dealer with no coordinates yet
+    (multipart/form-data: photo, latitude, longitude, [accuracy_m], [note]).
+
+    The photo is evidence for an admin, not the record: on approval the
+    coordinates are written to the dealer and the image is deleted. Refused when
+    the dealer already has coordinates, or already has a submission waiting —
+    otherwise a dealer accumulates duplicates for an admin to sort out.
+    """
+
+    @v1_require_permission(rbac.P.DEALER_READ)
+    def post(self, current_user, dealer_id):
+        frag, cparams = company_filter(current_user, column='company_id')
+        rows = mysql_manager.execute_query(
+            "SELECT dealer_id, latitude, longitude FROM dealer WHERE dealer_id = %s"
+            + (f" AND {frag}" if frag else ""),
+            tuple([dealer_id] + list(cparams)))
+        if not rows:
+            return {"detail": f"dealer {dealer_id} not found"}, 404
+        if rows[0]['latitude'] is not None and rows[0]['longitude'] is not None:
+            return {"detail": "this dealer already has a stored location"}, 409
+
+        if mysql_manager.execute_query(
+                "SELECT submission_id FROM dealer_location_submissions "
+                "WHERE dealer_id = %s AND status = 'pending'", (dealer_id,)):
+            return {"detail": "a location for this dealer is already awaiting approval"}, 409
+
+        form = request.form
+        lat, lng = form.get('latitude'), form.get('longitude')
+        if lat is None or lng is None:
+            return {"detail": "latitude and longitude are required"}, 422
+        try:
+            lat, lng = float(lat), float(lng)
+        except (TypeError, ValueError):
+            return {"detail": "latitude/longitude must be numbers"}, 422
+        if not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
+            return {"detail": "latitude/longitude out of range"}, 422
+        try:
+            accuracy = float(form['accuracy_m']) if form.get('accuracy_m') else None
+        except (TypeError, ValueError):
+            accuracy = None
+
+        photo = request.files.get('photo')
+        if photo is None:
+            return {"detail": "a photo of the dealer is required"}, 422
+        try:
+            path, mime, size = media.save_dealer_location_photo(photo, dealer_id)
+        except media.MediaError as e:
+            return {"detail": str(e)}, 400
+
+        mysql_manager.execute_query(
+            """INSERT INTO dealer_location_submissions
+                 (dealer_id, submitted_by, latitude, longitude, accuracy_m,
+                  photo_path, mime_type, size_bytes, note, status)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')""",
+            (dealer_id, current_user['user_id'], lat, lng, accuracy,
+             path, mime, size, (form.get('note') or '').strip() or None),
+            fetch=False)
+
+        return {"status": "pending",
+                "detail": "sent for admin approval"}, 201

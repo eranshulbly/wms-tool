@@ -269,6 +269,7 @@ def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None
         'success': True,
         'month': month_label(),
         'period': period,
+        'data_through': sales_data_through(),
         'summary': {
             'total_sales': _num(summary['sales']), 'total_qty': _num(summary['qty']),
             'parts': summary['parts'], 'dealers': summary['dealers'],
