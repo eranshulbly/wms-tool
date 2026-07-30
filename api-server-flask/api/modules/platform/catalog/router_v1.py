@@ -15,7 +15,7 @@ from flask_restx import Resource
 from api.extensions import rest_api
 from api.shared.db_manager import mysql_manager
 from api.shared.auth_v1 import v1_require_permission, company_filter, company_scope
-from api.modules.user_auth.rbac import P
+from api.modules.platform.user_auth.rbac import P
 
 SKU_COLS = """product_string AS sku_code, name, description, nickname, category_id,
               uom, size, weight, barcode, hsn_code, price, is_active, created_at,
@@ -139,6 +139,8 @@ class V1Skus(Resource):
     @v1_require_permission(P.CATALOG_READ)
     def get(self, current_user):
         active_only = str(request.args.get('active_only', 'false')).lower() == 'true'
+        working_set = str(request.args.get('working_set', 'false')).lower() == 'true'
+        q = (request.args.get('q') or '').strip()
         try:
             limit = int(request.args.get('limit', 100))
             offset = int(request.args.get('offset', 0))
@@ -154,6 +156,29 @@ class V1Skus(Resource):
         if frag:
             conds.append(frag)
             params.extend(fparams)
+
+        # working_set: the parts a sales rep actually deals with — anything sold
+        # in the last 6 months, plus everything in this month's target part
+        # groups. ~1.8k rows instead of 59k, so the app can hold it locally and
+        # search it instantly; the long tail is reached via `q` instead. The
+        # sales window is bounded so this can't grow without limit as history
+        # accumulates.
+        if working_set:
+            conds.append("""product_string IN (
+                SELECT item_code FROM busy_sales_data
+                 WHERE sale_date >= DATE_SUB(DATE_FORMAT(CURDATE(), '%%Y-%%m-01'),
+                                             INTERVAL 6 MONTH)
+                UNION
+                SELECT part_number FROM part_groups
+                 WHERE period = DATE_FORMAT(CURDATE(), '%%Y-%%m-01'))""")
+
+        # Server-side search for parts outside the working set. A leading
+        # wildcard can't use a B-tree index, so this is a scan of ~59k rows —
+        # acceptable at this size, but it's the thing to index (FULLTEXT) if the
+        # catalog grows a lot.
+        if q:
+            conds.append("(name LIKE %s OR product_string LIKE %s)")
+            params.extend([f"%{q}%", f"%{q}%"])
 
         where = ("WHERE " + " AND ".join(conds)) if conds else ""
         rows = mysql_manager.execute_query(

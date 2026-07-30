@@ -16,6 +16,8 @@ const menuItems = {
 // Which section a given route belongs to. Keys are section group ids above.
 export const SECTION_FOR_PATH = [
     { match: (p) => p.startsWith('/admin'), section: 'admin' },
+    // Monthly Data Upload lives under the Admin section (shown in the Admin sidebar group).
+    { match: (p) => p.startsWith('/monthly-data-upload'), section: 'admin' },
     { match: (p) => p.startsWith('/analytics'), section: 'analytics' },
     { match: (p) => p === '/warehouse/eway-bill', section: 'eway' },
     { match: (p) => p === '/warehouse/supply-sheet', section: 'supply' },

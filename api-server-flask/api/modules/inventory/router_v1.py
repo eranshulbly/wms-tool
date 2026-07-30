@@ -30,9 +30,9 @@ from flask_restx import Resource
 
 from api.extensions import rest_api
 from api.shared.auth_v1 import v1_require_permission
-from api.modules.user_auth.rbac import P
+from api.modules.platform.user_auth.rbac import P
 from api.modules.inventory import service as svc
-from api.modules.catalog.router_v1 import sku_id_for_code, codes_for_sku_ids
+from api.modules.platform.catalog.router_v1 import sku_id_for_code, codes_for_sku_ids
 
 NOT_IMPLEMENTED = 501
 

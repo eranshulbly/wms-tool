@@ -32,6 +32,8 @@ import { getAnalyticsFilters, getSalesAnalytics, getDealerSuggestions } from '..
 const inr = (n) =>
   new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(n || 0);
 const num = (n) => new Intl.NumberFormat('en-IN').format(n || 0);
+// Minutes -> "1h 05m" / "24 min" / "—" (null = no completed visits).
+const dur = (m) => (m == null ? '—' : m >= 60 ? `${Math.floor(m / 60)}h ${String(Math.round(m % 60)).padStart(2, '0')}m` : `${Math.round(m)} min`);
 
 const StatCard = ({ label, value }) => (
   <MainCard>
@@ -76,7 +78,18 @@ const GroupCell = ({ sold, target, pct }) => {
   );
 };
 
-const EMPTY = { executive_id: null, dealer_id: null, part_group: null, part: null };
+// Time-period filter options for the sales window (value must match the backend).
+const PERIODS = [
+  { value: 'last_24h', label: 'Last 24 hours' },
+  { value: 'yesterday', label: 'Yesterday' },
+  { value: 'last_7d', label: 'Last 7 days' },
+  { value: 'this_month', label: 'This month' },
+  { value: 'last_month', label: 'Last month' },
+  { value: 'last_6m', label: 'Last 6 months' }
+];
+const DEFAULT_PERIOD = 'this_month';
+
+const EMPTY = { executive_id: null, dealer_id: null, part_group: null, part: null, period: DEFAULT_PERIOD };
 const ALL_EXEC = { user_id: null, username: 'All Executives' };
 const ALL_DEALER = { dealer_id: null, dealer: 'All Dealers' };
 const ALL_PART = { item_code: null, description: 'All Parts' };
@@ -159,6 +172,7 @@ const SalesExecutiveAnalytics = () => {
   const selectedDealer = options.dealers.find((d) => d.dealer_id === filters.dealer_id) || null;
   const selectedPart = options.parts.find((p) => p.item_code === filters.part) || null;
   const hasFilters = filters.executive_id || filters.dealer_id || filters.part_group || filters.part;
+  const periodLabel = (PERIODS.find((p) => p.value === filters.period) || PERIODS[3]).label;
 
   return (
     <Grid container spacing={gridSpacing}>
@@ -169,10 +183,23 @@ const SalesExecutiveAnalytics = () => {
               Target Tracker Analytics
             </Typography>
             <Typography variant="body1" color="textSecondary">
-              This month&apos;s Busy sales vs targets — filter by executive, dealer, part group or part.
+              {periodLabel} Busy sales vs targets — filter by executive, dealer, part group or part.
             </Typography>
           </Box>
-          {month && <Chip color="primary" label={month} />}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <Autocomplete
+              size="small"
+              disableClearable
+              sx={{ width: 200 }}
+              options={PERIODS}
+              getOptionLabel={(o) => o.label}
+              value={PERIODS.find((p) => p.value === filters.period) || PERIODS[3]}
+              isOptionEqualToValue={(o, v) => o.value === v.value}
+              onChange={(e, val) => set({ period: val ? val.value : DEFAULT_PERIOD })}
+              renderInput={(p) => <TextField {...p} label="Time period" />}
+            />
+            {month && <Chip color="primary" label={periodLabel} />}
+          </Box>
         </Stack>
       </Grid>
 
@@ -232,7 +259,7 @@ const SalesExecutiveAnalytics = () => {
             </Grid>
             {hasFilters && (
               <Box sx={{ mt: 1.5 }}>
-                <Button size="small" onClick={() => setFilters(EMPTY)}>
+                <Button size="small" onClick={() => setFilters((f) => ({ ...EMPTY, period: f.period }))}>
                   Clear filters
                 </Button>
               </Box>
@@ -261,12 +288,16 @@ const SalesExecutiveAnalytics = () => {
               sx={{
                 display: 'grid',
                 gap: gridSpacing,
-                gridTemplateColumns: { xs: 'repeat(1, 1fr)', sm: 'repeat(3, 1fr)' }
+                gridTemplateColumns: { xs: 'repeat(1, 1fr)', sm: 'repeat(2, 1fr)', md: 'repeat(4, 1fr)' }
               }}
             >
               <StatCard label="Total sales" value={inr(data.summary.total_sales)} />
               <StatCard label="Total qty" value={num(data.summary.total_qty)} />
               <StatCard label="Dealers" value={num(data.summary.dealers)} />
+              <StatCard
+                label={`Avg time at dealer (${num(data.summary.visits)} visits)`}
+                value={dur(data.summary.avg_visit_minutes)}
+              />
             </Box>
           </Grid>
 
@@ -281,6 +312,8 @@ const SalesExecutiveAnalytics = () => {
                       <TableCell align="right">Sales</TableCell>
                       <TableCell align="right">Target</TableCell>
                       <TableCell align="right">% Achieved</TableCell>
+                      <TableCell align="right">Visits</TableCell>
+                      <TableCell align="right">Avg time</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -292,11 +325,13 @@ const SalesExecutiveAnalytics = () => {
                         <TableCell align="right">
                           <PctCell pct={e.pct} />
                         </TableCell>
+                        <TableCell align="right">{num(e.visits)}</TableCell>
+                        <TableCell align="right">{dur(e.avg_visit_minutes)}</TableCell>
                       </TableRow>
                     ))}
                     {data.by_executive.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={4}>
+                        <TableCell colSpan={6}>
                           <Typography variant="body2" color="textSecondary">
                             No data for these filters.
                           </Typography>
@@ -320,6 +355,8 @@ const SalesExecutiveAnalytics = () => {
                       <TableCell align="right">Sales</TableCell>
                       <TableCell align="right">Target</TableCell>
                       <TableCell align="right">% Achieved</TableCell>
+                      <TableCell align="right">Visits</TableCell>
+                      <TableCell align="right">Avg time</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -331,6 +368,8 @@ const SalesExecutiveAnalytics = () => {
                         <TableCell align="right">
                           <PctCell pct={d.pct} />
                         </TableCell>
+                        <TableCell align="right">{num(d.visits)}</TableCell>
+                        <TableCell align="right">{dur(d.avg_visit_minutes)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

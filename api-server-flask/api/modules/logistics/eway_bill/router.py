@@ -29,7 +29,7 @@ from api.models import (
     TransportRoute, CustomerRouteMapping,
     DailyRouteManifest, CompanySchemaMapping
 )
-from api.modules.catalog.dealer_business import get_or_create_dealer
+from api.modules.platform.catalog.dealer_business import get_or_create_dealer
 from api.permissions import get_permissions
 
 # ── Basic response model ──────────────────────────────────────────────────────

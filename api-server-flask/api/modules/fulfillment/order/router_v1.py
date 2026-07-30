@@ -16,8 +16,8 @@ from flask_restx import Resource
 from api.extensions import rest_api
 from api.shared import media
 from api.shared.auth_v1 import v1_require_permission
-from api.modules.user_auth.rbac import P
-from api.modules.order import service_v1 as svc
+from api.modules.platform.user_auth.rbac import P
+from api.modules.fulfillment.order import service_v1 as svc
 
 
 def _iso(v):

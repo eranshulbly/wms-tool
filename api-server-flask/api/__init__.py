@@ -48,7 +48,7 @@ def create_app(config_override: dict = None) -> Flask:
     rest_api.init_app(app)
 
     # Wire event-bus subscriptions (assignment reacts to inventory/order events).
-    from .modules.assignment.handlers import register_handlers
+    from .modules.fulfillment.assignment.handlers import register_handlers
     register_handlers()
 
     # Enable CORS
@@ -94,7 +94,7 @@ def _register_error_handlers(app: Flask) -> None:
 
 
 def _register_utility_routes(app: Flask) -> None:
-    from .modules.order.constants import OrderStatus
+    from .modules.fulfillment.order.constants import OrderStatus
 
     @app.route('/health')
     def health_check():

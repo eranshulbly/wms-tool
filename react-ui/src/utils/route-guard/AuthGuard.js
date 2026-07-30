@@ -1,17 +1,27 @@
 import PropTypes from 'prop-types';
 import React from 'react';
 import { useSelector } from 'react-redux';
-import { Redirect } from 'react-router-dom';
+import { Redirect, useLocation } from 'react-router-dom';
 import { Box, Typography, Paper } from '@material-ui/core';
+
+// Path the part-convertor role is confined to.
+const PART_CONVERTOR_HOME = '/warehouse/submitted-orders';
 
 //-----------------------|| AUTH GUARD ||-----------------------//
 
 const AuthGuard = ({ children }) => {
     const account = useSelector((state) => state.account);
     const { isLoggedIn, user } = account;
+    const location = useLocation();
 
     if (!isLoggedIn) {
         return <Redirect to="/login" />;
+    }
+
+    // The part convertor may only ever see Submitted Orders — any other path
+    // (including the /home launcher) bounces there.
+    if (user && user.role === 'part_convertor' && !location.pathname.startsWith(PART_CONVERTOR_HOME)) {
+        return <Redirect to={PART_CONVERTOR_HOME} />;
     }
 
     if (user && user.status === 'pending') {

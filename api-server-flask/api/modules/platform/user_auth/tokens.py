@@ -18,7 +18,7 @@ import jwt
 
 from api.config import BaseConfig
 from api.shared.db_manager import mysql_manager
-from api.modules.user_auth import rbac
+from api.modules.platform.user_auth import rbac
 
 ACCESS_TTL_MINUTES = 30
 REFRESH_TTL_DAYS = 14

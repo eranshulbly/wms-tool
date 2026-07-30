@@ -6,11 +6,11 @@ module-level singletons are still exposed here so `from ..repositories import
 order_repo` keeps working during the restructure.
 """
 from api.shared.base_repository import BaseRepository  # noqa: F401
-from api.modules.order.repository import OrderRepository
-from api.modules.invoice.repository import InvoiceRepository
-from api.modules.catalog.product_repository import ProductRepository
-from api.modules.catalog.reference_repository import ReferenceRepository
-from api.modules.user_auth.repository import UserRepository
+from api.modules.fulfillment.order.repository import OrderRepository
+from api.modules.fulfillment.invoice.repository import InvoiceRepository
+from api.modules.platform.catalog.product_repository import ProductRepository
+from api.modules.platform.catalog.reference_repository import ReferenceRepository
+from api.modules.platform.user_auth.repository import UserRepository
 
 order_repo = OrderRepository()
 invoice_repo = InvoiceRepository()

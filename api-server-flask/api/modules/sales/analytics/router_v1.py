@@ -14,7 +14,7 @@ from flask_restx import Resource
 
 from api.extensions import rest_api
 from api.shared.auth_v1 import v1_auth_required
-from api.modules.analytics import service
+from api.modules.sales.analytics import service
 
 
 @rest_api.route('/api/v1/analytics/my-summary')
@@ -44,4 +44,6 @@ class V1DealerAnalytics(Resource):
             "pct": summary['pct'],
             "grow": suggestions['grow'],
             "new_opportunity": suggestions['new_opportunity'],
+            # How current the sales figures are — imports lag today's date.
+            "data_through": service.sales_data_through(),
         }, 200

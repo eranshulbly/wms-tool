@@ -11,7 +11,7 @@ All of that now lives here.  No database access — pure class-level constants a
 methods.  Import OrderStatus from constants.order_states instead of using string literals.
 """
 
-from api.modules.order.constants import OrderStatus
+from api.modules.fulfillment.order.constants import OrderStatus
 
 
 class OrderStateMachine:

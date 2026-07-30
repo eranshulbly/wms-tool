@@ -32,8 +32,8 @@ Total DB round-trips: ~6 regardless of row count.
 from datetime import datetime
 
 from api.models import Invoice, Order
-from api.modules.catalog.dealer_business import get_or_create_dealer
-from api.modules.order.state_machine import OrderStateMachine
+from api.modules.platform.catalog.dealer_business import get_or_create_dealer
+from api.modules.fulfillment.order.state_machine import OrderStateMachine
 from api.repositories import order_repo, invoice_repo
 from api.core.logging import get_logger
 

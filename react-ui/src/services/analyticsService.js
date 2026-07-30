@@ -21,5 +21,6 @@ export const getSalesAnalytics = (filters = {}) => {
   if (filters.dealer_id) params.dealer_id = filters.dealer_id;
   if (filters.part_group) params.part_group = filters.part_group;
   if (filters.part) params.part = filters.part;
+  if (filters.period) params.period = filters.period;
   return api.get('analytics/sales', { params }).then((res) => res.data);
 };

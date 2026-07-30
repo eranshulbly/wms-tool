@@ -6,7 +6,7 @@ Backward-compatible module-level function kept so existing route calls
 (product_service.process_product_upload(...)) require no changes.
 """
 
-from api.modules.catalog.product_upload_business import process_product_upload_dataframe
+from api.modules.platform.catalog.product_upload_business import process_product_upload_dataframe
 from api.core.logging import get_logger
 from api.shared.upload_base import BaseUploadService
 

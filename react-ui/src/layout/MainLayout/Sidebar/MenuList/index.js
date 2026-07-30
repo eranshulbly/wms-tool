@@ -44,6 +44,13 @@ const MenuList = () => {
 
     if (sectionGroup && sectionGroup.id === 'order-tracking') {
         sectionGroup = filterOrderTracking(sectionGroup, allowedUploads);
+        // The part convertor is scoped to Submitted Orders only.
+        if (user?.role === 'part_convertor') {
+            sectionGroup = {
+                ...sectionGroup,
+                children: sectionGroup.children.filter((c) => c.id === 'submitted-orders')
+            };
+        }
     }
 
     const groups = [homeGroup, sectionGroup].filter(Boolean);

@@ -32,21 +32,36 @@ api/
     auth.py             token_required / active_required / upload_permission_required
     logging.py exceptions.py partition_manager.py base_repository.py
     upload_base.py upload_factory.py upload_utils.py upload_validators.py upload_types.py
-  modules/
-    user_auth/     users, roles, role_order_states, role_uploads, user_warehouse_company,
-                   jwt_token_blocklist; auth login/register; router_admin.py (admin JSON API)
-    catalog/       company, dealer, product (SKU master) + product/dealer business & upload
-    order/         potential_order(_product), order(_product), order_state(_history);
-                   upload + lifecycle + state_machine + dashboard listing (router_dashboard.py)
-    invoice/       invoice, invoice_processing_config; upload/classification/stats
-    inventory/     warehouse (live) + SCAFFOLD: stock, inventory_transactions, picklists,
-                   picklist_items (schema.py, from v2)
-    assignment/    SCAFFOLD: jobs, job_status_history, worker_availability,
-                   allocation_policies; events.py + handlers.py (log-only, from v2)
-    eway_bill/     transport_routes, customer_route_mappings, daily_route_manifests,
-                   company_schema_mappings; routes + JSON generation
-    supply_sheet/  supply_sheet_counter + PDF generation
+  modules/                      modules are grouped into bounded-context CLUSTERS
+    platform/                   shared foundations every context builds on
+      user_auth/     users, roles, role_order_states, role_uploads, user_warehouse_company,
+                     jwt_token_blocklist; auth login/register; router_admin.py (admin JSON API)
+      catalog/       company, dealer, product (SKU master), categories, sku_batch
+                     + product/dealer business & upload
+    fulfillment/                order → invoice → dispatch (the order-to-ship flow)
+      order/         potential_order(_product), order(_product), order_state(_history),
+                     submitted_* (app orders); upload + lifecycle + state_machine +
+                     dashboard listing (router_dashboard.py) + DMS-input pipeline
+      invoice/       invoice, invoice_processing_config; upload/classification/stats
+      assignment/    SCAFFOLD: jobs, job_status_history, worker_availability,
+                     allocation_policies; events.py + handlers.py (log-only, from v2)
+    sales/                      sales rep performance & field activity
+      analytics/     busy_sales_data, part_groups, dealer_money_target, dealer_part_group_target;
+                     service.py = shared computation for web + mobile (/api/v1/analytics/*);
+                     router_uploads.py = admin Monthly Data Upload (/api/admin/monthly/*):
+                     period-scoped, replace-not-append reload of the 4 monthly feeds
+      visit/         dealer_visits (mobile check-in / check-out)
+    logistics/                  transport & fulfilment paperwork
+      eway_bill/     transport_routes, customer_route_mappings, daily_route_manifests,
+                     company_schema_mappings; routes + JSON generation
+      supply_sheet/  supply_sheet_counter + PDF generation
+    inventory/       warehouse (live) + bin/batch topology (fc_*, rack_*, transferin_*,
+                     entity_movement_*, sku mapping); its own single-module context
 ```
+Clusters are plain packages (`api/modules/<cluster>/<module>/`). All imports are absolute
+(`api.modules.<cluster>.<module>...`); no cross-module relative imports. Route paths and the
+database are unchanged by the clustering — it is purely code organisation, and new areas
+(e.g. a future `logistics/delivery_tracking/`) slot into the right cluster.
 
 ### Compatibility shims (transitional)
 `api/models.py`, `api/db_manager.py`, `api/core/*`, `api/partition_manager.py`,
