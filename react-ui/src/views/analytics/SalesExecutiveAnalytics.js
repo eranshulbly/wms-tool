@@ -4,7 +4,6 @@ import {
   Box,
   Stack,
   Typography,
-  Chip,
   Button,
   Card,
   CardContent,
@@ -17,13 +16,18 @@ import {
   TableHead,
   TableRow,
   Paper,
+  Collapse,
+  Chip,
+  Tabs,
+  Tab,
   CircularProgress
 } from '@material-ui/core';
-import { IconTargetArrow, IconBulb } from '@tabler/icons';
+import { IconChevronRight, IconChevronDown } from '@tabler/icons';
 
 import MainCard from '../../ui-component/cards/MainCard';
 import { gridSpacing } from '../../store/constant';
 import { getAnalyticsFilters, getSalesAnalytics, getDealerSuggestions } from '../../services/analyticsService';
+import { groupSuggestions } from './suggestionGrouping';
 
 // Sales Executive Analytics — a filtered explorer over this month's Busy sales: sales by
 // executive and by dealer against their rupee targets, plus, once a dealer is chosen,
@@ -63,18 +67,84 @@ const PctCell = ({ pct }) => {
   );
 };
 
-// The dealer's progress toward this part's GROUP target (used in the suggestion tables).
-const GroupCell = ({ sold, target, pct }) => {
-  const color = pct == null ? 'text.secondary' : pct >= 100 ? 'success.main' : pct >= 50 ? 'warning.main' : 'error.main';
+// Latest sale_date loaded vs today. Sales are batch-imported and lag; once 2+ days
+// behind we flag it amber so a part-month figure isn't read as live.
+const freshness = (dt) => {
+  if (!dt) return null;
+  const days = Math.floor((Date.now() - new Date(`${dt}T00:00:00`).getTime()) / 86400000);
+  return { date: dt, days, stale: days >= 2 };
+};
+
+// One collapsible card for a scheme (or a part group, when the scheme is 'PG').
+// Collapsed: name + card totals. Expanded: the parts, description over item_code.
+const SuggestionCard = ({ group, grow }) => {
+  const [open, setOpen] = useState(false);
   return (
-    <Box>
-      <Typography variant="body2" sx={{ fontWeight: 600, color }}>
-        {pct == null ? '—' : `${num(pct)}%`}
-      </Typography>
-      <Typography variant="caption" color="textSecondary">
-        {num(sold)} / {num(target)}
-      </Typography>
-    </Box>
+    <Paper variant="outlined" sx={{ mb: 1 }}>
+      <Box
+        onClick={() => setOpen((o) => !o)}
+        sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1.5, cursor: 'pointer', '&:hover': { bgcolor: 'action.hover' } }}
+      >
+        {open ? <IconChevronDown size={18} /> : <IconChevronRight size={18} />}
+        <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+          <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+            {group.name}
+          </Typography>
+          {group.partGroupCount > 1 && (
+            <Typography variant="caption" color="textSecondary">
+              {group.partGroupCount} part groups behind target — subtotal of this scheme, not the whole scheme
+            </Typography>
+          )}
+        </Box>
+        <Box sx={{ textAlign: 'right', flexShrink: 0 }}>
+          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+            Sold {num(group.groupSold)} · Target {num(group.groupTarget)}
+          </Typography>
+          <PctCell pct={group.groupPct} />
+        </Box>
+      </Box>
+      <Collapse in={open} unmountOnExit>
+        <TableContainer>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Part</TableCell>
+                {grow ? (
+                  <>
+                    <TableCell align="right">This mo</TableCell>
+                    <TableCell align="right">Last 6 mo</TableCell>
+                  </>
+                ) : (
+                  <TableCell align="right">Dealers</TableCell>
+                )}
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {group.parts.map((p) => (
+                <TableRow key={p.item_code} hover>
+                  <TableCell>
+                    <Typography variant="body2">{p.description || p.item_code}</Typography>
+                    {p.description ? (
+                      <Typography variant="caption" color="textSecondary" sx={{ fontFamily: 'monospace' }}>
+                        {p.item_code}
+                      </Typography>
+                    ) : null}
+                  </TableCell>
+                  {grow ? (
+                    <>
+                      <TableCell align="right">{num(p.dealer_qty)}</TableCell>
+                      <TableCell align="right">{num(p.dealer_last6m)}</TableCell>
+                    </>
+                  ) : (
+                    <TableCell align="right">{num(p.peer_dealers)}</TableCell>
+                  )}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Collapse>
+    </Paper>
   );
 };
 
@@ -99,13 +169,13 @@ const SalesExecutiveAnalytics = () => {
   const [options, setOptions] = useState({ executives: [], dealers: [], part_groups: [], parts: [] });
   const [filters, setFilters] = useState(EMPTY);
   const [data, setData] = useState(null);
-  const [month, setMonth] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   // Dealer-visit suggestions (loaded only when a specific dealer is selected).
   const [sugg, setSugg] = useState(null);
   const [suggLoading, setSuggLoading] = useState(false);
+  const [suggTab, setSuggTab] = useState(0); // 0 = Target (grow), 1 = New opportunity
 
   useEffect(() => {
     (async () => {
@@ -125,7 +195,6 @@ const SalesExecutiveAnalytics = () => {
       const d = await getSalesAnalytics(filters);
       if (d.success) {
         setData(d);
-        setMonth(d.month);
       } else {
         setError(d.msg || 'Failed to load analytics');
       }
@@ -174,33 +243,22 @@ const SalesExecutiveAnalytics = () => {
   const hasFilters = filters.executive_id || filters.dealer_id || filters.part_group || filters.part;
   const periodLabel = (PERIODS.find((p) => p.value === filters.period) || PERIODS[3]).label;
 
+  // Group the flat suggestion lists into collapsible cards (see suggestionGrouping.js).
+  const growGroups = useMemo(() => (sugg ? groupSuggestions(sugg.grow) : []), [sugg]);
+  const oppGroups = useMemo(() => (sugg ? groupSuggestions(sugg.new_opportunity) : []), [sugg]);
+  const fresh = freshness(data?.data_through);
+
   return (
     <Grid container spacing={gridSpacing}>
       <Grid item xs={12}>
-        <Stack direction="row" alignItems="center" justifyContent="space-between" flexWrap="wrap">
-          <Box>
-            <Typography variant="h2" sx={{ fontWeight: 700 }}>
-              Target Tracker Analytics
-            </Typography>
-            <Typography variant="body1" color="textSecondary">
-              {periodLabel} Busy sales vs targets — filter by executive, dealer, part group or part.
-            </Typography>
-          </Box>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            <Autocomplete
-              size="small"
-              disableClearable
-              sx={{ width: 200 }}
-              options={PERIODS}
-              getOptionLabel={(o) => o.label}
-              value={PERIODS.find((p) => p.value === filters.period) || PERIODS[3]}
-              isOptionEqualToValue={(o, v) => o.value === v.value}
-              onChange={(e, val) => set({ period: val ? val.value : DEFAULT_PERIOD })}
-              renderInput={(p) => <TextField {...p} label="Time period" />}
-            />
-            {month && <Chip color="primary" label={periodLabel} />}
-          </Box>
-        </Stack>
+        <Box>
+          <Typography variant="h2" sx={{ fontWeight: 700 }}>
+            Target Tracker Analytics
+          </Typography>
+          <Typography variant="body1" color="textSecondary">
+            {periodLabel} Busy sales vs targets — filter by time period, executive, dealer, part group or part.
+          </Typography>
+        </Box>
       </Grid>
 
       {/* Filter bar */}
@@ -208,7 +266,19 @@ const SalesExecutiveAnalytics = () => {
         <Card>
           <CardContent>
             <Grid container spacing={2} alignItems="center">
-              <Grid item xs={12} sm={6} md={3}>
+              <Grid item xs={12} sm={6} md={2.4}>
+                <Autocomplete
+                  size="small"
+                  disableClearable
+                  options={PERIODS}
+                  getOptionLabel={(o) => o.label}
+                  value={PERIODS.find((p) => p.value === filters.period) || PERIODS[3]}
+                  isOptionEqualToValue={(o, v) => o.value === v.value}
+                  onChange={(e, val) => set({ period: val ? val.value : DEFAULT_PERIOD })}
+                  renderInput={(p) => <TextField {...p} label="Time period" />}
+                />
+              </Grid>
+              <Grid item xs={12} sm={6} md={2.4}>
                 <Autocomplete
                   size="small"
                   disableClearable
@@ -220,7 +290,7 @@ const SalesExecutiveAnalytics = () => {
                   renderInput={(p) => <TextField {...p} label="Sales Executive" />}
                 />
               </Grid>
-              <Grid item xs={12} sm={6} md={3}>
+              <Grid item xs={12} sm={6} md={2.4}>
                 <Autocomplete
                   size="small"
                   disableClearable
@@ -232,7 +302,7 @@ const SalesExecutiveAnalytics = () => {
                   renderInput={(p) => <TextField {...p} label="Dealer" />}
                 />
               </Grid>
-              <Grid item xs={12} sm={6} md={3}>
+              <Grid item xs={12} sm={6} md={2.4}>
                 <Autocomplete
                   size="small"
                   disableClearable
@@ -242,7 +312,7 @@ const SalesExecutiveAnalytics = () => {
                   renderInput={(p) => <TextField {...p} label="Part Group" />}
                 />
               </Grid>
-              <Grid item xs={12} sm={6} md={3}>
+              <Grid item xs={12} sm={6} md={2.4}>
                 <Autocomplete
                   size="small"
                   disableClearable
@@ -421,12 +491,22 @@ const SalesExecutiveAnalytics = () => {
 
           {/* Part suggestions — only for a specific dealer */}
           <Grid item xs={12}>
-            <Typography variant="h3" sx={{ fontWeight: 700 }}>
-              Part suggestions
-            </Typography>
+            <Stack direction="row" spacing={2} alignItems="baseline" flexWrap="wrap">
+              <Typography variant="h3" sx={{ fontWeight: 700 }}>
+                Part suggestions
+              </Typography>
+              {fresh && (
+                <Chip
+                  size="small"
+                  label={`Sales data through ${fresh.date}`}
+                  color={fresh.stale ? 'warning' : 'default'}
+                  variant={fresh.stale ? 'filled' : 'outlined'}
+                />
+              )}
+            </Stack>
             <Typography variant="body2" color="textSecondary">
               {selectedDealer
-                ? `What to push at ${selectedDealer.dealer} — from company part-quantity targets and sales history.`
+                ? `What to push at ${selectedDealer.dealer} — from the dealer's part-group targets and sales history.`
                 : 'Pick a dealer above to see part suggestions for a visit.'}
             </Typography>
           </Grid>
@@ -438,103 +518,33 @@ const SalesExecutiveAnalytics = () => {
               </Box>
             </Grid>
           ) : sugg ? (
-            <>
-              <Grid item xs={12} md={6}>
-                <MainCard
-                  title={
-                    <Stack direction="row" spacing={1} alignItems="center">
-                      <IconTargetArrow size={20} />
-                      <span>Grow — parts they already buy</span>
-                    </Stack>
-                  }
-                  content={false}
-                >
-                  <TableContainer component={Paper} elevation={0}>
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell>Part #</TableCell>
-                          <TableCell>Part Group</TableCell>
-                          <TableCell align="right">Sold here</TableCell>
-                          <TableCell align="right">Group vs target</TableCell>
-                          <TableCell align="right">Group last 6 mo</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {sugg.grow.map((g) => (
-                          <TableRow key={g.item_code} hover>
-                            <TableCell>{g.item_code}</TableCell>
-                            <TableCell>{g.part_group || '—'}</TableCell>
-                            <TableCell align="right">{num(g.dealer_qty)}</TableCell>
-                            <TableCell align="right">
-                              <GroupCell sold={g.group_sold} target={g.group_target} pct={g.group_pct} />
-                            </TableCell>
-                            <TableCell align="right">{num(g.group_last6m)}</TableCell>
-                          </TableRow>
-                        ))}
-                        {sugg.grow.length === 0 && (
-                          <TableRow>
-                            <TableCell colSpan={5}>
-                              <Typography variant="body2" color="textSecondary">
-                                Nothing to grow — every part this dealer buys is already at target.
-                              </Typography>
-                            </TableCell>
-                          </TableRow>
-                        )}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
-                </MainCard>
-              </Grid>
-
-              <Grid item xs={12} md={6}>
-                <MainCard
-                  title={
-                    <Stack direction="row" spacing={1} alignItems="center">
-                      <IconBulb size={20} />
-                      <span>New opportunity — peers buy, they don&apos;t</span>
-                    </Stack>
-                  }
-                  content={false}
-                >
-                  <TableContainer component={Paper} elevation={0}>
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell>Part #</TableCell>
-                          <TableCell>Part Group</TableCell>
-                          <TableCell align="right">Peer dealers</TableCell>
-                          <TableCell align="right">Peer qty</TableCell>
-                          <TableCell align="right">Group vs target</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {sugg.new_opportunity.map((n) => (
-                          <TableRow key={n.item_code} hover>
-                            <TableCell>{n.item_code}</TableCell>
-                            <TableCell>{n.part_group || '—'}</TableCell>
-                            <TableCell align="right">{num(n.peer_dealers)}</TableCell>
-                            <TableCell align="right">{num(n.peer_qty)}</TableCell>
-                            <TableCell align="right">
-                              <GroupCell sold={n.group_sold} target={n.group_target} pct={n.group_pct} />
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                        {sugg.new_opportunity.length === 0 && (
-                          <TableRow>
-                            <TableCell colSpan={5}>
-                              <Typography variant="body2" color="textSecondary">
-                                No new opportunities for this dealer.
-                              </Typography>
-                            </TableCell>
-                          </TableRow>
-                        )}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
-                </MainCard>
-              </Grid>
-            </>
+            <Grid item xs={12}>
+              <MainCard content={false}>
+                <Box sx={{ borderBottom: 1, borderColor: 'divider', px: 2, pt: 1 }}>
+                  <Tabs value={suggTab} onChange={(_, v) => setSuggTab(v)}>
+                    <Tab label={`Target (${growGroups.length})`} />
+                    <Tab label={`New opportunity (${oppGroups.length})`} />
+                  </Tabs>
+                </Box>
+                <Box sx={{ p: 2 }}>
+                  {suggTab === 0 ? (
+                    growGroups.length ? (
+                      growGroups.map((g) => <SuggestionCard key={g.schemeKey} group={g} grow />)
+                    ) : (
+                      <Typography variant="body2" color="textSecondary">
+                        Nothing to grow — every part this dealer buys is already at target.
+                      </Typography>
+                    )
+                  ) : oppGroups.length ? (
+                    oppGroups.map((g) => <SuggestionCard key={g.schemeKey} group={g} grow={false} />)
+                  ) : (
+                    <Typography variant="body2" color="textSecondary">
+                      No new opportunities for this dealer.
+                    </Typography>
+                  )}
+                </Box>
+              </MainCard>
+            </Grid>
           ) : null}
         </>
       ) : null}

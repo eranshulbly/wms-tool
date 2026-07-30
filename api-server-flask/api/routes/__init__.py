@@ -26,6 +26,7 @@ def register_all_routes():
     """
     from ..modules.platform.user_auth import router as _user_auth_router        # noqa: F401
     from ..modules.platform.user_auth import router_admin as _admin_router      # noqa: F401
+    from ..modules.platform.user_auth import router_dealer_locations as _dealer_loc_router  # noqa: F401
     from ..modules.fulfillment.order import router as _order_router                # noqa: F401
     from ..modules.fulfillment.order import router_dashboard as _dashboard_router  # noqa: F401
     from ..modules.fulfillment.invoice import router as _invoice_router            # noqa: F401

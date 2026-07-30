@@ -4,10 +4,11 @@ import {
   Button,
   Typography,
   CircularProgress,
-  Grid,
   Paper,
   Chip,
   Alert,
+  Tabs,
+  Tab,
   Select,
   MenuItem,
   FormControl,
@@ -42,7 +43,7 @@ import api from '../../services/api';
 const FEEDS = [
   {
     id: 'sales',
-    label: 'Sales Actuals',
+    label: 'Busy Sales Upload',
     table: 'busy_sales_data',
     color: '#1565c0',
     byDateRange: true,
@@ -64,7 +65,7 @@ const FEEDS = [
   },
   {
     id: 'part-groups',
-    label: 'Part-Group Mapping',
+    label: 'Part Group Mapping',
     table: 'part_groups',
     color: '#2e7d32',
     blurb: 'Part → part-group → scheme mapping for the month. Replaces the whole mapping for the selected period.',
@@ -431,6 +432,7 @@ function FeedCard({ feed, year, month, disabled, loadedRows, statusLoading, stat
 // ---------------------------------------------------------------------------
 const MonthlyDataUpload = () => {
   const classes = useStyles();
+  const [tab, setTab] = useState(0);
   const [year, setYear] = useState(NOW_YEAR);
   const [month, setMonth] = useState(7); // July
   const [status, setStatus] = useState({});
@@ -466,12 +468,13 @@ const MonthlyDataUpload = () => {
 
   const periodKey = `${year}-${String(month).padStart(2, '0')}-01`;
   const ready = Boolean(year && month);
+  const activeFeed = FEEDS[tab];
 
   return (
     <Box p={3}>
-      <Typography variant="h4" style={{ fontWeight: 600 }}>Monthly Data Upload</Typography>
+      <Typography variant="h4" style={{ fontWeight: 600 }}>Order Uploads</Typography>
       <Typography variant="body2" color="textSecondary" style={{ marginTop: 4, marginBottom: 16 }}>
-        Pick the period, then upload each monthly feed. Every upload replaces that period's data — it never duplicates.
+        Pick a feed, set the period, then upload. Every upload replaces that period's data — it never duplicates.
       </Typography>
 
       {statusError && (
@@ -482,53 +485,72 @@ const MonthlyDataUpload = () => {
         </Box>
       )}
 
-      {/* Period selector */}
-      <Box className={classes.periodBar}>
-        <IconCalendar size={22} />
-        <Box>
-          <Typography variant="subtitle1" style={{ fontWeight: 600, lineHeight: 1.2 }}>Period</Typography>
-          <Typography variant="caption" color="textSecondary">
-            Applies to the mapping &amp; target feeds. Sales loads by the dates in its own file.
-          </Typography>
-        </Box>
-        <FormControl size="small" variant="outlined" style={{ minWidth: 130 }}>
-          <InputLabel>Month</InputLabel>
-          <Select value={month} label="Month" onChange={(e) => setMonth(e.target.value)}>
-            {MONTHS.map((m, i) => <MenuItem key={m} value={i + 1}>{m}</MenuItem>)}
-          </Select>
-        </FormControl>
-        <FormControl size="small" variant="outlined" style={{ minWidth: 110 }}>
-          <InputLabel>Year</InputLabel>
-          <Select value={year} label="Year" onChange={(e) => setYear(e.target.value)}>
-            {YEARS.map((y) => <MenuItem key={y} value={y}>{y}</MenuItem>)}
-          </Select>
-        </FormControl>
-        <Box flexGrow={1} />
-        <Chip
-          color="primary"
-          variant="outlined"
-          icon={<IconCalendar size={15} />}
-          label={`Uploading for ${MONTHS[month - 1]} ${year}`}
-        />
-      </Box>
-
-      <Grid container spacing={2}>
-        {FEEDS.map((feed) => (
-          <Grid item xs={12} md={6} key={feed.id}>
-            <FeedCard
-              feed={feed}
-              year={year}
-              month={month}
-              disabled={feed.byDateRange ? false : !ready}
-              loadedRows={status[feed.id]?.[periodKey] || 0}
-              statusLoading={statusLoading}
-              statusError={statusError}
-              onUploaded={fetchStatus}
-              onSnack={showSnack}
+      {/* Feed tabs */}
+      <Paper elevation={0} variant="outlined" style={{ marginBottom: 16 }}>
+        <Tabs
+          value={tab}
+          onChange={(_, v) => setTab(v)}
+          variant="scrollable"
+          scrollButtons="auto"
+          indicatorColor="primary"
+          textColor="primary"
+          style={{ borderBottom: '1px solid #e0e0e0' }}
+        >
+          {FEEDS.map((f) => (
+            <Tab
+              key={f.id}
+              label={f.label}
+              style={{ textTransform: 'none', minHeight: 52, fontWeight: 500 }}
             />
-          </Grid>
-        ))}
-      </Grid>
+          ))}
+        </Tabs>
+      </Paper>
+
+      {/* Period selector — only for the month-scoped feeds */}
+      {!activeFeed.byDateRange && (
+        <Box className={classes.periodBar}>
+          <IconCalendar size={22} />
+          <Box>
+            <Typography variant="subtitle1" style={{ fontWeight: 600, lineHeight: 1.2 }}>Period</Typography>
+            <Typography variant="caption" color="textSecondary">
+              Applies to the mapping &amp; target feeds. Busy Sales loads by the dates in its own file.
+            </Typography>
+          </Box>
+          <FormControl size="small" variant="outlined" style={{ minWidth: 130 }}>
+            <InputLabel>Month</InputLabel>
+            <Select value={month} label="Month" onChange={(e) => setMonth(e.target.value)}>
+              {MONTHS.map((m, i) => <MenuItem key={m} value={i + 1}>{m}</MenuItem>)}
+            </Select>
+          </FormControl>
+          <FormControl size="small" variant="outlined" style={{ minWidth: 110 }}>
+            <InputLabel>Year</InputLabel>
+            <Select value={year} label="Year" onChange={(e) => setYear(e.target.value)}>
+              {YEARS.map((y) => <MenuItem key={y} value={y}>{y}</MenuItem>)}
+            </Select>
+          </FormControl>
+          <Box flexGrow={1} />
+          <Chip
+            color="primary"
+            variant="outlined"
+            icon={<IconCalendar size={15} />}
+            label={`Uploading for ${MONTHS[month - 1]} ${year}`}
+          />
+        </Box>
+      )}
+
+      {/* Active feed */}
+      <FeedCard
+        key={activeFeed.id}
+        feed={activeFeed}
+        year={year}
+        month={month}
+        disabled={activeFeed.byDateRange ? false : !ready}
+        loadedRows={status[activeFeed.id]?.[periodKey] || 0}
+        statusLoading={statusLoading}
+        statusError={statusError}
+        onUploaded={fetchStatus}
+        onSnack={showSnack}
+      />
 
       <Snackbar
         open={snack.open}

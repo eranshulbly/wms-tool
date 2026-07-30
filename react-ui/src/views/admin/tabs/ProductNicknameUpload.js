@@ -34,6 +34,36 @@ import {
   IconRefresh,
 } from '@tabler/icons';
 import api from '../../../services/api';
+import UploadFormatHelp from '../UploadFormatHelp';
+
+// ---------------------------------------------------------------------------
+// File format spec — drives both the "required format" dialog and the
+// downloadable sample template.
+// ---------------------------------------------------------------------------
+const FORMAT_SPEC = {
+  id: 'product_nickname',
+  label: 'Product Nickname',
+  table: 'product',
+  blurb:
+    'Upload a file with columns Product String and Nickname to set nicknames for multiple products at once. ' +
+    'The nickname is used as the column header on supply sheet PDFs instead of the product description.',
+  columns: [
+    { name: 'Product String', required: true, note: 'Must match an existing product string in the system' },
+    { name: 'Nickname', required: true, note: 'Short header shown on supply sheets — leave blank to clear it' },
+  ],
+  sample: [
+    ['14100KCC910S', 'Clutch Cover'],
+    ['43120365H70S', 'Brake Shoe'],
+  ],
+  info: (
+    <>
+      Column headers must be spelled exactly <strong>Product String</strong> and <strong>Nickname</strong>{' '}
+      (leading and trailing spaces are ignored). Each row <strong>overwrites</strong> the nickname on the
+      matching product. Products are <strong>never created</strong> here — a product string that isn't found
+      is skipped and reported as a row error.
+    </>
+  ),
+};
 
 const useStyles = makeStyles((theme) => ({
   section: {
@@ -72,13 +102,6 @@ const useStyles = makeStyles((theme) => ({
     fontSize: '1.8rem',
     fontWeight: 700,
     lineHeight: 1.2,
-  },
-  instructions: {
-    backgroundColor: theme.palette.grey[50],
-    border: `1px solid ${theme.palette.divider}`,
-    borderRadius: theme.shape.borderRadius,
-    padding: theme.spacing(2),
-    marginBottom: theme.spacing(2),
   },
   tableContainer: {
     maxHeight: 520,
@@ -251,13 +274,7 @@ const ProductNicknameUpload = () => {
           Bulk Upload (CSV / Excel)
         </Typography>
 
-        <Box className={classes.instructions}>
-          <Typography variant="body2" color="textSecondary">
-            Upload a file with columns <code>Product String</code> and <code>Nickname</code> to
-            set nicknames for multiple products at once. The nickname will be used as the column
-            header on supply sheet PDFs instead of the product description.
-          </Typography>
-        </Box>
+        <UploadFormatHelp spec={FORMAT_SPEC} />
 
         {/* Drop zone */}
         <Box

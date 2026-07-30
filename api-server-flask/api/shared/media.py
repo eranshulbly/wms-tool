@@ -49,8 +49,8 @@ def _ext_for(file_storage):
     )
 
 
-def save_order_photo(file_storage, order_id):
-    """Persist an uploaded photo and return (relative_path, mime_type, size_bytes).
+def _save(file_storage, rel_dir):
+    """Validate and write an upload under `rel_dir`; returns (rel_path, mime, size).
 
     The returned path is relative to MEDIA_ROOT so the database never holds an
     absolute path that would break if the deployment layout changes.
@@ -69,13 +69,39 @@ def save_order_photo(file_storage, order_id):
     if size > MAX_IMAGE_BYTES:
         raise MediaError(f"photo is too large (max {MAX_IMAGE_BYTES // (1024 * 1024)}MB)")
 
-    rel_dir = os.path.join('orders', str(order_id))
     abs_dir = os.path.join(MEDIA_ROOT, rel_dir)
     os.makedirs(abs_dir, exist_ok=True)
 
     name = f"{uuid.uuid4().hex}{ext}"
     file_storage.save(os.path.join(abs_dir, name))
     return os.path.join(rel_dir, name), (file_storage.mimetype or 'image/jpeg'), size
+
+
+def save_order_photo(file_storage, order_id):
+    """Persist an uploaded order photo; returns (relative_path, mime, size_bytes)."""
+    return _save(file_storage, os.path.join('orders', str(order_id)))
+
+
+def save_dealer_location_photo(file_storage, dealer_id):
+    """Persist a dealer-location proof photo; returns (relative_path, mime, size).
+
+    These are deliberately short-lived: the photo exists only to let an admin
+    verify where the rep was standing. Once the submission is approved or
+    rejected the coordinates are kept and the image is deleted by
+    `delete_media`, so proof photos don't accumulate on disk.
+    """
+    return _save(file_storage, os.path.join('dealer_locations', str(dealer_id)))
+
+
+def delete_media(relative_path):
+    """Delete a stored file. Missing files are fine — deletion is idempotent, so
+    a retried review can't fail on an already-removed photo."""
+    if not relative_path:
+        return
+    try:
+        os.remove(absolute_path(relative_path))
+    except (FileNotFoundError, MediaError):
+        pass
 
 
 def absolute_path(relative_path):
