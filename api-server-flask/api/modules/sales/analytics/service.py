@@ -16,8 +16,11 @@ you slice by part.
 
 from api.shared.db_manager import mysql_manager
 
-# Attribution goes through Hero's dealers (this Busy data is Hero's).
-HERO = 1
+# Attribution goes through the company's dealers. The Busy feed is loaded per company
+# (see router_uploads), so every query here is scoped to one company at a time.
+# DEFAULT_COMPANY is the fallback for callers that do not pass one — it is NOT a licence
+# to read across tenants; routes resolve the caller's own company and pass it in.
+DEFAULT_COMPANY = 1
 
 _MONTH = "YEAR(b.sale_date) = YEAR(CURDATE()) AND MONTH(b.sale_date) = MONTH(CURDATE())"
 
@@ -29,10 +32,12 @@ _PERIOD = "DATE_FORMAT(CURDATE(), '%%Y-%%m-01')"
 # The part-group mapping is monthly, so each sale maps to ITS OWN month's mapping —
 # this keeps multi-month period filters (last 7 days, 6 months, …) correct. For a
 # single current month it is identical to joining on _PERIOD.
-_BASE = (f"FROM busy_sales_data b "
-         f"JOIN dealer d ON d.name = b.particulars AND d.company_id = {HERO} "
-         f"LEFT JOIN part_groups pg ON pg.part_number = b.item_code "
-         f"AND pg.period = DATE_FORMAT(b.sale_date, '%%Y-%%m-01') ")
+def _base(company_id):
+    """Sales -> dealer -> part-group join, scoped to one company."""
+    return (f"FROM busy_sales_data b "
+            f"JOIN dealer d ON d.name = b.particulars AND d.company_id = {int(company_id)} "
+            f"LEFT JOIN part_groups pg ON pg.part_number = b.item_code "
+            f"AND pg.period = DATE_FORMAT(b.sale_date, '%%Y-%%m-01') ")
 
 
 # Named period filters for the analytics tab. Each maps to (sales-date WHERE clause,
@@ -74,12 +79,12 @@ def _visit_where(period):
     }.get(period, this_month)
 
 
-def _visit_stats(period, executive_id=None, dealer_id=None):
+def _visit_stats(period, executive_id=None, dealer_id=None, company_id=DEFAULT_COMPANY):
     """Average time reps spent at dealers (from dealer_visits check-in/out) for the
     period, honouring the executive/dealer filters. Returns (by_exec, by_dealer, total)
     where each stat is {'visits': n, 'avg_min': m|None}. Only completed visits (with a
     check-out) shorter than _VISIT_CAP_SEC count toward the average."""
-    conds = [_visit_where(period), f"v.company_id = {HERO}", "v.check_out_at IS NOT NULL",
+    conds = [_visit_where(period), f"v.company_id = {int(company_id)}", "v.check_out_at IS NOT NULL",
              f"TIMESTAMPDIFF(SECOND, v.check_in_at, v.check_out_at) BETWEEN 0 AND {_VISIT_CAP_SEC}"]
     params = []
     if executive_id:
@@ -156,7 +161,7 @@ def _where(sales_where, executive_id=None, dealer_id=None, part_group=None, part
     return " AND ".join(where), tuple(params)
 
 
-def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None,
+def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None, company_id=DEFAULT_COMPANY,
                    period='this_month'):
     """Filtered sales analytics: summary + breakdowns by executive / dealer / part
     group / part. `period` selects the sales-date window (this_month, last_month,
@@ -170,39 +175,39 @@ def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None
                    COUNT(DISTINCT b.item_code) AS parts,
                    COUNT(DISTINCT d.dealer_id) AS dealers,
                    COUNT(DISTINCT d.sales_executive_id) AS executives
-            {_BASE} WHERE {where}""", params)[0]
+            {_base(company_id)} WHERE {where}""", params)[0]
 
     by_executive = mysql_manager.execute_query(
         f"""SELECT u.id AS user_id, u.username,
                    SUM(b.amount) AS sales, SUM(b.quantity) AS qty
-            {_BASE} JOIN users u ON u.id = d.sales_executive_id
+            {_base(company_id)} JOIN users u ON u.id = d.sales_executive_id
             WHERE {where}
             GROUP BY u.id, u.username ORDER BY sales DESC""", params) or []
 
     by_dealer = mysql_manager.execute_query(
         f"""SELECT d.dealer_id, d.name AS dealer,
                    SUM(b.amount) AS sales, SUM(b.quantity) AS qty
-            {_BASE} WHERE {where}
+            {_base(company_id)} WHERE {where}
             GROUP BY d.dealer_id, d.name ORDER BY sales DESC""", params) or []
 
     by_part_group = mysql_manager.execute_query(
         f"""SELECT COALESCE(pg.part_group, '(Unmapped)') AS part_group,
                    SUM(b.quantity) AS qty, SUM(b.amount) AS sales,
                    COUNT(DISTINCT b.item_code) AS parts
-            {_BASE} WHERE {where}
+            {_base(company_id)} WHERE {where}
             GROUP BY COALESCE(pg.part_group, '(Unmapped)') ORDER BY qty DESC""", params) or []
 
     by_part = mysql_manager.execute_query(
         f"""SELECT b.item_code, MAX(pg.description) AS description,
                    MAX(pg.part_group) AS part_group,
                    SUM(b.quantity) AS qty, SUM(b.amount) AS sales
-            {_BASE} WHERE {where}
+            {_base(company_id)} WHERE {where}
             GROUP BY b.item_code ORDER BY qty DESC""", params) or []
 
     # Part-group quantity targets are per dealer (dealer_part_group_target). For the
     # current scope they sum over the dealers in view (executive/dealer filters) — like
     # the rupee targets, a part / part-group filter narrows sold qty, not the target.
-    gwhere = [f"d.company_id = {HERO}", f"dpg.target_period = {target_period}"]
+    gwhere = [f"d.company_id = {int(company_id)}", f"dpg.target_period = {target_period}"]
     gparams = []
     if executive_id:
         gwhere.append("d.sales_executive_id = %s"); gparams.append(executive_id)
@@ -217,7 +222,7 @@ def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None
 
     # Rupee targets come from dealer_money_target for THIS period. They honour only the
     # dealer-scoping filters (executive / dealer), never part / part-group.
-    dwhere = [f"d.company_id = {HERO}", "d.sales_executive_id IS NOT NULL",
+    dwhere = [f"d.company_id = {int(company_id)}", "d.sales_executive_id IS NOT NULL",
               f"mt.target_period = {target_period}"]
     dparams = []
     if executive_id:
@@ -235,7 +240,7 @@ def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None
             WHERE {dclause} GROUP BY d.sales_executive_id""", tuple(dparams)) or [])}
 
     # Target tracker: every dealer × part-group target for this period vs qty sold.
-    dgwhere = [f"d.company_id = {HERO}", f"dpg.target_period = {target_period}"]
+    dgwhere = [f"d.company_id = {int(company_id)}", f"dpg.target_period = {target_period}"]
     dgparams = []
     if executive_id:
         dgwhere.append("d.sales_executive_id = %s"); dgparams.append(executive_id)
@@ -253,7 +258,7 @@ def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None
                        COALESCE(pg.part_group, '(Unmapped)') AS part_group,
                        SUM(b.quantity) AS sold
                 FROM busy_sales_data b
-                JOIN dealer d2 ON d2.name = b.particulars AND d2.company_id = {HERO}
+                JOIN dealer d2 ON d2.name = b.particulars AND d2.company_id = {int(company_id)}
                 LEFT JOIN part_groups pg ON pg.part_number = b.item_code
                     AND pg.period = DATE_FORMAT(b.sale_date, '%%Y-%%m-01')
                 WHERE {sales_where}
@@ -263,7 +268,8 @@ def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None
             ORDER BY d.name, dpg.part_group""", tuple(dgparams)) or []
 
     # Average time reps spent at dealers this period (dealer_visits check-in/out).
-    visit_exec, visit_dealer, visit_total = _visit_stats(period, executive_id, dealer_id)
+    visit_exec, visit_dealer, visit_total = _visit_stats(
+        period, executive_id, dealer_id, company_id=company_id)
 
     return {
         'success': True,
@@ -311,7 +317,7 @@ def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None
     }
 
 
-def exec_summary(executive_id):
+def exec_summary(executive_id, company_id=DEFAULT_COMPANY):
     """The one executive's this-month sales / target / % — for the check-in home.
 
     The target is the sum of the exec's dealers' value_target and exists even with
@@ -320,7 +326,7 @@ def exec_summary(executive_id):
     data = sales_explorer(executive_id=executive_id)
     row = next((e for e in data['by_executive'] if e['user_id'] == executive_id), None)
     sales = row['sales'] if row else 0
-    target = row['target'] if row else _exec_target_only(executive_id)
+    target = row['target'] if row else _exec_target_only(executive_id, company_id=company_id)
     return {
         'month': data['month'],
         'executive_id': executive_id,
@@ -331,16 +337,16 @@ def exec_summary(executive_id):
     }
 
 
-def _exec_target_only(executive_id):
+def _exec_target_only(executive_id, company_id=DEFAULT_COMPANY):
     rows = mysql_manager.execute_query(
         f"""SELECT COALESCE(SUM(mt.value_target),0) AS t
             FROM dealer d JOIN dealer_money_target mt ON mt.dealer_id = d.dealer_id
-            WHERE d.company_id = {HERO} AND d.sales_executive_id = %s
+            WHERE d.company_id = {int(company_id)} AND d.sales_executive_id = %s
               AND mt.target_period = {_PERIOD}""", (executive_id,))
     return _num(rows[0]['t']) if rows else 0
 
 
-def dealer_summary(dealer_id):
+def dealer_summary(dealer_id, company_id=DEFAULT_COMPANY):
     """The one dealer's this-month sales / target / %."""
     data = sales_explorer(dealer_id=dealer_id)
     row = next((d for d in data['by_dealer'] if d['dealer_id'] == dealer_id), None)
@@ -365,7 +371,7 @@ def dealer_summary(dealer_id):
 PEER_BAND = 0.20
 
 
-def _peer_dealer_ids(dealer_id):
+def _peer_dealer_ids(dealer_id, company_id=DEFAULT_COMPANY):
     """Dealers comparable in size to `dealer_id` — money target within ±PEER_BAND,
     company-wide, excluding the dealer itself. Empty when the dealer has no
     money target for the period (no band can be derived).
@@ -381,14 +387,14 @@ def _peer_dealer_ids(dealer_id):
     return [r['dealer_id'] for r in (mysql_manager.execute_query(
         f"""SELECT mt.dealer_id
             FROM dealer_money_target mt
-            JOIN dealer d ON d.dealer_id = mt.dealer_id AND d.company_id = {HERO}
+            JOIN dealer d ON d.dealer_id = mt.dealer_id AND d.company_id = {int(company_id)}
             WHERE mt.target_period = {_PERIOD}
               AND mt.dealer_id <> %s
               AND mt.value_target BETWEEN %s AND %s""",
         (dealer_id, mine * (1 - PEER_BAND), mine * (1 + PEER_BAND))) or [])]
 
 
-def dealer_suggestions(dealer_id):
+def dealer_suggestions(dealer_id, company_id=DEFAULT_COMPANY):
     """Part suggestions for the exec visiting `dealer_id`, driven by the DEALER's own
     part-group quantity targets (dealer_part_group_target):
 
@@ -407,7 +413,7 @@ def dealer_suggestions(dealer_id):
     """
     head = mysql_manager.execute_query(
         f"""SELECT dealer_id, name, sales_executive_id
-            FROM dealer WHERE dealer_id = %s AND company_id = {HERO}""", (dealer_id,))
+            FROM dealer WHERE dealer_id = %s AND company_id = {int(company_id)}""", (dealer_id,))
     if not head:
         return None
     head = head[0]
@@ -418,7 +424,7 @@ def dealer_suggestions(dealer_id):
     # with no money target for the period has no band, hence no peers — its
     # new_opportunity list comes back empty rather than falling back to
     # everyone, which would silently compare it against the whole company.
-    peer_ids = _peer_dealer_ids(dealer_id)
+    peer_ids = _peer_dealer_ids(dealer_id, company_id=company_id)
 
     # This dealer's part-group qty targets for the month.
     targets = {r['part_group']: float(r['t']) for r in (mysql_manager.execute_query(
@@ -446,7 +452,7 @@ def dealer_suggestions(dealer_id):
                    COUNT(DISTINCT CASE WHEN {peer_cond}
                             THEN d.dealer_id END) AS peer_dealers
             FROM busy_sales_data b
-            JOIN dealer d ON d.name = b.particulars AND d.company_id = {HERO}
+            JOIN dealer d ON d.name = b.particulars AND d.company_id = {int(company_id)}
             LEFT JOIN part_groups pg ON pg.part_number = b.item_code AND pg.period = {_PERIOD}
             WHERE {_MONTH}
             GROUP BY b.item_code""",
@@ -469,7 +475,7 @@ def dealer_suggestions(dealer_id):
     last6m = {r['part_group']: _num(r['q']) for r in (mysql_manager.execute_query(
         f"""SELECT COALESCE(pg.part_group, '(Unmapped)') AS part_group, SUM(b.quantity) AS q
             FROM busy_sales_data b
-            JOIN dealer d ON d.name = b.particulars AND d.company_id = {HERO}
+            JOIN dealer d ON d.name = b.particulars AND d.company_id = {int(company_id)}
             LEFT JOIN part_groups pg ON pg.part_number = b.item_code AND pg.period = {_PERIOD}
             WHERE d.dealer_id = %s
               AND b.sale_date >= DATE_SUB({_PERIOD}, INTERVAL 6 MONTH)
@@ -482,7 +488,7 @@ def dealer_suggestions(dealer_id):
     part_last6m = {r['item_code']: _num(r['q']) for r in (mysql_manager.execute_query(
         f"""SELECT b.item_code, SUM(b.quantity) AS q
             FROM busy_sales_data b
-            JOIN dealer d ON d.name = b.particulars AND d.company_id = {HERO}
+            JOIN dealer d ON d.name = b.particulars AND d.company_id = {int(company_id)}
             WHERE d.dealer_id = %s
               AND b.sale_date >= DATE_SUB({_PERIOD}, INTERVAL 6 MONTH)
               AND b.sale_date <  {_PERIOD}

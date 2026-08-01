@@ -81,18 +81,22 @@ def validate_order_data(df):
     return len(errors) == 0, errors
 
 
-def get_upload_statistics(warehouse_id=None, company_id=None):
-    """Return aggregate statistics about orders in the DB."""
+def get_upload_statistics(warehouse_id=None, company_ids=None):
+    """Return aggregate statistics about orders in the DB.
+
+    `company_ids` is the caller's resolved tenant scope (permissions.resolve_company_scope),
+    not a raw request parameter. Currently unused by any route — kept tenant-safe so wiring
+    it up later cannot reintroduce an unfiltered read.
+    """
     try:
-        base_query = "SELECT COUNT(*) as count FROM potential_order WHERE 1=1"
-        params = []
+        from api.permissions import company_filter_sql
+        cf_sql, cf_params = company_filter_sql(company_ids)
+        base_query = f"SELECT COUNT(*) as count FROM potential_order WHERE {cf_sql}"
+        params = list(cf_params)
 
         if warehouse_id:
             base_query += " AND warehouse_id = %s"
             params.append(warehouse_id)
-        if company_id:
-            base_query += " AND company_id = %s"
-            params.append(company_id)
 
         total_result = mysql_manager.execute_query(base_query, params)
         total_orders = total_result[0]['count'] if total_result else 0
@@ -109,13 +113,12 @@ def get_upload_statistics(warehouse_id=None, company_id=None):
             "SELECT COUNT(*) as count FROM potential_order_product pop "
             "JOIN potential_order po ON pop.potential_order_id = po.potential_order_id WHERE 1=1"
         )
-        product_params = []
+        pcf_sql, pcf_params = company_filter_sql(company_ids, alias='po')
+        product_query += f" AND {pcf_sql}"
+        product_params = list(pcf_params)
         if warehouse_id:
             product_query += " AND po.warehouse_id = %s"
             product_params.append(warehouse_id)
-        if company_id:
-            product_query += " AND po.company_id = %s"
-            product_params.append(company_id)
 
         product_result = mysql_manager.execute_query(product_query, product_params)
         total_products = product_result[0]['count'] if product_result else 0

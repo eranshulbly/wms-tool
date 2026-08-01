@@ -7,6 +7,7 @@ these classes directly.
 """
 from datetime import datetime
 from api.shared.db_manager import mysql_manager, MySQLModel, partition_filter
+from api.permissions import company_filter_sql
 
 
 class OrderState(MySQLModel):
@@ -131,35 +132,43 @@ class PotentialOrder(MySQLModel):
         return None
 
     @classmethod
-    def count_by_status(cls, status, warehouse_id=None, company_id=None):
-        """Count orders by status with optional filters"""
+    def count_by_status(cls, status, warehouse_id=None, company_ids=None):
+        """Count orders by status with optional filters.
+
+        `company_ids` is the caller's resolved tenant scope (see
+        permissions.resolve_company_scope) — a list, or None for an all_warehouses role.
+        It is NOT a raw request parameter: an empty list means "no companies" and matches
+        nothing, which is the safe direction for a tenant filter.
+        """
         pf_sql, pf_params = partition_filter('potential_order')
-        query = f"SELECT COUNT(*) as count FROM potential_order WHERE {pf_sql} AND status = %s"
-        params = list(pf_params) + [status]
+        cf_sql, cf_params = company_filter_sql(company_ids)
+        query = (f"SELECT COUNT(*) as count FROM potential_order "
+                 f"WHERE {pf_sql} AND {cf_sql} AND status = %s")
+        params = list(pf_params) + list(cf_params) + [status]
 
         if warehouse_id:
             query += " AND warehouse_id = %s"
             params.append(warehouse_id)
 
-        if company_id:
-            query += " AND company_id = %s"
-            params.append(company_id)
-
         result = mysql_manager.execute_query(query, params)
         return result[0]['count'] if result else 0
 
     @classmethod
-    def find_by_filters(cls, status=None, warehouse_id=None, company_id=None, limit=1000, offset=0, sort_by='created_at'):
-        """Find orders by filters — scoped to the active 4-month partition window."""
+    def find_by_filters(cls, status=None, warehouse_id=None, company_ids=None, limit=1000, offset=0, sort_by='created_at'):
+        """Find orders by filters — scoped to the active 4-month partition window.
+
+        `company_ids` is the caller's resolved tenant scope, not a request parameter.
+        """
         pf_sql, pf_params = partition_filter('potential_order', alias='po')
+        cf_sql, cf_params = company_filter_sql(company_ids, alias='po')
         query = f"""
         SELECT po.*, d.name as dealer_name, u.username as assigned_username
         FROM potential_order po
         LEFT JOIN dealer d ON po.dealer_id = d.dealer_id
         LEFT JOIN users u ON po.requested_by = u.id
-        WHERE {pf_sql}
+        WHERE {pf_sql} AND {cf_sql}
         """
-        params = list(pf_params)
+        params = list(pf_params) + list(cf_params)
 
         if status:
             query += " AND po.status = %s"
@@ -168,10 +177,6 @@ class PotentialOrder(MySQLModel):
         if warehouse_id:
             query += " AND po.warehouse_id = %s"
             params.append(warehouse_id)
-
-        if company_id:
-            query += " AND po.company_id = %s"
-            params.append(company_id)
 
         sort_col = 'updated_at' if sort_by == 'updated_at' else 'created_at'
         query += f" ORDER BY po.{sort_col} DESC LIMIT %s OFFSET %s"
@@ -182,11 +187,15 @@ class PotentialOrder(MySQLModel):
         return results
 
     @classmethod
-    def count_by_filters(cls, status=None, warehouse_id=None, company_id=None):
-        """Count orders matching filters — used for pagination total."""
+    def count_by_filters(cls, status=None, warehouse_id=None, company_ids=None):
+        """Count orders matching filters — used for pagination total.
+
+        `company_ids` is the caller's resolved tenant scope, not a request parameter.
+        """
         pf_sql, pf_params = partition_filter('potential_order', alias='po')
-        query = f"SELECT COUNT(*) as cnt FROM potential_order po WHERE {pf_sql}"
-        params = list(pf_params)
+        cf_sql, cf_params = company_filter_sql(company_ids, alias='po')
+        query = f"SELECT COUNT(*) as cnt FROM potential_order po WHERE {pf_sql} AND {cf_sql}"
+        params = list(pf_params) + list(cf_params)
 
         if status:
             query += " AND po.status = %s"
@@ -195,10 +204,6 @@ class PotentialOrder(MySQLModel):
         if warehouse_id:
             query += " AND po.warehouse_id = %s"
             params.append(warehouse_id)
-
-        if company_id:
-            query += " AND po.company_id = %s"
-            params.append(company_id)
 
         result = mysql_manager.execute_query(query, params)
         return result[0]['cnt'] if result else 0

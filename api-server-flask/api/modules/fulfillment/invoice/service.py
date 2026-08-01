@@ -132,17 +132,20 @@ def validate_invoice_data(df):
     return len(errors) == 0, errors
 
 
-def get_invoice_statistics(warehouse_id=None, company_id=None, batch_id=None):
-    """Return aggregate statistics about invoices in the DB."""
+def get_invoice_statistics(warehouse_id=None, company_ids=None, batch_id=None):
+    """Return aggregate statistics about invoices in the DB.
+
+    `company_ids` is the caller's resolved tenant scope (permissions.resolve_company_scope),
+    not a raw request parameter.
+    """
     try:
-        base_query = "SELECT COUNT(*) as count FROM invoice WHERE 1=1"
-        params = []
+        from api.permissions import company_filter_sql
+        cf_sql, cf_params = company_filter_sql(company_ids)
+        base_query = f"SELECT COUNT(*) as count FROM invoice WHERE {cf_sql}"
+        params = list(cf_params)
         if warehouse_id:
             base_query += " AND warehouse_id = %s"
             params.append(warehouse_id)
-        if company_id:
-            base_query += " AND company_id = %s"
-            params.append(company_id)
         if batch_id:
             base_query += " AND upload_batch_id = %s"
             params.append(batch_id)
@@ -150,28 +153,28 @@ def get_invoice_statistics(warehouse_id=None, company_id=None, batch_id=None):
         total_result = mysql_manager.execute_query(base_query, params)
         total_invoices = total_result[0]['count'] if total_result else 0
 
+        # base_query aliases its aggregate `as count`, so the substituted aggregate lands
+        # under that same alias — reading it by the expression text raises KeyError and
+        # silently zeroed this whole endpoint via the except block below.
         unique_result = mysql_manager.execute_query(
             base_query.replace("COUNT(*)", "COUNT(DISTINCT potential_order_id)"), params
         )
-        unique_orders = unique_result[0]['COUNT(DISTINCT potential_order_id)'] if unique_result else 0
+        unique_orders = unique_result[0]['count'] if unique_result else 0
 
         amount_result = mysql_manager.execute_query(
             base_query.replace("COUNT(*)", "SUM(total_invoice_amount)"), params
         )
-        total_amount = amount_result[0]['SUM(total_invoice_amount)'] if amount_result else 0
+        total_amount = amount_result[0]['count'] if amount_result else 0
 
         recent_q = (
             "SELECT upload_batch_id, COUNT(*) as invoice_count, "
             "MAX(created_at) as upload_date, SUM(total_invoice_amount) as batch_total "
-            "FROM invoice WHERE 1=1"
+            f"FROM invoice WHERE {cf_sql}"
         )
-        recent_params = []
+        recent_params = list(cf_params)
         if warehouse_id:
             recent_q += " AND warehouse_id = %s"
             recent_params.append(warehouse_id)
-        if company_id:
-            recent_q += " AND company_id = %s"
-            recent_params.append(company_id)
         recent_q += " GROUP BY upload_batch_id ORDER BY MAX(created_at) DESC LIMIT 10"
 
         recent_batches = [
@@ -184,14 +187,11 @@ def get_invoice_statistics(warehouse_id=None, company_id=None, batch_id=None):
             for r in mysql_manager.execute_query(recent_q, recent_params)
         ]
 
-        status_q = "SELECT invoice_status, COUNT(*) as count FROM invoice WHERE 1=1"
-        status_params = []
+        status_q = f"SELECT invoice_status, COUNT(*) as count FROM invoice WHERE {cf_sql}"
+        status_params = list(cf_params)
         if warehouse_id:
             status_q += " AND warehouse_id = %s"
             status_params.append(warehouse_id)
-        if company_id:
-            status_q += " AND company_id = %s"
-            status_params.append(company_id)
         if batch_id:
             status_q += " AND upload_batch_id = %s"
             status_params.append(batch_id)
@@ -241,14 +241,14 @@ def get_invoice_batch_details(batch_id):
                 'invoice_id': r['invoice_id'],
                 'invoice_number': r['invoice_number'],
                 'original_order_id': r['original_order_id'],
-                'customer_name': r['customer_name'],
+                'customer_name': r['cash_customer_name'],
                 'invoice_date': r['invoice_date'].isoformat() if r['invoice_date'] else None,
                 'total_amount': float(r['total_invoice_amount']) if r['total_invoice_amount'] else 0.0,
                 'status': r['invoice_status'],
                 'processed_at': r['created_at'].isoformat(),
             }
             for r in mysql_manager.execute_query(
-                "SELECT invoice_id, invoice_number, original_order_id, customer_name, "
+                "SELECT invoice_id, invoice_number, original_order_id, cash_customer_name, "
                 "invoice_date, total_invoice_amount, invoice_status, created_at "
                 "FROM invoice WHERE upload_batch_id = %s ORDER BY created_at",
                 (batch_id,),
@@ -297,7 +297,7 @@ def get_invoices_by_order(order_id):
                 'invoice_id': r['invoice_id'],
                 'invoice_number': r['invoice_number'],
                 'original_order_id': r['original_order_id'],
-                'customer_name': r['customer_name'],
+                'customer_name': r['cash_customer_name'],
                 'invoice_date': r['invoice_date'].isoformat() if r['invoice_date'] else None,
                 'total_amount': float(r['total_invoice_amount']) if r['total_invoice_amount'] else 0.0,
                 'invoice_status': r['invoice_status'],
@@ -317,7 +317,7 @@ def get_invoices_by_order(order_id):
         return []
 
 
-def get_invoice_trends(warehouse_id=None, company_id=None, days=30):
+def get_invoice_trends(warehouse_id=None, company_ids=None, days=30):
     """Return daily invoice counts and amounts over the past `days` days."""
     try:
         q = (
@@ -325,13 +325,13 @@ def get_invoice_trends(warehouse_id=None, company_id=None, days=30):
             "SUM(total_invoice_amount) as daily_total "
             "FROM invoice WHERE DATE(created_at) >= DATE_SUB(CURDATE(), INTERVAL %s DAY)"
         )
-        params = [days]
+        from api.permissions import company_filter_sql
+        cf_sql, cf_params = company_filter_sql(company_ids)
+        q += f" AND {cf_sql}"
+        params = [days] + list(cf_params)
         if warehouse_id:
             q += " AND warehouse_id = %s"
             params.append(warehouse_id)
-        if company_id:
-            q += " AND company_id = %s"
-            params.append(company_id)
         q += " GROUP BY DATE(created_at) ORDER BY invoice_date"
 
         daily_results = mysql_manager.execute_query(q, params)

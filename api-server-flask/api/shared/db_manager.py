@@ -373,9 +373,13 @@ def create_all_tables():
         dealer_id INT AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
         dealer_code VARCHAR(50) NULL,
+        company_id INT NULL,
+        sales_executive_id INT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         INDEX idx_dealer_name (name),
+        INDEX idx_dealer_company (company_id),
+        INDEX idx_dealer_sales_exec (sales_executive_id),
         UNIQUE INDEX idx_dealer_code (dealer_code)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
@@ -743,6 +747,9 @@ def create_all_tables():
     import api.modules.fulfillment.order.schema        # noqa: F401
     import api.modules.inventory.schema    # noqa: F401
     import api.modules.fulfillment.assignment.schema   # noqa: F401
+    import api.modules.sales.schema                    # noqa: F401
+    import api.modules.platform.user_auth.schema       # noqa: F401
+    import api.modules.logistics.supply_sheet.schema   # noqa: F401
     from api.shared import schema_registry
     for _t in schema_registry.registered_tables():
         mysql_manager.execute_query(_t.ddl, fetch=False)
@@ -766,12 +773,19 @@ def create_all_tables():
     _migrate_box_count()
     _drop_city_tables()
     _migrate_roles_table()
+    _migrate_dealer_columns()
+    _migrate_product_columns()
+    _migrate_invoice_columns()
+    _migrate_company_id()
 
     # Insert default order states
     insert_default_states()
 
     # Seed default roles into DB
     seed_default_roles()
+
+    # Seed the base product categories
+    seed_default_categories()
 
 
 def _migrate_users_table():
@@ -813,6 +827,227 @@ def _migrate_box_count():
             mysql_manager.execute_query(sql, fetch=False)
         except Exception:
             pass  # Column already exists
+
+
+def _migrate_dealer_columns():
+    """Add the dealer columns the feature modules expect (idempotent).
+
+    The schema registry only issues CREATE TABLE IF NOT EXISTS, so a change to the dealer
+    DDL never reaches a database that already has the table. Each column below is read by
+    live code and its absence is a hard 'Unknown column' failure, not a degraded feature:
+
+      company_id         sales/analytics — _dealer_map() scopes dealers to Hero
+      sales_executive_id sales/analytics — how a sale is attributed to an executive
+      town               logistics/supply_sheet — printed on the supply sheet
+      latitude/longitude platform/user_auth — set when a location submission is approved
+
+    `town` also lives in migration_supply_sheet.sql as a bare ADD COLUMN, which throws on a
+    second run; this is the idempotent equivalent. Checks information_schema rather than
+    swallowing exceptions, so a genuine ALTER failure is logged rather than hidden.
+    """
+    wanted = [
+        ('company_id',         'INT NULL',           'idx_dealer_company'),
+        ('sales_executive_id', 'INT NULL',           'idx_dealer_sales_exec'),
+        ('town',               'VARCHAR(100) NULL',  None),
+        ('latitude',           'DECIMAL(10,7) NULL', None),
+        ('longitude',          'DECIMAL(10,7) NULL', None),
+    ]
+    for column, ddl, index_name in wanted:
+        try:
+            has_col = mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.COLUMNS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'dealer'
+                     AND COLUMN_NAME = %s""", (column,))
+            if not has_col:
+                mysql_manager.execute_query(
+                    f"ALTER TABLE dealer ADD COLUMN `{column}` {ddl}", fetch=False)
+                logger.info("dealer: added column %s", column)
+
+            if not index_name:
+                continue  # filtered rarely / low cardinality — not worth an index
+
+            has_idx = mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.STATISTICS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'dealer'
+                     AND INDEX_NAME = %s""", (index_name,))
+            if not has_idx:
+                mysql_manager.execute_query(
+                    f"ALTER TABLE dealer ADD INDEX `{index_name}` (`{column}`)", fetch=False)
+                logger.info("dealer: added index %s", index_name)
+        except Exception:
+            logger.exception("dealer: migration failed for column %s", column)
+
+
+def _migrate_product_columns():
+    """Add the product columns the admin uploads write (idempotent).
+
+      category_id  set by the Product Category upload (Order Uploads -> Product Categories)
+      nickname     set by the Product Nickname admin tab; printed on supply sheet PDFs
+
+    Both are declared in migration_v2_api.sql, which cannot be applied wholesale to a
+    freshly-created schema (it carries ALTERs written against production's older lineage).
+    Without them the corresponding admin upload fails with 'Unknown column'.
+    """
+    wanted = [
+        ('category_id', 'INT NULL',          'idx_product_category'),
+        ('nickname',    'VARCHAR(200) NULL', None),
+    ]
+    for column, ddl, index_name in wanted:
+        try:
+            has_col = mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.COLUMNS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product'
+                     AND COLUMN_NAME = %s""", (column,))
+            if not has_col:
+                mysql_manager.execute_query(
+                    f"ALTER TABLE product ADD COLUMN `{column}` {ddl}", fetch=False)
+                logger.info("product: added column %s", column)
+
+            if not index_name:
+                continue
+
+            has_idx = mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.STATISTICS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product'
+                     AND INDEX_NAME = %s""", (index_name,))
+            if not has_idx:
+                mysql_manager.execute_query(
+                    f"ALTER TABLE product ADD INDEX `{index_name}` (`{column}`)", fetch=False)
+                logger.info("product: added index %s", index_name)
+        except Exception:
+            logger.exception("product: migration failed for column %s", column)
+
+
+# (table, column to place company_id after, index name). This manifest — not the individual
+# CREATE TABLE statements — is the authority for which tables carry the tenant column.
+# create_all_tables() runs CREATE TABLE IF NOT EXISTS first and this immediately after, so a
+# freshly-built database and an existing one converge on the same shape.
+#
+# NOT listed on purpose:
+#   * physical topology (fc_planogram/floor/aisle/rack/shelf/bin) and rack templates — a bin
+#     is company-agnostic; it holds whatever is stacked into it. The *stock row* carries the
+#     company, not the shelf.
+#   * shared lookups (planogram_locations, stacking_group, transferin_type, order_state,
+#     understack_reason, roles, permissions) — global reference data.
+#   * warehouse — many-to-many with company via user_warehouse_company; a single company_id
+#     column there would be wrong.
+_COMPANY_ID_TABLES = [
+    # inventory: inbound, stock and the movement engine
+    ('transferin_info',                 'planogram_id',       'idx_company_id'),
+    ('fc_entity_stock',                 'planogram_id',       'idx_company_id'),
+    ('fc_entity_stock_ledger',          'planogram_id',       'idx_company_id'),
+    ('fc_entity_recommendation',        'planogram_id',       'idx_company_id'),
+    ('entity_movement_request',         'planogram_id',       'idx_company_id'),
+    ('entity_movement_details',         'request_id',         'idx_company_id'),
+    ('entity_movement_recommendation',  'request_detail_id',  'idx_company_id'),
+    # catalog
+    ('sku_batch',                       'sku_id',             'idx_company_id'),
+    ('product',                         'product_id',         'idx_product_company'),
+    # order lifecycle — `order` had none while potential_order and invoice both did
+    ('order',                           'potential_order_id', 'idx_order_company'),
+    ('order_product',                   'order_id',           'idx_order_product_company'),
+    ('potential_order_product',         'potential_order_id', 'idx_pop_company'),
+    ('order_state_history',             'potential_order_id', 'idx_osh_company'),
+    ('submitted_order_products',        'submitted_order_id', 'idx_sop_company'),
+    ('submitted_order_attachments',     'submitted_order_id', 'idx_soa_company'),
+    ('submitted_order_status_history',  'submitted_order_id', 'idx_sosh_company'),
+    # sales feeds (busy_sales_data declares its own composite index in the DDL)
+    ('dealer_visits',                   'dealer_id',          'idx_dv_company'),
+    ('upload_batches',                  'warehouse_id',       'idx_ub_company'),
+    ('part_groups',                     'part_number',        'idx_pg_company'),
+    ('dealer_money_target',             'dealer_id',          'idx_dmt_company'),
+    ('dealer_part_group_target',        'dealer_id',          'idx_dpgt_company'),
+    ('dealer_location_submissions',     'dealer_id',          'idx_dls_company'),
+]
+
+
+def _migrate_invoice_columns():
+    """Add invoice columns the read path selects but the upload path never writes.
+
+    `invoice_status` is declared in the Invoice model's field list and in the API response
+    model, and the statistics/batch-detail queries SELECT it — but it is absent from
+    repository._INVOICE_COLUMNS (the insert path) and from the table itself, so every one of
+    those queries died with "Unknown column" and the endpoint silently returned zeros via
+    its except block. Added nullable so the reads are valid; uploads simply leave it NULL.
+    """
+    try:
+        has_col = mysql_manager.execute_query(
+            """SELECT 1 FROM information_schema.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'invoice'
+                 AND COLUMN_NAME = 'invoice_status'""")
+        if not has_col:
+            mysql_manager.execute_query(
+                "ALTER TABLE invoice ADD COLUMN `invoice_status` VARCHAR(50) NULL",
+                fetch=False)
+            logger.info("invoice: added column invoice_status")
+    except Exception:
+        logger.exception("invoice: migration failed for invoice_status")
+
+
+def _migrate_company_id():
+    """Add the company_id tenant column everywhere it belongs (idempotent).
+
+    The schema registry only issues CREATE TABLE IF NOT EXISTS, so a DDL change never
+    reaches a database that already has the table. This walks _COMPANY_ID_TABLES and ALTERs
+    in anything missing, which is what makes the manifest above authoritative for both fresh
+    and existing databases.
+
+    Nullable by design: existing rows predate the column and there is no single safe
+    backfill (company derives from product for stock rows, from the parent order for order
+    children, from dealer for the sales feeds). Checks information_schema rather than
+    swallowing exceptions — a silent failure here means company-scoped queries quietly
+    under- or over-return, which is a data-leak class of bug, not a cosmetic one.
+    """
+    for table, after_col, index_name in _COMPANY_ID_TABLES:
+        try:
+            exists = mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.TABLES
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s""", (table,))
+            if not exists:
+                continue  # feature not deployed here yet
+
+            has_col = mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.COLUMNS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                     AND COLUMN_NAME = 'company_id'""", (table,))
+            if not has_col:
+                has_anchor = mysql_manager.execute_query(
+                    """SELECT 1 FROM information_schema.COLUMNS
+                       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                         AND COLUMN_NAME = %s""", (table, after_col))
+                after = f" AFTER `{after_col}`" if has_anchor else ""
+                mysql_manager.execute_query(
+                    f"ALTER TABLE `{table}` ADD COLUMN `company_id` INT NULL{after}",
+                    fetch=False)
+                logger.info("company_id: added to %s", table)
+
+            has_idx = mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.STATISTICS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                     AND INDEX_NAME = %s""", (table, index_name))
+            if not has_idx:
+                mysql_manager.execute_query(
+                    f"ALTER TABLE `{table}` ADD INDEX `{index_name}` (`company_id`)",
+                    fetch=False)
+                logger.info("company_id: indexed %s.%s", table, index_name)
+        except Exception:
+            logger.exception("company_id: migration failed for %s", table)
+
+
+# The starting category set. Seeded by name with INSERT IGNORE, so renaming or adding
+# categories through the app is never undone by a restart.
+DEFAULT_CATEGORIES = ['Oil', 'Battery', 'Tyre', 'Accessories', 'Pro Parts']
+
+
+def seed_default_categories():
+    """Seed the base product categories if they aren't present yet."""
+    for name in DEFAULT_CATEGORIES:
+        try:
+            mysql_manager.execute_query(
+                "INSERT IGNORE INTO categories (name, is_active) VALUES (%s, 1)",
+                (name,), fetch=False)
+        except Exception:
+            logger.exception("categories: failed to seed %s", name)
 
 
 def _migrate_roles_table():
@@ -919,6 +1154,16 @@ def seed_default_roles():
             'description': 'Open orders only. No uploads.',
             'all_warehouses': False,
             'order_states': ['Open'],
+            'uploads': [],
+        },
+        # Sales-Executive Analytics attributes every sale through
+        # dealer.sales_executive_id -> users.id, and filters on users.role =
+        # 'sales_executive'. Without this role the executive breakdown is always empty.
+        {
+            'name': 'sales_executive',
+            'description': 'Field sales. Own dealers analytics only. No order states or uploads.',
+            'all_warehouses': False,
+            'order_states': [],
             'uploads': [],
         },
     ]

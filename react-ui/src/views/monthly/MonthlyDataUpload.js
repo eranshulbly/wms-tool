@@ -112,6 +112,24 @@ const FEEDS = [
       ['Khandelwal Auto Parts', '150000'],
     ],
   },
+  {
+    id: 'product-categories',
+    label: 'Product Categories',
+    table: 'product.category_id',
+    color: '#00838f',
+    noPeriod: true,
+    blurb:
+      'Assign products to a category. Updates the product master in place — not tied to a month. ' +
+      'Products are never created: an unknown Product String is reported as a row error.',
+    columns: [
+      { name: 'Product String', required: true, note: 'Must match an existing product string' },
+      { name: 'Category', required: true, note: 'Oil / Battery / Tyre / Accessories / Pro Parts — blank clears it' },
+    ],
+    sample: [
+      ['14100KCC910S', 'Pro Parts'],
+      ['43120365H70S', 'Accessories'],
+    ],
+  },
 ];
 
 const MONTHS = [
@@ -175,6 +193,10 @@ function FeedCard({ feed, year, month, disabled, loadedRows, statusLoading, stat
   const [error, setError] = useState(null);
   const [showFormat, setShowFormat] = useState(false);
 
+  // Feeds that ignore the Year / Month selector: sales (dated rows drive it) and
+  // product categories (a standing product attribute, not a monthly fact).
+  const periodless = feed.byDateRange || feed.noPeriod;
+
   // Reset transient state when the period changes.
   useEffect(() => { setFile(null); setResult(null); setError(null); }, [year, month]);
 
@@ -193,8 +215,8 @@ function FeedCard({ feed, year, month, disabled, loadedRows, statusLoading, stat
     setUploading(true); setResult(null); setError(null);
     const fd = new FormData();
     fd.append('file', file);
-    // Sales loads by the dates in the file; the other feeds are month-scoped.
-    if (!feed.byDateRange) {
+    // Sales loads by the dates in the file; product categories are periodless.
+    if (!periodless) {
       fd.append('year', year);
       fd.append('month', month);
     }
@@ -253,8 +275,8 @@ function FeedCard({ feed, year, month, disabled, loadedRows, statusLoading, stat
         {feed.blurb}
       </Typography>
 
-      {/* Sales isn't period-scoped, so it shows no "loaded" chip here. */}
-      {!feed.byDateRange && (
+      {/* Periodless feeds have no per-period row count, so no "loaded" chip. */}
+      {!periodless && (
         <Box mt={1}>
           {statusLoading ? (
             <Chip size="small" variant="outlined" icon={<CircularProgress size={12} />} label="Checking…" />
@@ -308,7 +330,9 @@ function FeedCard({ feed, year, month, disabled, loadedRows, statusLoading, stat
             ? 'Uploading…'
             : feed.byDateRange
               ? 'Upload sales data'
-              : `Replace ${MONTHS[month - 1]} ${year}`}
+              : feed.noPeriod
+                ? 'Update product categories'
+                : `Replace ${MONTHS[month - 1]} ${year}`}
         </Button>
       </Box>
 
@@ -410,6 +434,12 @@ function FeedCard({ feed, year, month, disabled, loadedRows, statusLoading, stat
                 Rows on a given date <strong>replace</strong> existing rows for that same date; dates not in the
                 file are left untouched. (e.g. having Jul 1–10 and uploading Jul 8–13 keeps 1–7, replaces 8–10,
                 adds 11–13.)</>
+            ) : feed.noPeriod ? (
+              <>A product's category is a <strong>standing attribute</strong>, so the Year / Month selector
+                doesn't apply. Each row <strong>updates the product in place</strong>; products not listed in
+                the file keep whatever category they already had. Nothing is ever deleted, and a product is
+                <strong> never created</strong> — an unknown Product String is reported as a row error.
+                Leave <strong>Category</strong> blank to clear a product's category.</>
             ) : (
               <>The period is taken from the <strong>Year / Month</strong> selector above — you don't put it in the file.
                 Uploading <strong>replaces</strong> everything already loaded for that period.</>
@@ -507,7 +537,7 @@ const MonthlyDataUpload = () => {
       </Paper>
 
       {/* Period selector — only for the month-scoped feeds */}
-      {!activeFeed.byDateRange && (
+      {!(activeFeed.byDateRange || activeFeed.noPeriod) && (
         <Box className={classes.periodBar}>
           <IconCalendar size={22} />
           <Box>
@@ -544,7 +574,7 @@ const MonthlyDataUpload = () => {
         feed={activeFeed}
         year={year}
         month={month}
-        disabled={activeFeed.byDateRange ? false : !ready}
+        disabled={(activeFeed.byDateRange || activeFeed.noPeriod) ? false : !ready}
         loadedRows={status[activeFeed.id]?.[periodKey] || 0}
         statusLoading={statusLoading}
         statusError={statusError}

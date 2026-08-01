@@ -18,8 +18,24 @@ from api.modules.sales.analytics import service
 
 logger = get_logger(__name__)
 
-# Attribution goes through Hero's dealers (this Busy data is Hero's).
-HERO = 1
+# Attribution goes through the company's dealers. The Busy feed is loaded per company, so
+# every query here is scoped to one company; _company() resolves the caller's own rather
+# than trusting a request parameter.
+from api.permissions import resolve_company_scope, CompanyAccessDenied   # noqa: E402
+from api.modules.sales.analytics.service import DEFAULT_COMPANY          # noqa: E402
+
+
+def _company(current_user):
+    """The single company this caller's analytics are computed for.
+
+    Analytics is inherently one dealer-network at a time (targets, part-group mappings and
+    the Busy feed are all per company), so this collapses the caller's scope to one id.
+    An unrestricted (all-companies) caller falls back to DEFAULT_COMPANY.
+    """
+    scope = resolve_company_scope(current_user)
+    if not scope:                 # None => unrestricted; [] => no grants
+        return DEFAULT_COMPANY
+    return scope[0]
 
 # "This month" = the current calendar month. All Busy rows carry a real date, so the
 # same filter drives every query; the label is returned so the UI can show the period.
@@ -74,7 +90,7 @@ class SalesExecSummary(Resource):
                     WHERE u.role = 'sales_executive'
                     GROUP BY u.id, u.username
                     ORDER BY total_sales DESC""",
-                (HERO,),
+                (_company(current_user),),
             ) or []
             execs = [{
                 'user_id':          r['user_id'],
@@ -116,7 +132,7 @@ class SalesExecDetail(Resource):
                     WHERE d.sales_executive_id = %s AND d.company_id = %s
                     GROUP BY d.dealer_id, d.name
                     ORDER BY sales DESC""",
-                (user_id, HERO),
+                (user_id, _company(current_user)),
             ) or []
 
             # Quantity by part group — parts not in the July mapping bucket as "(Unmapped)".
@@ -132,7 +148,7 @@ class SalesExecDetail(Resource):
                     WHERE d.sales_executive_id = %s AND {_MONTH}
                     GROUP BY COALESCE(pg.part_group, '(Unmapped)')
                     ORDER BY qty DESC""",
-                (HERO, user_id),
+                (_company(current_user), user_id),
             ) or []
 
             # Quantity by part — enriched with the July part-group mapping where available.
@@ -149,7 +165,7 @@ class SalesExecDetail(Resource):
                     WHERE d.sales_executive_id = %s AND {_MONTH}
                     GROUP BY b.item_code
                     ORDER BY qty DESC""",
-                (HERO, user_id),
+                (_company(current_user), user_id),
             ) or []
 
             total_sales = sum(float(r['sales']) for r in by_dealer)
@@ -183,10 +199,11 @@ class SalesExecDetail(Resource):
             return {'success': False, 'msg': f'Error computing analytics: {str(e)}'}, 400
 
 
-# Shared FROM for the filtered explorer. company_id is Hero (a constant int, safe to inline).
-_BASE = (f"FROM busy_sales_data b "
-         f"JOIN dealer d ON d.name = b.particulars AND d.company_id = {HERO} "
-         f"LEFT JOIN part_groups pg ON pg.part_number = b.item_code AND pg.period = DATE_FORMAT(CURDATE(), '%%Y-%%m-01') ")
+# Shared FROM for the filtered explorer, scoped to one company (an int, safe to inline).
+def _base(company_id):
+    return (f"FROM busy_sales_data b "
+            f"JOIN dealer d ON d.name = b.particulars AND d.company_id = {int(company_id)} "
+            f"LEFT JOIN part_groups pg ON pg.part_number = b.item_code AND pg.period = DATE_FORMAT(CURDATE(), '%%Y-%%m-01') ")
 
 
 def _filtered_where(args):
@@ -218,13 +235,13 @@ class AnalyticsFilters(Resource):
             execs = mysql_manager.execute_query(
                 f"""SELECT DISTINCT u.id AS user_id, u.username
                     FROM users u
-                    JOIN dealer d ON d.sales_executive_id = u.id AND d.company_id = {HERO}
+                    JOIN dealer d ON d.sales_executive_id = u.id AND d.company_id = {int(_company(current_user))}
                     WHERE u.role = 'sales_executive'
                     ORDER BY u.username""") or []
             dealers = mysql_manager.execute_query(
                 f"""SELECT dealer_id, name AS dealer, sales_executive_id
                     FROM dealer
-                    WHERE company_id = {HERO} AND sales_executive_id IS NOT NULL
+                    WHERE company_id = {int(_company(current_user))} AND sales_executive_id IS NOT NULL
                     ORDER BY name""") or []
             groups = mysql_manager.execute_query(
                 """SELECT DISTINCT part_group FROM part_groups
@@ -264,6 +281,7 @@ class SalesExplorer(Resource):
                 part_group=(a.get('part_group') or '').strip() or None,
                 part=(a.get('part') or '').strip() or None,
                 period=(a.get('period') or '').strip() or 'this_month',
+                company_id=_company(current_user),
             ), 200
         except Exception as e:
             logger.exception("Error in /api/analytics/sales")
@@ -282,7 +300,7 @@ class DealerSuggestions(Resource):
             dealer_id = request.args.get('dealer_id', type=int)
             if not dealer_id:
                 return {'success': False, 'msg': 'dealer_id is required'}, 422
-            result = service.dealer_suggestions(dealer_id)
+            result = service.dealer_suggestions(dealer_id, company_id=_company(current_user))
             if result is None:
                 return {'success': False, 'msg': 'dealer not found'}, 404
             return result, 200
@@ -301,7 +319,7 @@ class DealerSuggestionsByDealer(Resource):
     @active_required
     def get(self, current_user, dealer_id):
         try:
-            data = service.dealer_suggestions(dealer_id)
+            data = service.dealer_suggestions(dealer_id, company_id=_company(current_user))
             if data is None:
                 return {'success': False, 'msg': 'dealer not found'}, 404
             return data, 200

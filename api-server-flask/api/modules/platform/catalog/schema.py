@@ -36,3 +36,20 @@ CREATE TABLE IF NOT EXISTS sku_batch (
     KEY idx_sku_id (sku_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """, order=10)
+
+
+# Product category tree (product.category_id points here). Self-referencing via parent_id;
+# no FK on parent_id so a category can be inserted before its parent. DDL matches
+# migration_v2_api.sql so an already-migrated deployment is a no-op.
+register_table("categories", """
+CREATE TABLE IF NOT EXISTS categories (
+    category_id INT AUTO_INCREMENT PRIMARY KEY,
+    name        VARCHAR(100) NOT NULL UNIQUE,
+    parent_id   INT NULL,
+    description VARCHAR(255) NULL,
+    is_active   TINYINT(1) NOT NULL DEFAULT 1,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_categories_parent (parent_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""", order=11)

@@ -19,6 +19,9 @@ from api.extensions import rest_api
 from api.core.auth import token_required, active_required, upload_permission_required
 from api.models import Invoice, PotentialOrder, Warehouse, Company, mysql_manager
 from api.db_manager import partition_filter
+from api.permissions import (
+    resolve_company_scope, company_filter_sql, CompanyAccessDenied,
+)
 from api.services import invoice_service
 from api.core.logging import get_logger
 
@@ -157,16 +160,20 @@ class InvoiceStatistics(Resource):
     @rest_api.response(400, 'Error', invoice_error_response)
     @token_required
     @active_required
-    def get(self, _current_user):
+    def get(self, current_user):
         """Get invoice statistics."""
         try:
             warehouse_id = request.args.get('warehouse_id', type=int)
-            company_id   = request.args.get('company_id',   type=int)
             batch_id     = request.args.get('batch_id')
+            try:
+                company_ids = resolve_company_scope(
+                    current_user, request.args.get('company_id', type=int))
+            except CompanyAccessDenied as e:
+                return {'success': False, 'msg': str(e)}, 403
 
             stats = invoice_service.get_invoice_statistics(
                 warehouse_id=warehouse_id,
-                company_id=company_id,
+                company_ids=company_ids,
                 batch_id=batch_id
             )
 
@@ -184,30 +191,31 @@ class InvoiceList(Resource):
     @rest_api.response(400, 'Error', invoice_error_response)
     @token_required
     @active_required
-    def get(self, _current_user):
+    def get(self, current_user):
         """Get list of invoices."""
         try:
             warehouse_id = request.args.get('warehouse_id', type=int)
-            company_id   = request.args.get('company_id',   type=int)
             batch_id     = request.args.get('batch_id')
             page         = request.args.get('page',     1,  type=int)
             per_page     = request.args.get('per_page', 50, type=int)
+            try:
+                company_ids = resolve_company_scope(
+                    current_user, request.args.get('company_id', type=int))
+            except CompanyAccessDenied as e:
+                return {'success': False, 'msg': str(e)}, 403
 
             per_page = min(per_page, 100)
 
             pf_sql, pf_params = partition_filter('invoice')
-            base_query  = f"SELECT * FROM invoice WHERE {pf_sql}"
-            count_query = f"SELECT COUNT(*) as count FROM invoice WHERE {pf_sql}"
-            params = list(pf_params)
+            cf_sql, cf_params = company_filter_sql(company_ids)
+            base_query  = f"SELECT * FROM invoice WHERE {pf_sql} AND {cf_sql}"
+            count_query = f"SELECT COUNT(*) as count FROM invoice WHERE {pf_sql} AND {cf_sql}"
+            params = list(pf_params) + list(cf_params)
 
             if warehouse_id:
                 base_query  += " AND warehouse_id = %s"
                 count_query += " AND warehouse_id = %s"
                 params.append(warehouse_id)
-            if company_id:
-                base_query  += " AND company_id = %s"
-                count_query += " AND company_id = %s"
-                params.append(company_id)
             if batch_id:
                 base_query  += " AND upload_batch_id = %s"
                 count_query += " AND upload_batch_id = %s"
@@ -228,7 +236,7 @@ class InvoiceList(Resource):
                     'invoice_id':           invoice.invoice_id,
                     'invoice_number':       invoice.invoice_number,
                     'original_order_id':    invoice.original_order_id,
-                    'customer_name':        invoice.customer_name,
+                    'customer_name':        invoice.cash_customer_name,
                     'invoice_date':         invoice.invoice_date.isoformat() if invoice.invoice_date else None,
                     'total_invoice_amount': str(invoice.total_invoice_amount) if invoice.total_invoice_amount else None,
                     'invoice_status':       invoice.invoice_status,
@@ -279,7 +287,7 @@ class InvoiceDetail(Resource):
                 'invoice_id':           invoice.invoice_id,
                 'invoice_number':       invoice.invoice_number,
                 'original_order_id':    invoice.original_order_id,
-                'customer_name':        invoice.customer_name,
+                'customer_name':        invoice.cash_customer_name,
                 'invoice_date':         invoice.invoice_date.isoformat() if invoice.invoice_date else None,
                 'total_invoice_amount': str(invoice.total_invoice_amount) if invoice.total_invoice_amount else None,
                 'invoice_status':       invoice.invoice_status,

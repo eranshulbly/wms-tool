@@ -71,3 +71,76 @@ def get_all_roles():
     """Return all role names from DB (used to populate dropdowns)."""
     rows = mysql_manager.execute_query("SELECT name FROM roles ORDER BY name")
     return [r['name'] for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Multi-tenant scoping
+# ---------------------------------------------------------------------------
+# The app serves several companies out of one database, so every read of a
+# tenant-scoped table must be constrained to the companies the caller may see.
+#
+# The rule: the ALLOWED SET COMES FROM THE USER, never from the request. A
+# client-supplied company_id may only *narrow* that set — it can never widen it,
+# and its absence must never mean "no filter".
+
+
+class CompanyAccessDenied(Exception):
+    """Raised when a caller asks for a company they are not mapped to."""
+
+
+def get_user_company_ids(user_id):
+    """The distinct company ids this user is mapped to, via user_warehouse_company."""
+    rows = mysql_manager.execute_query(
+        "SELECT DISTINCT company_id FROM user_warehouse_company WHERE user_id = %s",
+        (user_id,)) or []
+    return [r['company_id'] for r in rows if r.get('company_id') is not None]
+
+
+def resolve_company_scope(current_user, requested_company_id=None):
+    """Resolve the company ids a request may read. Returns None for 'unrestricted'.
+
+    * Roles with all_warehouses (admin) are unrestricted; a requested company simply
+      narrows them to it.
+    * Everyone else is limited to their user_warehouse_company mappings. Asking for a
+      company outside that set raises CompanyAccessDenied rather than silently returning
+      someone else's rows.
+    * With no company requested, the caller's full allowed set is returned — so the query
+      is still filtered. This is the case the old `if company_id:` code got wrong: omitting
+      the parameter dropped the WHERE clause and exposed every tenant.
+
+    Returning None (unrestricted) only ever happens for all_warehouses roles.
+    """
+    role = getattr(current_user, 'role', None) or ''
+    is_unrestricted = has_all_warehouse_access(role)
+
+    if is_unrestricted:
+        return [int(requested_company_id)] if requested_company_id else None
+
+    allowed = get_user_company_ids(getattr(current_user, 'id', None))
+    if requested_company_id:
+        if int(requested_company_id) not in allowed:
+            raise CompanyAccessDenied(
+                f'You do not have access to company {requested_company_id}.')
+        return [int(requested_company_id)]
+
+    # No company asked for -> every company this user may see. Never unfiltered.
+    return allowed
+
+
+def company_filter_sql(company_ids, column='company_id', alias=None):
+    """(sql_fragment, params) constraining `column` to `company_ids`.
+
+    Mirrors db_manager.partition_filter's contract so it can be dropped into a WHERE list:
+      * None (unrestricted, admin)  -> ('1=1', ())
+      * []   (user maps to nothing) -> ('1=0', ())  — deliberately matches no rows rather
+        than falling open, which is the safe failure direction for a tenant filter.
+    """
+    if company_ids is None:
+        return '1=1', ()
+    qualified = f"{alias}.{column}" if alias else column
+    if not company_ids:
+        return '1=0', ()
+    if len(company_ids) == 1:
+        return f"{qualified} = %s", (company_ids[0],)
+    placeholders = ','.join(['%s'] * len(company_ids))
+    return f"{qualified} IN ({placeholders})", tuple(company_ids)

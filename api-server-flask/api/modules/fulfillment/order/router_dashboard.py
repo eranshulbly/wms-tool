@@ -31,7 +31,10 @@ from api.models import (
     mysql_manager
 )
 from api.db_manager import partition_filter
-from api.permissions import get_permissions, has_all_warehouse_access
+from api.permissions import (
+    get_permissions, has_all_warehouse_access,
+    resolve_company_scope, company_filter_sql, CompanyAccessDenied,
+)
 from api.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -224,7 +227,11 @@ class OrderStatusCount(Resource):
     def get(self, current_user):
         try:
             warehouse_id = request.args.get('warehouse_id', type=int)
-            company_id   = request.args.get('company_id',   type=int)
+            try:
+                company_ids = resolve_company_scope(
+                    current_user, request.args.get('company_id', type=int))
+            except CompanyAccessDenied as e:
+                return {'success': False, 'msg': str(e)}, 403
 
             all_statuses = [
                 ('open',                'Open',               'Open Orders'),
@@ -246,9 +253,9 @@ class OrderStatusCount(Resource):
             if warehouse_id:
                 sub_where.append("warehouse_id = %s")
                 sub_params.append(warehouse_id)
-            if company_id:
-                sub_where.append("company_id = %s")
-                sub_params.append(company_id)
+            cf_sql, cf_params = company_filter_sql(company_ids)
+            sub_where.append(cf_sql)
+            sub_params.extend(cf_params)
             sub_rows = mysql_manager.execute_query(
                 f"SELECT COUNT(*) AS c FROM submitted_orders WHERE {' AND '.join(sub_where)}",
                 tuple(sub_params),
@@ -258,7 +265,7 @@ class OrderStatusCount(Resource):
             }
 
             for key, db_status, label in all_statuses:
-                count = PotentialOrder.count_by_status(db_status, warehouse_id, company_id)
+                count = PotentialOrder.count_by_status(db_status, warehouse_id, company_ids)
                 response_data[key] = {'count': count, 'label': label}
 
             return {'success': True, 'status_counts': response_data}, 200
@@ -285,7 +292,11 @@ class OrdersList(Resource):
         try:
             status       = request.args.get('status', '')
             warehouse_id = request.args.get('warehouse_id', type=int)
-            company_id   = request.args.get('company_id',   type=int)
+            try:
+                company_ids = resolve_company_scope(
+                    current_user, request.args.get('company_id', type=int))
+            except CompanyAccessDenied as e:
+                return {'success': False, 'msg': str(e)}, 403
             limit        = request.args.get('limit', 100,  type=int)
             page         = request.args.get('page',  1,    type=int)
             offset       = (page - 1) * limit
@@ -298,10 +309,10 @@ class OrdersList(Resource):
             db_status = status_map.get(status.lower(), '') if status else ''
 
             total = PotentialOrder.count_by_filters(
-                status=db_status, warehouse_id=warehouse_id, company_id=company_id
+                status=db_status, warehouse_id=warehouse_id, company_ids=company_ids
             )
             potential_orders = PotentialOrder.find_by_filters(
-                status=db_status, warehouse_id=warehouse_id, company_id=company_id,
+                status=db_status, warehouse_id=warehouse_id, company_ids=company_ids,
                 limit=limit, offset=offset
             )
 
@@ -402,18 +413,22 @@ class BulkOrderExport(Resource):
         try:
             status       = request.args.get('status', '')
             warehouse_id = request.args.get('warehouse_id', type=int)
-            company_id   = request.args.get('company_id',   type=int)
+            try:
+                company_ids = resolve_company_scope(
+                    current_user, request.args.get('company_id', type=int))
+            except CompanyAccessDenied as e:
+                return {'success': False, 'msg': str(e)}, 403
 
             db_status = FRONTEND_TO_DB_STATUS.get(status.lower(), '') if status else ''
 
             # Bug 21 fix: fetch all matching orders (no artificial cap).
             total_count = PotentialOrder.count_by_filters(
-                status=db_status, warehouse_id=warehouse_id, company_id=company_id
+                status=db_status, warehouse_id=warehouse_id, company_ids=company_ids
             )
             potential_orders = PotentialOrder.find_by_filters(
                 status=db_status,
                 warehouse_id=warehouse_id,
-                company_id=company_id,
+                company_ids=company_ids,
                 limit=max(total_count, 1)
             )
 
@@ -732,14 +747,18 @@ class RecentOrders(Resource):
     def get(self, current_user):
         try:
             warehouse_id = request.args.get('warehouse_id', type=int)
-            company_id   = request.args.get('company_id',   type=int)
+            try:
+                company_ids = resolve_company_scope(
+                    current_user, request.args.get('company_id', type=int))
+            except CompanyAccessDenied as e:
+                return {'success': False, 'msg': str(e)}, 403
             limit        = request.args.get('limit', 10, type=int)
 
             allowed_states = get_permissions(current_user.role)['order_states']
 
             potential_orders = PotentialOrder.find_by_filters(
                 warehouse_id=warehouse_id,
-                company_id=company_id,
+                company_ids=company_ids,
                 limit=limit,
                 sort_by='updated_at'
             )
@@ -820,7 +839,11 @@ class SubmittedOrdersList(Resource):
     def get(self, current_user):
         try:
             warehouse_id = request.args.get('warehouse_id', type=int)
-            company_id   = request.args.get('company_id',   type=int)
+            try:
+                company_ids = resolve_company_scope(
+                    current_user, request.args.get('company_id', type=int))
+            except CompanyAccessDenied as e:
+                return {'success': False, 'msg': str(e)}, 403
             stage        = request.args.get('stage', 'submitted')
             dealer_id    = request.args.get('dealer_id', type=int)
 
@@ -838,9 +861,9 @@ class SubmittedOrdersList(Resource):
             if warehouse_id:
                 where.append("so.warehouse_id = %s")
                 params.append(warehouse_id)
-            if company_id:
-                where.append("so.company_id = %s")
-                params.append(company_id)
+            cf_sql, cf_params = company_filter_sql(company_ids, alias='so')
+            where.append(cf_sql)
+            params.extend(cf_params)
             clause = "WHERE " + " AND ".join(where)
 
             rows = mysql_manager.execute_query(

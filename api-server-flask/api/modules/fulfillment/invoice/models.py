@@ -70,19 +70,23 @@ class Invoice(MySQLModel):
         return None
 
     @classmethod
-    def get_statistics(cls, warehouse_id=None, company_id=None, batch_id=None):
-        """Get invoice statistics (active window only)"""
+    def get_statistics(cls, warehouse_id=None, company_ids=None, batch_id=None):
+        """Get invoice statistics (active window only).
+
+        `company_ids` is the caller's resolved tenant scope, not a request parameter.
+        Currently unused by any route — kept tenant-safe so wiring it up later cannot
+        reintroduce an unfiltered read.
+        """
+        from api.permissions import company_filter_sql
         pf_sql, pf_params = partition_filter('invoice')
-        base_query = f"SELECT COUNT(*) as total_invoices FROM invoice WHERE {pf_sql}"
-        params = list(pf_params)
+        cf_sql, cf_params = company_filter_sql(company_ids)
+        base_query = (f"SELECT COUNT(*) as total_invoices FROM invoice "
+                      f"WHERE {pf_sql} AND {cf_sql}")
+        params = list(pf_params) + list(cf_params)
 
         if warehouse_id:
             base_query += " AND warehouse_id = %s"
             params.append(warehouse_id)
-
-        if company_id:
-            base_query += " AND company_id = %s"
-            params.append(company_id)
 
         if batch_id:
             base_query += " AND upload_batch_id = %s"

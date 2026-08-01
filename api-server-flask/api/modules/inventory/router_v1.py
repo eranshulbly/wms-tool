@@ -33,8 +33,29 @@ from api.shared.auth_v1 import v1_require_permission
 from api.modules.platform.user_auth.rbac import P
 from api.modules.inventory import service as svc
 from api.modules.platform.catalog.router_v1 import sku_id_for_code, codes_for_sku_ids
+from api.shared.auth_v1 import company_scope
 
 NOT_IMPLEMENTED = 501
+
+
+def _company_scope(current_user):
+    """The caller's tenant scope, optionally narrowed by ?company_id=.
+
+    A warehouse stocks several companies at once, so planogram_id does NOT imply a tenant —
+    every inventory read has to carry this filter explicitly.
+
+    Returns (company_ids, error_response). company_ids is None for a caller granted
+    company:all, otherwise the list they may see; an empty list matches no rows. The
+    optional ?company_id= may only NARROW that set — asking for a company outside it is a
+    403, never a silent widening.
+    """
+    scoped = company_scope(current_user)
+    requested = request.args.get('company_id', type=int)
+    if requested is None:
+        return scoped, None
+    if scoped is not None and requested not in scoped:
+        return None, ({"detail": f"You do not have access to company {requested}."}, 403)
+    return [requested], None
 
 
 def _iso(v):
@@ -204,11 +225,15 @@ class V1Stock(Resource):
             if entity_id is None:
                 return {"detail": f"sku {a['sku_code']} not found"}, 404
 
+        company_ids, err = _company_scope(current_user)
+        if err:
+            return err
+
         rows = svc.list_stock(
             planogram_id=_planogram_arg(), entity_id=entity_id,
             location_id=a.get('location_id', type=int),
             bin_id=a.get('bin_id', type=int), batch_id=a.get('batch_id', type=int),
-            limit=limit, offset=offset,
+            limit=limit, offset=offset, company_ids=company_ids,
         )
         sku_map = codes_for_sku_ids([r['entity_id'] for r in rows])
         return [_stock_out(r, sku_map) for r in rows], 200
@@ -225,8 +250,12 @@ class V1StockDetail(Resource):
         if entity_id is None:
             return {"detail": f"sku {sku_code} not found"}, 404
 
+        company_ids, err = _company_scope(current_user)
+        if err:
+            return err
+
         planogram_id = svc.planogram_for_warehouse(warehouse_id)
-        breakdown = svc.stock_breakdown(entity_id, planogram_id)
+        breakdown = svc.stock_breakdown(entity_id, planogram_id, company_ids=company_ids)
         sku_map = codes_for_sku_ids([entity_id])
 
         return {
@@ -246,7 +275,8 @@ class V1StockDetail(Resource):
                 "cost_price": _num(u['cost_price']),
                 "status": u['transferin_status'],
                 "created_on": _iso(u['created_on']),
-            } for u in svc.unstacked_breakdown(entity_id, planogram_id)],
+            } for u in svc.unstacked_breakdown(entity_id, planogram_id,
+                                               company_ids=company_ids)],
         }, 200
 
 
@@ -268,10 +298,14 @@ class V1Ledger(Resource):
             if entity_id is None:
                 return {"detail": f"sku {a['sku_code']} not found"}, 404
 
+        company_ids, err = _company_scope(current_user)
+        if err:
+            return err
+
         rows = svc.list_ledger(
             planogram_id=_planogram_arg(), entity_id=entity_id,
             batch_id=a.get('batch_id', type=int), reference_type=a.get('reference_type'),
-            limit=limit, offset=offset,
+            limit=limit, offset=offset, company_ids=company_ids,
         )
         sku_map = codes_for_sku_ids([r['entity_id'] for r in rows])
         return [_ledger_out(r, sku_map) for r in rows], 200
@@ -289,13 +323,17 @@ class V1MovementRequests(Resource):
         except ValueError:
             return {"detail": "limit/offset must be integers"}, 422
 
+        company_ids, err = _company_scope(current_user)
+        if err:
+            return err
+
         rows = svc.list_movement_requests(
             planogram_id=_planogram_arg(),
             movement_type=a.get('movement_type'),
             request_status=a.get('status'),
             reference_type=a.get('reference_type'),
             request_identifier=a.get('order_id', type=int),
-            limit=limit, offset=offset,
+            limit=limit, offset=offset, company_ids=company_ids,
         )
         return [_request_out(r) for r in rows], 200
 
@@ -304,7 +342,10 @@ class V1MovementRequests(Resource):
 class V1MovementRequestDetail(Resource):
     @v1_require_permission(P.INVENTORY_READ)
     def get(self, current_user, request_id):
-        req = svc.get_movement_request(request_id)
+        company_ids, err = _company_scope(current_user)
+        if err:
+            return err
+        req = svc.get_movement_request(request_id, company_ids=company_ids)
         if not req:
             return {"detail": f"movement request {request_id} not found"}, 404
         sku_map = codes_for_sku_ids([d['entity_id'] for d in req.get('details', [])])

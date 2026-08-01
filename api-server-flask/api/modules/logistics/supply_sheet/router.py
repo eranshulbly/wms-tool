@@ -15,6 +15,7 @@ from flask_restx import Resource
 
 from api.extensions import rest_api
 from api.core.auth import token_required, active_required, supply_sheet_required
+from api.permissions import resolve_company_scope, CompanyAccessDenied
 from api.db_manager import mysql_manager, partition_filter
 from api.models import SupplySheetCounter
 from api.core.logging import get_logger
@@ -46,6 +47,12 @@ class SupplySheetDealers(Resource):
 
         if not warehouse_id or not company_id:
             return {'success': False, 'msg': 'warehouse_id and company_id are required'}, 400
+
+        # company_id is caller-supplied — confirm this user is actually mapped to it.
+        try:
+            resolve_company_scope(current_user, company_id)
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
 
         try:
             pf_inv_sql, pf_inv_params = partition_filter('invoice',         alias='i')
@@ -144,6 +151,12 @@ class SupplySheetRouteDealers(Resource):
         if not warehouse_id or not company_id:
             return {'success': False, 'msg': 'warehouse_id and company_id are required'}, 400
 
+        # company_id is caller-supplied — confirm this user is actually mapped to it.
+        try:
+            resolve_company_scope(current_user, company_id)
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
+
         try:
             pf_inv_sql, pf_inv_params = partition_filter('invoice',         alias='i')
             pf_po_sql,  pf_po_params  = partition_filter('potential_order', alias='po')
@@ -216,6 +229,12 @@ class SupplySheetGenerate(Resource):
 
         if not warehouse_id or not company_id:
             return {'success': False, 'msg': 'warehouse_id and company_id are required'}, 400
+
+        # company_id is caller-supplied — confirm this user is actually mapped to it.
+        try:
+            resolve_company_scope(current_user, company_id)
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
         if not dealer_ids:
             return {'success': False, 'msg': 'At least one dealer_id is required'}, 400
 

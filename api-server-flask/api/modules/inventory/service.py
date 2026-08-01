@@ -24,6 +24,7 @@ raise NotImplementedError and their endpoints return 501. Reads are live.
 from api.shared.db_manager import mysql_manager
 from api.shared.logging import get_logger
 from api.modules.inventory.schema import Location
+from api.permissions import company_filter_sql
 
 logger = get_logger(__name__)
 
@@ -117,10 +118,17 @@ _STOCK_COLS = """id AS stock_id, planogram_id, location_id, bin_id, bin_location
 
 
 def list_stock(planogram_id=None, entity_id=None, location_id=None, bin_id=None,
-               batch_id=None, limit=200, offset=0):
+               batch_id=None, limit=200, offset=0, company_ids=None):
     """Bin- and batch-level stock rows. This is the complete on-hand picture,
-    including unstacked (location 8)."""
-    where, params = [], []
+    including unstacked (location 8).
+
+    `company_ids` is the caller's resolved tenant scope (permissions.resolve_company_scope).
+    A warehouse holds stock for several companies at once, so planogram_id alone does NOT
+    scope a tenant — the company filter is what keeps one company's stock out of another's
+    view.
+    """
+    cf_sql, cf_params = company_filter_sql(company_ids)
+    where, params = [cf_sql], list(cf_params)
     if planogram_id is not None:
         where.append("planogram_id = %s")
         params.append(planogram_id)
@@ -137,7 +145,7 @@ def list_stock(planogram_id=None, entity_id=None, location_id=None, bin_id=None,
         where.append("batch_id = %s")
         params.append(batch_id)
 
-    clause = ("WHERE " + " AND ".join(where)) if where else ""
+    clause = "WHERE " + " AND ".join(where)
     params += [limit, offset]
     return mysql_manager.execute_query(
         f"""SELECT {_STOCK_COLS} FROM fc_entity_stock {clause}
@@ -147,9 +155,10 @@ def list_stock(planogram_id=None, entity_id=None, location_id=None, bin_id=None,
     ) or []
 
 
-def on_hand(entity_id, planogram_id=None, location_id=None):
+def on_hand(entity_id, planogram_id=None, location_id=None, company_ids=None):
     """Total quantity for a SKU. Unstacked is included (it is a location-8 stock row)."""
-    where, params = ["entity_id = %s"], [entity_id]
+    cf_sql, cf_params = company_filter_sql(company_ids)
+    where, params = ["entity_id = %s", cf_sql], [entity_id, *cf_params]
     if planogram_id is not None:
         where.append("planogram_id = %s")
         params.append(planogram_id)
@@ -163,9 +172,10 @@ def on_hand(entity_id, planogram_id=None, location_id=None):
     return float(rows[0]['qty']) if rows else 0.0
 
 
-def pickable_on_hand(entity_id, planogram_id=None):
+def pickable_on_hand(entity_id, planogram_id=None, company_ids=None):
     """Quantity in picking-enabled locations only (primary + unstacked)."""
-    where, params = ["s.entity_id = %s"], [entity_id]
+    cf_sql, cf_params = company_filter_sql(company_ids, alias='s')
+    where, params = ["s.entity_id = %s", cf_sql], [entity_id, *cf_params]
     if planogram_id is not None:
         where.append("s.planogram_id = %s")
         params.append(planogram_id)
@@ -179,23 +189,26 @@ def pickable_on_hand(entity_id, planogram_id=None):
     return float(rows[0]['qty']) if rows else 0.0
 
 
-def stock_breakdown(entity_id, planogram_id=None):
+def stock_breakdown(entity_id, planogram_id=None, company_ids=None):
     """Per-location/bin/batch rows for one SKU, plus the totals."""
-    rows = list_stock(planogram_id=planogram_id, entity_id=entity_id, limit=1000)
+    rows = list_stock(planogram_id=planogram_id, entity_id=entity_id, limit=1000,
+                      company_ids=company_ids)
     return {
         'total_quantity': sum(float(r['quantity']) for r in rows),
-        'pickable_quantity': pickable_on_hand(entity_id, planogram_id),
+        'pickable_quantity': pickable_on_hand(entity_id, planogram_id, company_ids=company_ids),
         'rows': rows,
     }
 
 
-def unstacked_breakdown(entity_id, planogram_id=None):
+def unstacked_breakdown(entity_id, planogram_id=None, company_ids=None):
     """Which inbound lines the unstacked stock came from (FIFO / traceability).
 
     The quantities here must sum to the location-8 fc_entity_stock row for the same
     sku+batch — see the invariant in the design doc.
     """
-    where, params = ["entity_id = %s", "unstacked_quantity > 0"], [entity_id]
+    cf_sql, cf_params = company_filter_sql(company_ids)
+    where = ["entity_id = %s", "unstacked_quantity > 0", cf_sql]
+    params = [entity_id, *cf_params]
     if planogram_id is not None:
         where.append("planogram_id = %s")
         params.append(planogram_id)
@@ -211,8 +224,9 @@ def unstacked_breakdown(entity_id, planogram_id=None):
 
 # ── Ledger reads ─────────────────────────────────────────────────────────────
 def list_ledger(planogram_id=None, entity_id=None, batch_id=None, reference_type=None,
-                limit=100, offset=0):
-    where, params = [], []
+                limit=100, offset=0, company_ids=None):
+    cf_sql, cf_params = company_filter_sql(company_ids)
+    where, params = [cf_sql], list(cf_params)
     if planogram_id is not None:
         where.append("planogram_id = %s")
         params.append(planogram_id)
@@ -226,7 +240,7 @@ def list_ledger(planogram_id=None, entity_id=None, batch_id=None, reference_type
         where.append("reference_type = %s")
         params.append(reference_type)
 
-    clause = ("WHERE " + " AND ".join(where)) if where else ""
+    clause = "WHERE " + " AND ".join(where)   # always non-empty: the company filter is first
     params += [limit, offset]
     return mysql_manager.execute_query(
         f"""SELECT id AS ledger_id, planogram_id, location_id, bin_id, bin_location,
@@ -241,8 +255,9 @@ def list_ledger(planogram_id=None, entity_id=None, batch_id=None, reference_type
 # ── Movement requests (stacking | picking | moves) ───────────────────────────
 def list_movement_requests(planogram_id=None, movement_type=None, request_status=None,
                            reference_type=None, request_identifier=None,
-                           limit=50, offset=0):
-    where, params = [], []
+                           limit=50, offset=0, company_ids=None):
+    cf_sql, cf_params = company_filter_sql(company_ids)
+    where, params = [cf_sql], list(cf_params)
     if planogram_id is not None:
         where.append("planogram_id = %s")
         params.append(planogram_id)
@@ -259,7 +274,7 @@ def list_movement_requests(planogram_id=None, movement_type=None, request_status
         where.append("request_identifier = %s")
         params.append(request_identifier)
 
-    clause = ("WHERE " + " AND ".join(where)) if where else ""
+    clause = "WHERE " + " AND ".join(where)   # always non-empty: the company filter is first
     params += [limit, offset]
     return mysql_manager.execute_query(
         f"""SELECT id AS request_id, planogram_id, movement_type, request_status,
@@ -270,14 +285,19 @@ def list_movement_requests(planogram_id=None, movement_type=None, request_status
     ) or []
 
 
-def get_movement_request(request_id):
-    """A request with its detail lines and each line's recommendations."""
+def get_movement_request(request_id, company_ids=None):
+    """A request with its detail lines and each line's recommendations.
+
+    Scoped by company as well as id — otherwise a caller could read another tenant's
+    request simply by guessing its id.
+    """
+    cf_sql, cf_params = company_filter_sql(company_ids)
     rows = mysql_manager.execute_query(
-        """SELECT id AS request_id, planogram_id, movement_type, request_status,
+        f"""SELECT id AS request_id, planogram_id, movement_type, request_status,
                   request_identifier, reference_type, metadata, meta_info,
                   created_by_id, created_on, updated_on
-           FROM entity_movement_request WHERE id = %s""",
-        (request_id,),
+           FROM entity_movement_request WHERE id = %s AND {cf_sql}""",
+        (request_id, *cf_params),
     )
     if not rows:
         return None

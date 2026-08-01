@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -X POST http://localhost:5001/api/users/login -H \"Content-Type: application/json\" -d '{\"email\":\"admin@wms.local\",\"password\":\"admin\"}')",
+      "Bash(grep -oE \"\\\\\\(1[0-9]{3}, \\\\\"[^\\\\\"]+\\\\\"\\\\\\)|ProgrammingError.*|OperationalError.*\")",
+      "Bash(grep -v \"^.*company_id = request.args.get\\('company_id', type=int\\)$\")",
+      "Bash(curl -s -o /dev/null -w \"health=%{http_code}  \" http://localhost:5001/health)",
+      "Bash(awk 'NR<=322 && /^def /{f=$0} END{}' api/modules/fulfillment/invoice/service.py)",
+      "Bash(awk -F: '$1<322')",
+      "Bash(curl -s -X POST http://localhost:5001/api/v1/auth/login -H \"Content-Type: application/json\" -d '{\"username\":\"admin@wms.local\",\"password\":\"admin123\"}')",
+      "Bash(curl -s -X POST http://localhost:5001/api/v1/auth/login -H \"Content-Type: application/json\" -d '{\"email\":\"admin@wms.local\",\"password\":\"admin123\"}')",
+      "Bash(curl -s -X POST http://localhost:5001/api/v1/auth/login -H \"Content-Type: application/json\" -d '{\"username\":\"admin\",\"password\":\"admin123\"}')"
+    ]
+  }
+}

@@ -8,12 +8,19 @@ selected period — not any per-row date — decides which period the data belon
 and each upload *replaces* that period's existing rows (never appends duplicates).
 
 Feeds:
-  sales          -> busy_sales_data          (Hero sales actuals from Busy)
-  part-groups    -> part_groups              (part -> part-group + scheme mapping)
-  qty-targets    -> dealer_part_group_target (dealer x part-group quantity targets)
-  money-targets  -> dealer_money_target      (dealer rupee targets)
+  sales              -> busy_sales_data          (Hero sales actuals from Busy)
+  part-groups        -> part_groups              (part -> part-group + scheme mapping)
+  qty-targets        -> dealer_part_group_target (dealer x part-group quantity targets)
+  money-targets      -> dealer_money_target      (dealer rupee targets)
+  product-categories -> product.category_id      (sku -> category assignment)
 
-All four are Hero (company_id = 1); dealers are matched by name.
+Every feed is scoped to the uploading admin's company; dealers are matched by name
+within that company.
+
+Two feeds are NOT month-scoped and ignore the period selector:
+  * sales — the dates inside the file decide what gets replaced.
+  * product-categories — a product's category is a standing attribute, not a monthly
+    fact, so this UPDATEs the product master in place rather than replacing a period.
 """
 
 import calendar
@@ -32,10 +39,25 @@ from api.shared.upload_utils import resolve_required_columns
 
 logger = get_logger(__name__)
 
-HERO = 1  # this data is Hero's; dealers are matched within this company
+# The Busy feed belongs to one company. It used to be hardcoded to Hero; it is now the
+# uploading admin's own company, so a second tenant loads into its own rows rather than
+# silently overwriting Hero's.
+DEFAULT_COMPANY = 1
+
+
+def _company(current_user):
+    """The company this upload belongs to — the caller's own, not a request parameter."""
+    from api.permissions import resolve_company_scope
+    scope = resolve_company_scope(current_user)
+    if not scope:            # None => unrestricted admin; [] => no grants
+        return DEFAULT_COMPANY
+    return scope[0]
 
 # feed -> the table it (re)loads, keyed for the status endpoint
-_FEEDS = ('sales', 'part-groups', 'qty-targets', 'money-targets')
+_FEEDS = ('sales', 'part-groups', 'qty-targets', 'money-targets', 'product-categories')
+
+# Feeds that ignore the year/month selector (see module docstring).
+_PERIODLESS_FEEDS = ('sales', 'product-categories')
 
 
 # ---------------------------------------------------------------------------
@@ -82,10 +104,10 @@ def _read_df(uploaded_file):
     return df
 
 
-def _dealer_map():
-    """Hero dealer name -> dealer_id (exact name match, as the sales data uses)."""
+def _dealer_map(company_id):
+    """Dealer name -> dealer_id within one company (exact match, as the sales data uses)."""
     rows = mysql_manager.execute_query(
-        "SELECT dealer_id, name FROM dealer WHERE company_id = %s", (HERO,)) or []
+        "SELECT dealer_id, name FROM dealer WHERE company_id = %s", (company_id,)) or []
     return {(r['name'] or '').strip(): r['dealer_id'] for r in rows}
 
 
@@ -110,7 +132,7 @@ def _num(val):
 # Per-feed loaders — each returns (inserted, skipped, errors, warnings)
 # ---------------------------------------------------------------------------
 
-def _load_sales(df):
+def _load_sales(df, company_id):
     """Sales is NOT month-scoped: it loads by the dates in the file itself.
 
     Every date that appears in the file is replaced (its existing rows deleted,
@@ -126,7 +148,7 @@ def _load_sales(df):
     for opt in ('Vch/Bill No', 'Unit', 'Price'):
         df, _ = resolve_required_columns(df, [opt])  # renames if present, ignore miss
 
-    dealers = set(_dealer_map().keys())
+    dealers = set(_dealer_map(company_id).keys())
     skipped, errors, unmatched = 0, [], 0
     rows = []  # parsed, valid rows awaiting insert
 
@@ -167,7 +189,7 @@ def _load_sales(df):
             placeholders = ','.join(['%s'] * len(dates))
             cur.execute(
                 f"DELETE FROM busy_sales_data WHERE company_id=%s AND sale_date IN ({placeholders})",
-                (HERO, *dates))
+                (company_id, *dates))
             replaced = cur.rowcount
         for r in rows:
             try:
@@ -177,7 +199,7 @@ def _load_sales(df):
                         unit, price, amount, company_id, created_at)
                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (r['date'], r['vch'], r['particulars'], r['item'], r['qty'],
-                     r['unit'], r['price'], r['amount'], HERO, datetime.utcnow()))
+                     r['unit'], r['price'], r['amount'], company_id, datetime.utcnow()))
                 inserted += 1
             except Exception as e:
                 errors.append({'row': r['row_num'], 'key': r['item'], 'reason': str(e)})
@@ -193,7 +215,7 @@ def _load_sales(df):
     return replaced, inserted, skipped, errors, warnings, covered
 
 
-def _load_part_groups(df, period_date, year, month, label):
+def _load_part_groups(df, period_date, year, month, label, company_id):
     required = ['Part number', 'Part Group']
     df, err = resolve_required_columns(df, required)
     if err:
@@ -203,7 +225,8 @@ def _load_part_groups(df, period_date, year, month, label):
 
     inserted, skipped, errors = 0, 0, []
     with mysql_manager.get_cursor() as cur:
-        cur.execute("DELETE FROM part_groups WHERE period=%s", (period_date,))
+        cur.execute("DELETE FROM part_groups WHERE period=%s AND company_id=%s",
+                    (period_date, company_id))
         replaced = cur.rowcount
         for idx, row in df.iterrows():
             row_num = idx + 2
@@ -215,28 +238,30 @@ def _load_part_groups(df, period_date, year, month, label):
             try:
                 cur.execute(
                     """INSERT INTO part_groups
-                       (part_number, description, part_group, scheme, month, period, created_at)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                       (part_number, description, part_group, scheme, month, period,
+                        company_id, created_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (part, (row.get('Description') or '').strip() or None,
                      group or None, (row.get('Scheme') or '').strip() or None,
-                     label, period_date, datetime.utcnow()))
+                     label, period_date, company_id, datetime.utcnow()))
                 inserted += 1
             except Exception as e:
                 errors.append({'row': row_num, 'key': part, 'reason': str(e)})
     return replaced, inserted, skipped, errors, []
 
 
-def _load_qty_targets(df, period_date, year, month, label):
+def _load_qty_targets(df, period_date, year, month, label, company_id):
     required = ['Dealer', 'Part Group', 'Target Qty']
     df, err = resolve_required_columns(df, required)
     if err:
         raise ValueError(err)
 
-    dmap = _dealer_map()
+    dmap = _dealer_map(company_id)
     # part_group -> scheme, taken from this period's mapping
     scheme_rows = mysql_manager.execute_query(
         "SELECT part_group, MAX(scheme) AS scheme FROM part_groups "
-        "WHERE period=%s GROUP BY part_group", (period_date,)) or []
+        "WHERE period=%s AND company_id=%s GROUP BY part_group",
+        (period_date, company_id)) or []
     scheme_of = {(r['part_group'] or '').strip(): r['scheme'] for r in scheme_rows}
 
     inserted, skipped, errors = 0, 0, []
@@ -266,23 +291,23 @@ def _load_qty_targets(df, period_date, year, month, label):
                 cur.execute(
                     """INSERT INTO dealer_part_group_target
                        (dealer_id, part_group, scheme, target_qty, month, target_period,
-                        created_at, updated_at)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        company_id, created_at, updated_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                     (dealer_id, group, scheme_of.get(group), qty, label, period_date,
-                     datetime.utcnow(), datetime.utcnow()))
+                     company_id, datetime.utcnow(), datetime.utcnow()))
                 inserted += 1
             except Exception as e:
                 errors.append({'row': row_num, 'key': f'{dealer} / {group}', 'reason': str(e)})
     return replaced, inserted, skipped, errors, []
 
 
-def _load_money_targets(df, period_date, year, month, label):
+def _load_money_targets(df, period_date, year, month, label, company_id):
     required = ['Dealer', 'Money Target']
     df, err = resolve_required_columns(df, required)
     if err:
         raise ValueError(err)
 
-    dmap = _dealer_map()
+    dmap = _dealer_map(company_id)
     inserted, skipped, errors = 0, 0, []
     with mysql_manager.get_cursor() as cur:
         cur.execute("DELETE FROM dealer_money_target WHERE target_period=%s", (period_date,))
@@ -305,13 +330,116 @@ def _load_money_targets(df, period_date, year, month, label):
             try:
                 cur.execute(
                     """INSERT INTO dealer_money_target
-                       (dealer_id, target_period, value_target, created_at, updated_at)
-                       VALUES (%s,%s,%s,%s,%s)""",
-                    (dealer_id, period_date, val, datetime.utcnow(), datetime.utcnow()))
+                       (dealer_id, target_period, value_target, company_id,
+                        created_at, updated_at)
+                       VALUES (%s,%s,%s,%s,%s,%s)""",
+                    (dealer_id, period_date, val, company_id, datetime.utcnow(), datetime.utcnow()))
                 inserted += 1
             except Exception as e:
                 errors.append({'row': row_num, 'key': dealer, 'reason': str(e)})
     return replaced, inserted, skipped, errors, []
+
+
+def _txt(val):
+    """Cell -> trimmed string, treating a blank cell as ''.
+
+    pandas represents an empty cell as NaN — a float, and a *truthy* one — so the usual
+    `(val or '').strip()` raises AttributeError on any column that has blanks. Needed here
+    because a blank Category is meaningful: it clears the product's assignment.
+    """
+    if val is None:
+        return ''
+    try:
+        if pd.isna(val):
+            return ''
+    except (TypeError, ValueError):
+        pass  # array-like / unhashable — fall through to str()
+    return str(val).strip()
+
+
+def _category_map():
+    """Active category name (lower-cased) -> category_id."""
+    rows = mysql_manager.execute_query(
+        "SELECT category_id, name FROM categories WHERE is_active = 1") or []
+    return {(r['name'] or '').strip().lower(): r['category_id'] for r in rows}
+
+
+def _load_product_categories(df):
+    """Assign products to categories from a Product String -> Category file.
+
+    Unlike the monthly feeds this UPDATEs the product master in place — a category is a
+    standing attribute of a product, not a fact about one month. Nothing is deleted and no
+    product is ever created: an unknown product string is reported as a row error, matching
+    how the Product Nickname upload behaves.
+
+    A blank Category clears the assignment, so a mis-categorised product can be corrected by
+    re-uploading it with an empty cell.
+    """
+    required = ['Product String', 'Category']
+    df, err = resolve_required_columns(df, required)
+    if err:
+        raise ValueError(err)
+
+    cmap = _category_map()
+    if not cmap:
+        raise ValueError('No active categories exist yet — seed or create categories first.')
+
+    updated, cleared, replaced, skipped, errors = 0, 0, 0, 0, []
+    unknown_categories = set()
+
+    with mysql_manager.get_cursor() as cur:
+        for idx, row in df.iterrows():
+            row_num = idx + 2  # 1-based + header row
+            product_string = _txt(row.get('Product String'))
+            category_name = _txt(row.get('Category'))
+
+            if not product_string:
+                skipped += 1
+                continue
+
+            cur.execute(
+                "SELECT product_id, category_id FROM product WHERE product_string = %s",
+                (product_string,))
+            product = cur.fetchone()
+            if not product:
+                errors.append({'row': row_num, 'key': product_string,
+                               'reason': 'Product not found'})
+                continue
+
+            if category_name:
+                category_id = cmap.get(category_name.lower())
+                if not category_id:
+                    unknown_categories.add(category_name)
+                    errors.append({'row': row_num, 'key': product_string,
+                                   'reason': f'Unknown category "{category_name}"'})
+                    continue
+            else:
+                category_id = None  # blank clears the assignment
+
+            try:
+                cur.execute(
+                    "UPDATE product SET category_id = %s, updated_at = %s WHERE product_id = %s",
+                    (category_id, datetime.utcnow(), product['product_id']))
+                if category_id is None:
+                    cleared += 1
+                else:
+                    updated += 1
+                    # It already had a (different) category — the upload overwrote it.
+                    if product['category_id'] and product['category_id'] != category_id:
+                        replaced += 1
+            except Exception as e:
+                errors.append({'row': row_num, 'key': product_string, 'reason': str(e)})
+
+    warnings = []
+    if unknown_categories:
+        warnings.append(
+            'These categories do not exist and were skipped: '
+            + ', '.join(sorted(unknown_categories))
+            + '. Valid categories: ' + ', '.join(sorted(c.title() for c in cmap)) + '.')
+    if cleared:
+        warnings.append(f'{cleared} product(s) had their category cleared (blank Category cell).')
+
+    return replaced, updated + cleared, skipped, errors, warnings
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +466,17 @@ class MonthlyStatus(Resource):
                 'max': str(cov[0]['mx']) if cov[0].get('mx') else None,
                 'total': cov[0].get('c') or 0,
             }
+            # Product categories aren't period-scoped — report how much of the product
+            # master is assigned, plus the category list the upload will accept.
+            pc = mysql_manager.execute_query(
+                "SELECT COUNT(*) total, COUNT(category_id) mapped FROM product") or [{}]
+            cats = mysql_manager.execute_query(
+                "SELECT name FROM categories WHERE is_active = 1 ORDER BY name") or []
+            cat_coverage = {
+                'total': pc[0].get('total') or 0,
+                'mapped': pc[0].get('mapped') or 0,
+                'categories': [c['name'] for c in cats],
+            }
             return {
                 'success': True,
                 'sales_coverage': sales_coverage,
@@ -354,7 +493,10 @@ class MonthlyStatus(Resource):
                     'money-targets': periods(
                         "SELECT DATE_FORMAT(target_period,'%%Y-%%m-01') p, COUNT(*) c "
                         "FROM dealer_money_target GROUP BY p"),
+                    # Not period-scoped — coverage is reported separately below.
+                    'product-categories': {},
                 },
+                'category_coverage': cat_coverage,
             }, 200
         except Exception as e:
             logger.exception("Error in /api/admin/monthly/status")
@@ -380,10 +522,26 @@ class MonthlyUpload(Resource):
         except ValueError as e:
             return {'success': False, 'msg': str(e)}, 400
 
+        # Product categories update the product master in place — no period involved.
+        if feed == 'product-categories':
+            try:
+                replaced, applied, skipped, errors, warnings = _load_product_categories(df)
+            except ValueError as e:
+                return {'success': False, 'msg': str(e)}, 400
+            except Exception as e:
+                logger.exception("Error loading product-categories feed")
+                return {'success': False, 'msg': f'Load failed: {str(e)}'}, 400
+            return {
+                'success': True, 'feed': feed, 'period': None,
+                'period_label': 'product master', 'replaced': replaced,
+                'inserted': applied, 'skipped': skipped,
+                'error_count': len(errors), 'errors': errors[:200], 'warnings': warnings,
+            }, 200
+
         # Sales loads by the dates inside the file — the month/year selector doesn't apply.
         if feed == 'sales':
             try:
-                replaced, inserted, skipped, errors, warnings, covered = _load_sales(df)
+                replaced, inserted, skipped, errors, warnings, covered = _load_sales(df, _company(current_user))
             except ValueError as e:
                 return {'success': False, 'msg': str(e)}, 400
             except Exception as e:
@@ -410,13 +568,13 @@ class MonthlyUpload(Resource):
         try:
             if feed == 'part-groups':
                 replaced, inserted, skipped, errors, warnings = _load_part_groups(
-                    df, period_date, year, month, label)
+                    df, period_date, year, month, label, _company(current_user))
             elif feed == 'qty-targets':
                 replaced, inserted, skipped, errors, warnings = _load_qty_targets(
-                    df, period_date, year, month, label)
+                    df, period_date, year, month, label, _company(current_user))
             else:  # money-targets
                 replaced, inserted, skipped, errors, warnings = _load_money_targets(
-                    df, period_date, year, month, label)
+                    df, period_date, year, month, label, _company(current_user))
         except ValueError as e:
             return {'success': False, 'msg': str(e)}, 400
         except Exception as e:

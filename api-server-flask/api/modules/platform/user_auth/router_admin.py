@@ -30,6 +30,9 @@ from flask_restx import Resource
 
 from api.extensions import rest_api
 from api.core.auth import token_required, active_required
+from api.permissions import (
+    resolve_company_scope, company_filter_sql, CompanyAccessDenied,
+)
 from api.db_manager import mysql_manager, partition_filter
 from api.core.logging import get_logger
 
@@ -89,9 +92,13 @@ class UploadBatchList(Resource):
         try:
             upload_type  = request.args.get('upload_type')
             warehouse_id = request.args.get('warehouse_id', type=int)
-            company_id   = request.args.get('company_id',   type=int)
             date_from    = request.args.get('date_from')
             date_to      = request.args.get('date_to')
+            try:
+                company_ids = resolve_company_scope(
+                    current_user, request.args.get('company_id', type=int))
+            except CompanyAccessDenied as e:
+                return {'success': False, 'msg': str(e)}, 403
 
             pf_ub_sql, pf_ub_params = partition_filter('upload_batches', alias='ub')
             query = f"""
@@ -122,9 +129,9 @@ class UploadBatchList(Resource):
             if warehouse_id:
                 query += " AND ub.warehouse_id = %s"
                 params.append(warehouse_id)
-            if company_id:
-                query += " AND ub.company_id = %s"
-                params.append(company_id)
+            cf_sql, cf_params = company_filter_sql(company_ids, alias='ub')
+            query += f" AND {cf_sql}"
+            params.extend(cf_params)
             if date_from:
                 query += " AND DATE(ub.uploaded_at) >= %s"
                 params.append(date_from)

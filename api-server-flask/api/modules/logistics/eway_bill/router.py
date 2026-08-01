@@ -25,6 +25,7 @@ from flask_restx import Resource, fields
 
 from api.extensions import rest_api
 from api.core.auth import token_required, active_required
+from api.permissions import resolve_company_scope, CompanyAccessDenied
 from api.models import (
     TransportRoute, CustomerRouteMapping,
     DailyRouteManifest, CompanySchemaMapping
@@ -501,6 +502,11 @@ class EwaySchemaMappings(Resource):
             company_id = request.args.get('company_id', type=int)
             if not company_id:
                 return {'success': False, 'msg': 'company_id is required'}, 400
+            # company_id is caller-supplied — confirm this user is mapped to it.
+            try:
+                resolve_company_scope(current_user, company_id)
+            except CompanyAccessDenied as e:
+                return {'success': False, 'msg': str(e)}, 403
             schema = CompanySchemaMapping.get_for_company(company_id)
             return {'success': True, 'schema': schema}, 200
         except Exception as e:
