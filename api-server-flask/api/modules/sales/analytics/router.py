@@ -45,11 +45,21 @@ _MONTH = "YEAR(b.sale_date) = YEAR(CURDATE()) AND MONTH(b.sale_date) = MONTH(CUR
 # real DATE so periods never collide across years. (%% survives execute_query's `% params`.)
 _PERIOD = "DATE_FORMAT(CURDATE(), '%%Y-%%m-01')"
 
+# Each sale maps to ITS OWN month's part-group mapping rather than the current month's,
+# so looking at an earlier period doesn't silently lose every part group.
+_PG_PERIOD = "DATE_FORMAT(b.sale_date, '%%Y-%%m-01')"
 
-def _month_label():
-    # %% because execute_query runs `query % params`, so a literal % must be doubled.
-    rows = mysql_manager.execute_query("SELECT DATE_FORMAT(CURDATE(), '%%M %%Y') AS m")
-    return rows[0]['m'] if rows else ''
+
+def _period_arg():
+    """The requested sales window: (where_sql, period_name). Defaults to this month.
+
+    These dashboards used to hardcode the current calendar month, which made every
+    earlier month unreachable through the UI — the Busy feed is loaded in arrears, so
+    on the 1st of a month that meant an empty dashboard. Shares the named periods with
+    the explorer (service._period_window) so both tabs mean the same thing by them.
+    """
+    period = (request.args.get('period') or '').strip() or 'this_month'
+    return service._period_window(period)[0], period
 
 
 def _num(v):
@@ -75,18 +85,19 @@ class SalesExecSummary(Resource):
     @active_required
     def get(self, current_user):
         try:
+            window, period = _period_arg()
             rows = mysql_manager.execute_query(
                 f"""SELECT u.id AS user_id, u.username,
                            COUNT(DISTINCT d.dealer_id) AS assigned_dealers,
                            COUNT(DISTINCT CASE WHEN b.id IS NOT NULL THEN d.dealer_id END)
                                AS active_dealers,
-                           COALESCE(SUM(b.amount), 0)   AS total_sales,
+                           COALESCE(SUM({service._SALES}), 0)   AS total_sales,
                            COALESCE(SUM(b.quantity), 0) AS total_qty
                     FROM users u
                     JOIN dealer d
                       ON d.sales_executive_id = u.id AND d.company_id = %s
                     LEFT JOIN busy_sales_data b
-                      ON b.particulars = d.name AND {_MONTH}
+                      ON b.particulars = d.name AND {window}
                     WHERE u.role = 'sales_executive'
                     GROUP BY u.id, u.username
                     ORDER BY total_sales DESC""",
@@ -100,7 +111,8 @@ class SalesExecSummary(Resource):
                 'total_sales':      _num(r['total_sales']),
                 'total_qty':        _num(r['total_qty']),
             } for r in rows]
-            return {'success': True, 'month': _month_label(), 'executives': execs}, 200
+            return {'success': True, 'month': service.month_label(period),
+                    'period': period, 'executives': execs}, 200
         except Exception as e:
             logger.exception("Error in /api/analytics/sales-executives")
             return {'success': False, 'msg': f'Error computing analytics: {str(e)}'}, 400
@@ -121,48 +133,50 @@ class SalesExecDetail(Resource):
             if not who:
                 return {'success': False, 'msg': 'sales executive not found'}, 404
 
-            # Sales by dealer — every assigned dealer (0 for those with no sales this month).
+            window, period = _period_arg()
+
+            # Sales by dealer — every assigned dealer (0 for those with no sales this period).
             by_dealer = mysql_manager.execute_query(
                 f"""SELECT d.dealer_id, d.name AS dealer,
-                           COALESCE(SUM(b.amount), 0)   AS sales,
+                           COALESCE(SUM({service._SALES}), 0)   AS sales,
                            COALESCE(SUM(b.quantity), 0) AS qty
                     FROM dealer d
                     LEFT JOIN busy_sales_data b
-                      ON b.particulars = d.name AND {_MONTH}
+                      ON b.particulars = d.name AND {window}
                     WHERE d.sales_executive_id = %s AND d.company_id = %s
                     GROUP BY d.dealer_id, d.name
                     ORDER BY sales DESC""",
                 (user_id, _company(current_user)),
             ) or []
 
-            # Quantity by part group — parts not in the July mapping bucket as "(Unmapped)".
+            # Quantity by part group — parts with no mapping bucket as "(Unmapped)".
             by_part_group = mysql_manager.execute_query(
                 f"""SELECT COALESCE(pg.part_group, '(Unmapped)') AS part_group,
                            SUM(b.quantity)          AS qty,
-                           SUM(b.amount)            AS sales,
+                           SUM({service._SALES})            AS sales,
                            COUNT(DISTINCT b.item_code) AS parts
                     FROM busy_sales_data b
                     JOIN dealer d ON d.name = b.particulars AND d.company_id = %s
                     LEFT JOIN part_groups pg
-                      ON pg.part_number = b.item_code AND pg.period = DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
-                    WHERE d.sales_executive_id = %s AND {_MONTH}
+                      ON pg.part_number = b.item_code AND pg.period = {_PG_PERIOD}
+                    WHERE d.sales_executive_id = %s AND {window}
                     GROUP BY COALESCE(pg.part_group, '(Unmapped)')
                     ORDER BY qty DESC""",
                 (_company(current_user), user_id),
             ) or []
 
-            # Quantity by part — enriched with the July part-group mapping where available.
+            # Quantity by part — enriched with that month's part-group mapping where available.
             by_part = mysql_manager.execute_query(
                 f"""SELECT b.item_code,
                            MAX(pg.description) AS description,
                            MAX(pg.part_group)  AS part_group,
                            SUM(b.quantity)     AS qty,
-                           SUM(b.amount)       AS sales
+                           SUM({service._SALES})       AS sales
                     FROM busy_sales_data b
                     JOIN dealer d ON d.name = b.particulars AND d.company_id = %s
                     LEFT JOIN part_groups pg
-                      ON pg.part_number = b.item_code AND pg.period = DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
-                    WHERE d.sales_executive_id = %s AND {_MONTH}
+                      ON pg.part_number = b.item_code AND pg.period = {_PG_PERIOD}
+                    WHERE d.sales_executive_id = %s AND {window}
                     GROUP BY b.item_code
                     ORDER BY qty DESC""",
                 (_company(current_user), user_id),
@@ -173,7 +187,8 @@ class SalesExecDetail(Resource):
 
             return {
                 'success': True,
-                'month': _month_label(),
+                'month': service.month_label(period),
+                'period': period,
                 'user_id': who[0]['id'],
                 'username': who[0]['username'],
                 'total_sales': _num(total_sales),
@@ -243,14 +258,19 @@ class AnalyticsFilters(Resource):
                     FROM dealer
                     WHERE company_id = {int(_company(current_user))} AND sales_executive_id IS NOT NULL
                     ORDER BY name""") or []
+            # The mapping is monthly, so the filter bar has to offer the groups that exist
+            # for the period being viewed — keyed off CURDATE() it went empty the moment
+            # you looked at any month but the current one.
+            _, period = _period_arg()
+            pg_period = service._period_window(period)[1]
             groups = mysql_manager.execute_query(
-                """SELECT DISTINCT part_group FROM part_groups
-                   WHERE period = DATE_FORMAT(CURDATE(), '%%Y-%%m-01') AND part_group IS NOT NULL AND part_group <> ''
+                f"""SELECT DISTINCT part_group FROM part_groups
+                   WHERE period = {pg_period} AND part_group IS NOT NULL AND part_group <> ''
                    ORDER BY part_group""") or []
             parts = mysql_manager.execute_query(
-                """SELECT b.item_code, MAX(pg.description) AS description
+                f"""SELECT b.item_code, MAX(pg.description) AS description
                    FROM busy_sales_data b
-                   LEFT JOIN part_groups pg ON pg.part_number = b.item_code AND pg.period = DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
+                   LEFT JOIN part_groups pg ON pg.part_number = b.item_code AND pg.period = {_PG_PERIOD}
                    GROUP BY b.item_code ORDER BY b.item_code""") or []
             return {
                 'success': True,
@@ -326,3 +346,66 @@ class DealerSuggestionsByDealer(Resource):
         except Exception as e:
             logger.exception("Error in /api/analytics/dealer-suggestions/<id>")
             return {'success': False, 'msg': f'Error computing suggestions: {str(e)}'}, 400
+
+
+@rest_api.route('/api/analytics/dealer/<int:dealer_id>')
+class DealerOverview(Resource):
+    """One dealer, one month — the payload behind the mobile app's Overview tab.
+
+    Web-auth twin of /api/v1/analytics/dealer/<id>; both are thin wrappers over the
+    same service call, so the admin view and the rep's phone can never drift apart.
+    """
+
+    @token_required
+    @active_required
+    def get(self, current_user, dealer_id):
+        try:
+            data = service.dealer_category_analytics(dealer_id)
+            if data is None:
+                return {'success': False, 'msg': 'dealer not found'}, 404
+            return data, 200
+        except Exception as e:
+            logger.exception("Error in /api/analytics/dealer/<id>")
+            return {'success': False, 'msg': f'Error computing dealer overview: {str(e)}'}, 400
+
+
+@rest_api.route('/api/analytics/dealer/<int:dealer_id>/notes')
+class DealerVisitNotes(Resource):
+    """Notes left at this dealer, newest visit first — the Last-visit block.
+
+    Read-only by design: the write endpoint is owner-only, so an admin displays a
+    note with its author but is never offered an edit (spec §7).
+    """
+
+    @token_required
+    @active_required
+    def get(self, current_user, dealer_id):
+        try:
+            limit = min(int(request.args.get('limit', 50)), 200)
+        except ValueError:
+            return {'success': False, 'msg': 'limit must be an integer'}, 422
+        try:
+            rows = mysql_manager.execute_query(
+                """SELECT v.visit_id, v.dealer_id, v.check_in_at, v.check_out_at,
+                          v.status, v.notes, v.updated_at, u.username AS author
+                   FROM dealer_visits v
+                   LEFT JOIN users u ON u.id = v.user_id
+                   WHERE v.dealer_id = %s AND v.company_id = %s
+                     AND v.notes IS NOT NULL AND v.notes <> ''
+                   ORDER BY v.check_in_at DESC, v.visit_id DESC
+                   LIMIT %s""",
+                (dealer_id, _company(current_user), limit)) or []
+
+            def _iso(v):
+                return v.isoformat() if hasattr(v, 'isoformat') else v
+
+            return {'success': True, 'notes': [{
+                'visit_id': r['visit_id'], 'dealer_id': r['dealer_id'],
+                'check_in_at': _iso(r['check_in_at']),
+                'check_out_at': _iso(r.get('check_out_at')),
+                'status': r['status'], 'notes': r['notes'],
+                'updated_at': _iso(r.get('updated_at')), 'author': r.get('author'),
+            } for r in rows]}, 200
+        except Exception as e:
+            logger.exception("Error in /api/analytics/dealer/<id>/notes")
+            return {'success': False, 'msg': f'Error loading notes: {str(e)}'}, 400

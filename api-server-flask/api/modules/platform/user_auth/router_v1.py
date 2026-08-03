@@ -359,3 +359,82 @@ class V1DealerLocationPhoto(Resource):
 
         return {"status": "pending",
                 "detail": "sent for admin approval"}, 201
+
+
+@rest_api.route('/api/v1/dealers')
+class V1CreateDealer(Resource):
+    """A rep proposes a NEW dealer from the field (multipart/form-data: name,
+    latitude, longitude, [accuracy_m], photo).
+
+    The dealer is created in the dealer table but INACTIVE, owned by the rep, with
+    a pending location submission carrying the shopfront photo and GPS fix. An admin
+    approving that submission writes the coordinates AND flips the dealer to active
+    (see dealer-locations approve). Until then it never shows in the active dealer
+    list, so it can't be checked into or ordered against.
+    """
+
+    @v1_require_permission(rbac.P.DEALER_READ)
+    def post(self, current_user):
+        form = request.form
+        name = (form.get('name') or '').strip()
+        if len(name) < 2:
+            return {"detail": "a dealer name is required"}, 422
+
+        lat, lng = form.get('latitude'), form.get('longitude')
+        if lat is None or lng is None:
+            return {"detail": "latitude and longitude are required"}, 422
+        try:
+            lat, lng = float(lat), float(lng)
+        except (TypeError, ValueError):
+            return {"detail": "latitude/longitude must be numbers"}, 422
+        if not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
+            return {"detail": "latitude/longitude out of range"}, 422
+        try:
+            accuracy = float(form['accuracy_m']) if form.get('accuracy_m') else None
+        except (TypeError, ValueError):
+            accuracy = None
+
+        photo = request.files.get('photo')
+        if photo is None:
+            return {"detail": "a photo of the dealer is required"}, 422
+
+        # The new dealer joins the rep's own company (so it lands in their book once
+        # approved); fall back to the caller's single scoped company.
+        crows = mysql_manager.execute_query(
+            "SELECT company_id FROM dealer "
+            "WHERE sales_executive_id = %s AND company_id IS NOT NULL LIMIT 1",
+            (current_user['user_id'],))
+        company_id = crows[0]['company_id'] if crows else None
+        if company_id is None:
+            scoped = company_scope(current_user)
+            company_id = scoped[0] if scoped else None
+        if company_id is None:
+            return {"detail": "no company assigned — ask an admin for access"}, 403
+
+        # Create INACTIVE, owned by the rep; coordinates are written on approval.
+        with mysql_manager.get_cursor() as cur:
+            cur.execute(
+                """INSERT INTO dealer (name, status, sales_executive_id, company_id)
+                   VALUES (%s, 'inactive', %s, %s)""",
+                (name, current_user['user_id'], company_id))
+            dealer_id = cur.lastrowid
+
+        try:
+            path, mime, size = media.save_dealer_location_photo(photo, dealer_id)
+        except media.MediaError as e:
+            # Don't leave an inactive dealer with no evidence behind it.
+            mysql_manager.execute_query(
+                "DELETE FROM dealer WHERE dealer_id = %s", (dealer_id,), fetch=False)
+            return {"detail": str(e)}, 400
+
+        mysql_manager.execute_query(
+            """INSERT INTO dealer_location_submissions
+                 (dealer_id, submitted_by, latitude, longitude, accuracy_m,
+                  photo_path, mime_type, size_bytes, note, status)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')""",
+            (dealer_id, current_user['user_id'], lat, lng, accuracy,
+             path, mime, size, 'New dealer — activate on approval'),
+            fetch=False)
+
+        return {"status": "pending", "dealer_id": dealer_id,
+                "detail": "New dealer sent for admin approval"}, 201

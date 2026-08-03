@@ -65,6 +65,56 @@ function finalize(g) {
  * @param {Array<object>} parts backend suggestion rows
  * @returns {Array<object>} cards in first-appearance (hardest-behind-first) order
  */
+/**
+ * Group the target sheet (grow[]) into the rows the Targets panel renders.
+ *
+ * The API already returns one row per TARGETED UNIT — a part group under scheme 'PG',
+ * the whole scheme otherwise — so this only decides nesting, never which units exist:
+ *
+ *   scheme 'PG'  -> ONE expandable parent ("PG · 9 part groups"), sold and target
+ *                   summed across its groups, with one child row per part group;
+ *   anything else -> a single flat row, nothing beneath it.
+ *
+ * PG is the only expandable row. API order (widest gap first) is preserved by first
+ * appearance, and the PG parent takes the position of its first member.
+ *
+ * @param {Array<object>} units grow[] rows from the API
+ * @returns {Array<object>} rows in API order; PG carries `children`
+ */
+export function groupTargets(units) {
+  const rows = [];
+  let pg = null;
+  for (const u of units || []) {
+    const isPg = (u.scheme ?? '').trim().toUpperCase() === 'PG';
+    if (!isPg) {
+      rows.push({
+        key: `u:${u.scheme ?? ''}:${u.part_group ?? ''}`,
+        // Non-PG units are labelled by the unit itself: the scheme, or the category
+        // for a category-level target (the API names it for us).
+        name: u.part_group || u.scheme || 'Other parts',
+        sold: nz(u.group_sold),
+        target: nz(u.group_target),
+        expandable: false,
+        children: []
+      });
+      continue;
+    }
+    if (!pg) {
+      pg = { key: 'scheme:PG', name: 'PG', sold: 0, target: 0, expandable: true, children: [] };
+      rows.push(pg); // holds the position of the first PG unit, so ordering survives
+    }
+    pg.sold += nz(u.group_sold);
+    pg.target += nz(u.group_target);
+    pg.children.push({
+      key: `pg:${u.part_group ?? ''}`,
+      name: u.part_group || 'Other parts',
+      sold: nz(u.group_sold),
+      target: nz(u.group_target)
+    });
+  }
+  return rows;
+}
+
 export function groupSuggestions(parts) {
   const byKey = new Map();
   const order = [];

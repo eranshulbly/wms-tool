@@ -131,8 +131,12 @@ def _decide(submission_id, current_user, approve, note=None):
         return {'success': False, 'msg': f"already {sub['status']}"}, 409
 
     if approve:
+        # Write the confirmed coordinates and ACTIVATE the dealer. A dealer proposed
+        # from the field starts inactive and only goes live here; for a dealer that
+        # was already active (a plain location capture) status = 'active' is a no-op.
         mysql_manager.execute_query(
-            "UPDATE dealer SET latitude = %s, longitude = %s WHERE dealer_id = %s",
+            "UPDATE dealer SET latitude = %s, longitude = %s, status = 'active' "
+            "WHERE dealer_id = %s",
             (sub['latitude'], sub['longitude'], sub['dealer_id']), fetch=False)
 
     mysql_manager.execute_query(

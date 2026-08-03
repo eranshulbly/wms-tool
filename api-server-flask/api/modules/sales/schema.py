@@ -46,6 +46,13 @@ CREATE TABLE IF NOT EXISTS busy_sales_data (
     unit        VARCHAR(20) DEFAULT NULL,
     price       DECIMAL(14,4) NOT NULL DEFAULT 0,
     amount      DECIMAL(16,4) NOT NULL DEFAULT 0,
+    -- GST is a flat 0.18 of the line amount. Generated rather than written by the
+    -- loader so it can never disagree with `amount`, and STORED rather than VIRTUAL
+    -- because analytics SUMs it over the whole feed. Keep every literal percent sign
+    -- out of this DDL: execute_query interpolates the query against its params, so a
+    -- bare one raises "not enough arguments for format string" at boot.
+    gst             DECIMAL(16,4) AS (ROUND(amount * 0.18, 4)) STORED,
+    amount_with_gst DECIMAL(16,4) AS (ROUND(amount * 1.18, 4)) STORED,
     company_id  INT NOT NULL,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
@@ -77,39 +84,46 @@ CREATE TABLE IF NOT EXISTS part_groups (
 """, order=61)
 
 
-# The rupee target: one row per dealer per period.
+# The rupee target: one row per category x dealer per period. The unique key IS the
+# grain — the upload replaces by (period, category), so a second row for the same
+# (dealer, category, period) would double the target rather than update it.
 register_table("dealer_money_target", """
 CREATE TABLE IF NOT EXISTS dealer_money_target (
     id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     dealer_id     INT NOT NULL,
+    category_id   INT NOT NULL,
     target_period DATE NOT NULL,
     value_target  DECIMAL(16,4) NOT NULL DEFAULT 0,
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    UNIQUE KEY uq_dealer_period (dealer_id, target_period),
-    KEY idx_target_period (target_period)
+    UNIQUE KEY uq_dmt_grain (dealer_id, category_id, target_period),
+    KEY idx_target_period (target_period),
+    KEY idx_dmt_category (category_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """, order=62)
 
 
-# The quantity target: one row per dealer x part-group per period. Analytics SUMs
-# target_qty over the dealers in scope, so a duplicate row here inflates the target.
+# The quantity target: one row per category x scheme x part-group x dealer per period.
+# Analytics SUMs target_qty over the dealers in scope, so a duplicate row here inflates
+# the target — hence the unique key on the full grain.
 register_table("dealer_part_group_target", """
 CREATE TABLE IF NOT EXISTS dealer_part_group_target (
     id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     dealer_id     INT NOT NULL,
+    category_id   INT NOT NULL,
     part_group    VARCHAR(150) NOT NULL,
-    scheme        VARCHAR(150) DEFAULT NULL,
+    scheme        VARCHAR(150) NOT NULL DEFAULT '',
     target_qty    DECIMAL(14,4) NOT NULL DEFAULT 0,
     month         VARCHAR(30) DEFAULT NULL,
     target_period DATE NOT NULL,
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    UNIQUE KEY uq_dealer_group_period (dealer_id, part_group, target_period),
+    UNIQUE KEY uq_dpgt_grain (dealer_id, category_id, scheme, part_group, target_period),
     KEY idx_target_period (target_period),
-    KEY idx_part_group (part_group)
+    KEY idx_part_group (part_group),
+    KEY idx_dpgt_category (category_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """, order=63)
 
@@ -132,6 +146,7 @@ CREATE TABLE IF NOT EXISTS dealer_visits (
     check_out_longitude  DECIMAL(10,7),
     check_out_accuracy_m FLOAT,
     status               VARCHAR(20) NOT NULL DEFAULT 'active',
+    notes                TEXT,
     created_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at           DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_dv_user (user_id),

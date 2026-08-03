@@ -111,6 +111,18 @@ def _dealer_map(company_id):
     return {(r['name'] or '').strip(): r['dealer_id'] for r in rows}
 
 
+def _category_id_map():
+    """Category name (lower-cased) -> category_id, for the target feeds.
+
+    Both target feeds are keyed by category, so an unknown category name has to be a
+    row error rather than a silent NULL — a NULL category would sit outside the
+    replacement key and quietly survive every later upload.
+    """
+    rows = mysql_manager.execute_query(
+        "SELECT category_id, name FROM categories WHERE is_active = 1") or []
+    return {(r['name'] or '').strip().lower(): r['category_id'] for r in rows}
+
+
 def _num(val):
     """Parse a possibly comma-grouped numeric cell; None/''/unparseable -> None.
 
@@ -251,93 +263,157 @@ def _load_part_groups(df, period_date, year, month, label, company_id):
 
 
 def _load_qty_targets(df, period_date, year, month, label, company_id):
-    required = ['Dealer', 'Part Group', 'Target Qty']
+    """Quantity targets live at (category, scheme, part_group, dealer, period).
+
+    Scheme stays derived from that period's part-group mapping rather than being asked
+    for in the file — it is a property of the group, not of the target. Replacement is
+    per category, so loading one category's targets leaves the others' alone.
+    """
+    required = ['Dealer', 'Category', 'Part Group', 'Target Qty']
     df, err = resolve_required_columns(df, required)
     if err:
         raise ValueError(err)
 
     dmap = _dealer_map(company_id)
+    cmap = _category_id_map()
     # part_group -> scheme, taken from this period's mapping
     scheme_rows = mysql_manager.execute_query(
         "SELECT part_group, MAX(scheme) AS scheme FROM part_groups "
         "WHERE period=%s AND company_id=%s GROUP BY part_group",
         (period_date, company_id)) or []
-    scheme_of = {(r['part_group'] or '').strip(): r['scheme'] for r in scheme_rows}
+    # '' rather than NULL: scheme is part of the replacement key, and MySQL treats every
+    # NULL in a UNIQUE index as distinct, so a NULL scheme would defeat the replacement.
+    scheme_of = {(r['part_group'] or '').strip(): (r['scheme'] or '') for r in scheme_rows}
 
     inserted, skipped, errors = 0, 0, []
+    rows = []  # parsed + validated, awaiting the write
+
+    for idx, row in df.iterrows():
+        row_num = idx + 2
+        dealer = (row.get('Dealer') or '').strip()
+        category = (row.get('Category') or '').strip()
+        group = (row.get('Part Group') or '').strip()
+        if not dealer and not group and not category:
+            skipped += 1
+            continue
+        dealer_id = dmap.get(dealer)
+        if not dealer_id:
+            errors.append({'row': row_num, 'key': dealer, 'reason': 'Unknown dealer'})
+            continue
+        category_id = cmap.get(category.lower())
+        if not category_id:
+            errors.append({'row': row_num, 'key': f'{dealer} / {category}',
+                           'reason': 'Unknown category' if category else 'Missing category'})
+            continue
+        if not group:
+            errors.append({'row': row_num, 'key': dealer, 'reason': 'Missing part group'})
+            continue
+        qty = _num(row.get('Target Qty'))
+        if qty is None:
+            errors.append({'row': row_num, 'key': f'{dealer} / {group}',
+                           'reason': 'Target Qty is not a number'})
+            continue
+        rows.append((row_num, dealer_id, category_id, group, scheme_of.get(group, ''), qty,
+                     f'{dealer} / {category} / {group}'))
+
+    replaced = 0
     with mysql_manager.get_cursor() as cur:
-        cur.execute("DELETE FROM dealer_part_group_target WHERE target_period=%s", (period_date,))
-        replaced = cur.rowcount
-        for idx, row in df.iterrows():
-            row_num = idx + 2
-            dealer = (row.get('Dealer') or '').strip()
-            group = (row.get('Part Group') or '').strip()
-            if not dealer and not group:
-                skipped += 1
-                continue
-            dealer_id = dmap.get(dealer)
-            if not dealer_id:
-                errors.append({'row': row_num, 'key': dealer, 'reason': 'Unknown dealer'})
-                continue
-            if not group:
-                errors.append({'row': row_num, 'key': dealer, 'reason': 'Missing part group'})
-                continue
-            qty = _num(row.get('Target Qty'))
-            if qty is None:
-                errors.append({'row': row_num, 'key': f'{dealer} / {group}',
-                               'reason': 'Target Qty is not a number'})
-                continue
+        covered = sorted({r[2] for r in rows})
+        if covered:
+            placeholders = ','.join(['%s'] * len(covered))
+            cur.execute(
+                f"DELETE FROM dealer_part_group_target "
+                f"WHERE target_period=%s AND company_id=%s AND category_id IN ({placeholders})",
+                (period_date, company_id, *covered))
+            replaced = cur.rowcount
+        for row_num, dealer_id, category_id, group, scheme, qty, key in rows:
             try:
                 cur.execute(
                     """INSERT INTO dealer_part_group_target
-                       (dealer_id, part_group, scheme, target_qty, month, target_period,
-                        company_id, created_at, updated_at)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                    (dealer_id, group, scheme_of.get(group), qty, label, period_date,
+                       (dealer_id, category_id, part_group, scheme, target_qty, month,
+                        target_period, company_id, created_at, updated_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (dealer_id, category_id, group, scheme, qty, label, period_date,
                      company_id, datetime.utcnow(), datetime.utcnow()))
                 inserted += 1
             except Exception as e:
-                errors.append({'row': row_num, 'key': f'{dealer} / {group}', 'reason': str(e)})
-    return replaced, inserted, skipped, errors, []
+                errors.append({'row': row_num, 'key': key, 'reason': str(e)})
+
+    warnings = []
+    if covered:
+        warnings.append(f'Replaced {len(covered)} categor{"y" if len(covered) == 1 else "ies"} '
+                        f'for {label}; other categories were left untouched.')
+    return replaced, inserted, skipped, errors, warnings
 
 
 def _load_money_targets(df, period_date, year, month, label, company_id):
-    required = ['Dealer', 'Money Target']
+    """Money targets live at (category, dealer, period).
+
+    Replacement is per category, not per period: a file covering one category must not
+    wipe the others' targets for the same month. Only the categories present in the
+    file are cleared, then reloaded.
+    """
+    required = ['Dealer', 'Category', 'Money Target']
     df, err = resolve_required_columns(df, required)
     if err:
         raise ValueError(err)
 
     dmap = _dealer_map(company_id)
+    cmap = _category_id_map()
     inserted, skipped, errors = 0, 0, []
+    rows = []  # parsed + validated, awaiting the write
+
+    for idx, row in df.iterrows():
+        row_num = idx + 2
+        dealer = (row.get('Dealer') or '').strip()
+        category = (row.get('Category') or '').strip()
+        if not dealer and not category:
+            skipped += 1
+            continue
+        dealer_id = dmap.get(dealer)
+        if not dealer_id:
+            errors.append({'row': row_num, 'key': dealer, 'reason': 'Unknown dealer'})
+            continue
+        category_id = cmap.get(category.lower())
+        if not category_id:
+            errors.append({'row': row_num, 'key': f'{dealer} / {category}',
+                           'reason': 'Unknown category' if category else 'Missing category'})
+            continue
+        val = _num(row.get('Money Target'))
+        if val is None:
+            errors.append({'row': row_num, 'key': f'{dealer} / {category}',
+                           'reason': 'Money Target is not a number'})
+            continue
+        rows.append((row_num, dealer_id, category_id, val, f'{dealer} / {category}'))
+
+    replaced = 0
     with mysql_manager.get_cursor() as cur:
-        cur.execute("DELETE FROM dealer_money_target WHERE target_period=%s", (period_date,))
-        replaced = cur.rowcount
-        for idx, row in df.iterrows():
-            row_num = idx + 2
-            dealer = (row.get('Dealer') or '').strip()
-            if not dealer:
-                skipped += 1
-                continue
-            dealer_id = dmap.get(dealer)
-            if not dealer_id:
-                errors.append({'row': row_num, 'key': dealer, 'reason': 'Unknown dealer'})
-                continue
-            val = _num(row.get('Money Target'))
-            if val is None:
-                errors.append({'row': row_num, 'key': dealer,
-                               'reason': 'Money Target is not a number'})
-                continue
+        covered = sorted({r[2] for r in rows})
+        if covered:
+            placeholders = ','.join(['%s'] * len(covered))
+            cur.execute(
+                f"DELETE FROM dealer_money_target "
+                f"WHERE target_period=%s AND company_id=%s AND category_id IN ({placeholders})",
+                (period_date, company_id, *covered))
+            replaced = cur.rowcount
+        for row_num, dealer_id, category_id, val, key in rows:
             try:
                 cur.execute(
                     """INSERT INTO dealer_money_target
-                       (dealer_id, target_period, value_target, company_id,
+                       (dealer_id, category_id, target_period, value_target, company_id,
                         created_at, updated_at)
-                       VALUES (%s,%s,%s,%s,%s,%s)""",
-                    (dealer_id, period_date, val, company_id, datetime.utcnow(), datetime.utcnow()))
+                       VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                    (dealer_id, category_id, period_date, val, company_id,
+                     datetime.utcnow(), datetime.utcnow()))
                 inserted += 1
             except Exception as e:
-                errors.append({'row': row_num, 'key': dealer, 'reason': str(e)})
-    return replaced, inserted, skipped, errors, []
+                errors.append({'row': row_num, 'key': key, 'reason': str(e)})
+
+    warnings = []
+    if covered:
+        warnings.append(f'Replaced {len(covered)} categor{"y" if len(covered) == 1 else "ies"} '
+                        f'for {label}; other categories were left untouched.')
+    return replaced, inserted, skipped, errors, warnings
 
 
 def _txt(val):

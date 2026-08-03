@@ -86,15 +86,19 @@ const FEEDS = [
     label: 'Quantity Targets',
     table: 'dealer_part_group_target',
     color: '#e65100',
-    blurb: 'One row per dealer × part-group. Scheme is auto-filled from that month\'s mapping.',
+    blurb:
+      'One row per category × part-group × dealer. Scheme is auto-filled from that month\'s ' +
+      'mapping. Only the categories present in the file are replaced — other categories\' ' +
+      'targets for the month are left untouched.',
     columns: [
       { name: 'Dealer', required: true, note: 'Dealer name (must exist)' },
+      { name: 'Category', required: true, note: 'Must match a category name (Parts, Oil, Tyre, …)' },
       { name: 'Part Group', required: true, note: 'Must exist in this month\'s mapping' },
       { name: 'Target Qty', required: true, note: 'Target quantity for the month' },
     ],
     sample: [
-      ['Janta Auto Parts | AFM | Meerganj', 'Clutch', '55'],
-      ['Janta Auto Parts | AFM | Meerganj', 'Cam Chain', '3'],
+      ['Janta Auto Parts | AFM | Meerganj', 'Parts', 'Clutch', '55'],
+      ['Janta Auto Parts | AFM | Meerganj', 'Parts', 'Cam Chain', '3'],
     ],
   },
   {
@@ -102,14 +106,18 @@ const FEEDS = [
     label: 'Rupee Targets',
     table: 'dealer_money_target',
     color: '#6a1b9a',
-    blurb: 'One row per dealer — the ₹ sales target for the month.',
+    blurb:
+      'One row per category × dealer — the ₹ sales target for the month. Only the categories ' +
+      'present in the file are replaced — other categories\' targets for the month are left ' +
+      'untouched.',
     columns: [
       { name: 'Dealer', required: true, note: 'Dealer name (must exist)' },
+      { name: 'Category', required: true, note: 'Must match a category name (Parts, Oil, Tyre, …)' },
       { name: 'Money Target', required: true, note: 'Rupee sales target for the month' },
     ],
     sample: [
-      ['Janta Auto Parts | AFM | Meerganj', '200000'],
-      ['Khandelwal Auto Parts', '150000'],
+      ['Janta Auto Parts | AFM | Meerganj', 'Parts', '200000'],
+      ['Khandelwal Auto Parts', 'Oil', '150000'],
     ],
   },
   {

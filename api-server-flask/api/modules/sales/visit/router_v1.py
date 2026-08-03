@@ -14,7 +14,7 @@ from flask_restx import Resource
 
 from api.extensions import rest_api
 from api.shared.db_manager import mysql_manager
-from api.shared.auth_v1 import v1_auth_required, company_scope
+from api.shared.auth_v1 import v1_auth_required, company_scope, company_filter
 from api.shared.timeutil import now_local
 
 
@@ -43,13 +43,21 @@ def _visit_out(v):
         "check_out_latitude": _f(v.get('check_out_latitude')),
         "check_out_longitude": _f(v.get('check_out_longitude')),
         "check_out_accuracy_m": v.get('check_out_accuracy_m'),
+        # What the rep wrote about this visit. One note per visit — the app edits
+        # it in place rather than appending, so a visit has at most one entry in
+        # the dealer's note history.
+        "notes": v.get('notes'),
     }
 
 
 _VISIT_COLS = """v.visit_id, v.user_id, v.dealer_id, v.company_id, v.status,
                  v.check_in_at, v.check_in_latitude, v.check_in_longitude, v.check_in_accuracy_m,
                  v.check_out_at, v.check_out_latitude, v.check_out_longitude, v.check_out_accuracy_m,
-                 d.name AS dealer_name"""
+                 v.notes, d.name AS dealer_name"""
+
+# Longest note we'll store. The column is TEXT, so this is a sanity bound on
+# what a phone keyboard can reasonably produce, not a storage limit.
+_NOTES_MAX = 4000
 
 
 def _active_visit(user_id):
@@ -97,6 +105,89 @@ class V1ActiveVisit(Resource):
     def get(self, current_user):
         """The caller's current active visit, or {"active": null} if none."""
         return {"active": _visit_out(_active_visit(current_user['user_id']))}, 200
+
+
+@rest_api.route('/api/v1/visits/<int:visit_id>/notes')
+class V1VisitNotes(Resource):
+    @v1_auth_required
+    def put(self, current_user, visit_id):
+        """Write the note for one visit, replacing whatever was there.
+
+        A visit carries a single note, so this is an edit rather than an append —
+        a rep refining what they wrote five minutes ago must not create a second
+        entry in the dealer's history. Only the rep who made the visit may write
+        it, and a checked-out visit stays editable so a note can be finished
+        after leaving the shop.
+        """
+        body = request.get_json(silent=True) or {}
+        if 'notes' not in body:
+            return {"detail": "notes is required"}, 422
+        notes = body.get('notes')
+        notes = '' if notes is None else str(notes).strip()
+        if len(notes) > _NOTES_MAX:
+            return {"detail": f"notes must be at most {_NOTES_MAX} characters"}, 422
+
+        visit = _visit_by_id(visit_id)
+        if not visit:
+            return {"detail": f"visit {visit_id} not found"}, 404
+        if visit['user_id'] != current_user['user_id']:
+            return {"detail": "you can only write notes on your own visits"}, 403
+
+        mysql_manager.execute_query(
+            "UPDATE dealer_visits SET notes = %s, updated_at = %s WHERE visit_id = %s",
+            # An emptied note is cleared, not stored as '', so it drops out of the
+            # history rather than showing as a blank entry.
+            (notes or None, now_local(), visit_id),
+            fetch=False,
+        )
+        return _visit_out(_visit_by_id(visit_id)), 200
+
+
+@rest_api.route('/api/v1/visits/dealer/<int:dealer_id>/notes')
+class V1DealerVisitNotes(Resource):
+    @v1_auth_required
+    def get(self, current_user, dealer_id):
+        """Every note written about this dealer, newest visit first.
+
+        Notes are shared across the team rather than private to their author:
+        what a rep learned at a shop is worth having on the next visit whoever
+        makes it. Visibility is bounded by the caller's company scope, and the
+        author's name rides along so a note can be attributed and questioned.
+        """
+        try:
+            limit = min(int(request.args.get('limit', 50)), 200)
+        except ValueError:
+            return {"detail": "limit must be an integer"}, 422
+
+        conds = ["v.dealer_id = %s", "v.notes IS NOT NULL", "v.notes <> ''"]
+        params = [dealer_id]
+        frag, fparams = company_filter(current_user, 'v.company_id')
+        if frag:
+            conds.append(frag)
+            params.extend(fparams)
+
+        rows = mysql_manager.execute_query(
+            f"""SELECT v.visit_id, v.user_id, v.dealer_id, v.check_in_at, v.check_out_at,
+                       v.status, v.notes, v.updated_at, u.username AS author
+                FROM dealer_visits v
+                LEFT JOIN users u ON u.id = v.user_id
+                WHERE {' AND '.join(conds)}
+                ORDER BY v.check_in_at DESC, v.visit_id DESC
+                LIMIT %s""",
+            tuple(params + [limit]),
+        ) or []
+        return [{
+            "visit_id": r['visit_id'],
+            "dealer_id": r['dealer_id'],
+            "check_in_at": _iso(r['check_in_at']),
+            "check_out_at": _iso(r.get('check_out_at')),
+            "status": r['status'],
+            "notes": r['notes'],
+            "updated_at": _iso(r.get('updated_at')),
+            "author": r.get('author'),
+            # Lets the app offer "edit" on the rep's own notes and not on others'.
+            "is_mine": r['user_id'] == current_user['user_id'],
+        } for r in rows], 200
 
 
 @rest_api.route('/api/v1/visits/check-in')

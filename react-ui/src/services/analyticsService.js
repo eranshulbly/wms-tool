@@ -14,6 +14,14 @@ export const getAnalyticsFilters = () => api.get('analytics/filters').then((res)
 export const getDealerSuggestions = (dealerId) =>
   api.get(`analytics/dealer-suggestions/${dealerId}`).then((res) => res.data);
 
+// One dealer, one month — the same payload the mobile app's Overview tab renders.
+export const getDealerOverview = (dealerId) =>
+  api.get(`analytics/dealer/${dealerId}`).then((res) => res.data);
+
+// Notes left at this dealer, newest visit first. Read-only in the admin app.
+export const getDealerNotes = (dealerId) =>
+  api.get(`analytics/dealer/${dealerId}/notes`).then((res) => res.data);
+
 // Filtered sales analytics — summary + breakdowns by executive / dealer / part group / part.
 export const getSalesAnalytics = (filters = {}) => {
   const params = {};

@@ -777,6 +777,9 @@ def create_all_tables():
     _migrate_product_columns()
     _migrate_invoice_columns()
     _migrate_company_id()
+    _migrate_target_grain()
+    _migrate_dealer_visits_columns()
+    _migrate_busy_sales_gst()
 
     # Insert default order states
     insert_default_states()
@@ -982,6 +985,123 @@ def _migrate_invoice_columns():
             logger.info("invoice: added column invoice_status")
     except Exception:
         logger.exception("invoice: migration failed for invoice_status")
+
+
+def _migrate_busy_sales_gst():
+    """Add the generated GST columns to busy_sales_data (idempotent).
+
+    GST is a flat 18% of the line amount. Generated columns rather than loader-written
+    values, so they can never drift from `amount`; STORED because analytics SUMs them
+    over the whole feed. Existing rows are back-filled by the ALTER itself.
+    """
+    wanted = [
+        ('gst',             'DECIMAL(16,4) AS (ROUND(amount * 0.18, 4)) STORED'),
+        ('amount_with_gst', 'DECIMAL(16,4) AS (ROUND(amount * 1.18, 4)) STORED'),
+    ]
+    for column, ddl in wanted:
+        try:
+            if not mysql_manager.execute_query(
+                    """SELECT 1 FROM information_schema.COLUMNS
+                       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'busy_sales_data'
+                         AND COLUMN_NAME = %s""", (column,)):
+                mysql_manager.execute_query(
+                    f"ALTER TABLE busy_sales_data ADD COLUMN `{column}` {ddl}", fetch=False)
+                logger.info("busy_sales_data: added generated column %s", column)
+        except Exception:
+            logger.exception("busy_sales_data: migration failed for column %s", column)
+
+
+def _migrate_dealer_visits_columns():
+    """Add the free-text visit note (idempotent).
+
+    The registry only issues CREATE TABLE IF NOT EXISTS, so a DDL change never reaches a
+    database that already has the table — this is what carries it to existing installs.
+    """
+    try:
+        if not mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.COLUMNS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'dealer_visits'
+                     AND COLUMN_NAME = 'notes'"""):
+            mysql_manager.execute_query(
+                "ALTER TABLE dealer_visits ADD COLUMN notes TEXT NULL AFTER status",
+                fetch=False)
+            logger.info("dealer_visits: added column notes")
+    except Exception:
+        logger.exception("dealer_visits: migration failed for column notes")
+
+
+def _migrate_target_grain():
+    """Move the two target tables onto the category-level grain (idempotent).
+
+    Money targets are set per (category, dealer, period) and quantity targets per
+    (category, scheme, part_group, dealer, period). The tables predate the category
+    dimension, so an existing database still carries the old dealer-level unique keys —
+    and those actively block the new grain: uq_dealer_period allows a dealer only ONE
+    money target per month, whatever its category. They have to go before the new keys
+    can do their job (the upload replaces per category and relies on the key to stop a
+    re-upload doubling a target instead of updating it).
+
+    scheme becomes NOT NULL DEFAULT '' because it is part of the replacement key, and
+    MySQL treats every NULL in a UNIQUE index as distinct — a NULL scheme would slip
+    past the key on every upload.
+    """
+    tables = {
+        'dealer_money_target': {
+            'drop_keys': ['uq_dealer_period'],
+            'unique': ('uq_dmt_grain', '(dealer_id, category_id, target_period)'),
+        },
+        'dealer_part_group_target': {
+            'drop_keys': ['uq_dealer_group_period'],
+            'unique': ('uq_dpgt_grain',
+                       '(dealer_id, category_id, scheme, part_group, target_period)'),
+        },
+    }
+    for table, spec in tables.items():
+        try:
+            if not mysql_manager.execute_query(
+                    """SELECT 1 FROM information_schema.TABLES
+                       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s""", (table,)):
+                continue  # fresh install — the registry DDL already has the new shape
+
+            if not mysql_manager.execute_query(
+                    """SELECT 1 FROM information_schema.COLUMNS
+                       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                         AND COLUMN_NAME = 'category_id'""", (table,)):
+                mysql_manager.execute_query(
+                    f"ALTER TABLE `{table}` ADD COLUMN category_id INT NULL AFTER dealer_id",
+                    fetch=False)
+                mysql_manager.execute_query(
+                    f"ALTER TABLE `{table}` ADD INDEX idx_{table[:12]}_category (category_id)",
+                    fetch=False)
+                logger.info("%s: added column category_id", table)
+
+            if table == 'dealer_part_group_target':
+                mysql_manager.execute_query(
+                    "UPDATE dealer_part_group_target SET scheme = '' WHERE scheme IS NULL",
+                    fetch=False)
+                mysql_manager.execute_query(
+                    "ALTER TABLE dealer_part_group_target "
+                    "MODIFY scheme VARCHAR(150) NOT NULL DEFAULT ''", fetch=False)
+
+            for old in spec['drop_keys']:
+                if mysql_manager.execute_query(
+                        """SELECT 1 FROM information_schema.STATISTICS
+                           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                             AND INDEX_NAME = %s""", (table, old)):
+                    mysql_manager.execute_query(
+                        f"ALTER TABLE `{table}` DROP INDEX `{old}`", fetch=False)
+                    logger.info("%s: dropped stale unique key %s", table, old)
+
+            name, cols = spec['unique']
+            if not mysql_manager.execute_query(
+                    """SELECT 1 FROM information_schema.STATISTICS
+                       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                         AND INDEX_NAME = %s""", (table, name)):
+                mysql_manager.execute_query(
+                    f"ALTER TABLE `{table}` ADD UNIQUE KEY `{name}` {cols}", fetch=False)
+                logger.info("%s: added unique key %s", table, name)
+        except Exception:
+            logger.exception("%s: target-grain migration failed", table)
 
 
 def _migrate_company_id():
