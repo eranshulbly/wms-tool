@@ -8,22 +8,23 @@ selected period — not any per-row date — decides which period the data belon
 and each upload *replaces* that period's existing rows (never appends duplicates).
 
 Feeds:
-  sales              -> busy_sales_data          (Hero sales actuals from Busy)
-  part-groups        -> part_groups              (part -> part-group + scheme mapping)
-  qty-targets        -> dealer_part_group_target (dealer x part-group quantity targets)
-  money-targets      -> dealer_money_target      (dealer rupee targets)
-  product-categories -> product.category_id      (sku -> category assignment)
+  sales         -> busy_sales_data          (Hero sales actuals from Busy)
+  part-groups   -> part_groups              (part -> part-group + scheme mapping)
+  qty-targets   -> dealer_part_group_target (dealer x part-group quantity targets)
+  money-targets -> dealer_money_target      (dealer rupee targets)
+  products      -> product                  (the product master itself)
 
 Every feed is scoped to the uploading admin's company; dealers are matched by name
 within that company.
 
 Two feeds are NOT month-scoped and ignore the period selector:
   * sales — the dates inside the file decide what gets replaced.
-  * product-categories — a product's category is a standing attribute, not a monthly
-    fact, so this UPDATEs the product master in place rather than replacing a period.
+  * products — the product master is standing reference data, not a monthly fact, so
+    this merge-upserts rows keyed on product_string rather than replacing a period.
 """
 
 import calendar
+import difflib
 from datetime import datetime
 from io import BytesIO
 
@@ -54,10 +55,10 @@ def _company(current_user):
     return scope[0]
 
 # feed -> the table it (re)loads, keyed for the status endpoint
-_FEEDS = ('sales', 'part-groups', 'qty-targets', 'money-targets', 'product-categories')
+_FEEDS = ('sales', 'part-groups', 'qty-targets', 'money-targets', 'products')
 
 # Feeds that ignore the year/month selector (see module docstring).
-_PERIODLESS_FEEDS = ('sales', 'product-categories')
+_PERIODLESS_FEEDS = ('sales', 'products')
 
 
 # ---------------------------------------------------------------------------
@@ -434,88 +435,292 @@ def _txt(val):
 
 
 def _category_map():
-    """Active category name (lower-cased) -> category_id."""
+    """Active category name -> category_id, keeping the master's own spelling.
+
+    The name is preserved as stored (not lower-cased) so a caller can tell an exact match
+    apart from one it had to widen the search for, and report the assumption it made.
+    """
     rows = mysql_manager.execute_query(
         "SELECT category_id, name FROM categories WHERE is_active = 1") or []
-    return {(r['name'] or '').strip().lower(): r['category_id'] for r in rows}
+    return {(r['name'] or '').strip(): r['category_id'] for r in rows}
 
 
-def _load_product_categories(df):
-    """Assign products to categories from a Product String -> Category file.
+def _norm_cat(name):
+    """Category name reduced to a comparison key: lower-cased, alphanumerics only."""
+    return ''.join(ch for ch in str(name).lower() if ch.isalnum())
 
-    Unlike the monthly feeds this UPDATEs the product master in place — a category is a
-    standing attribute of a product, not a fact about one month. Nothing is deleted and no
-    product is ever created: an unknown product string is reported as a row error, matching
-    how the Product Nickname upload behaves.
 
-    A blank Category clears the assignment, so a mis-categorised product can be corrected by
-    re-uploading it with an empty cell.
+def _resolve_category(name, cmap):
+    """Category name from a file -> (category_id, matched_db_name) or (None, None).
+
+    Source files spell the categories inconsistently — real uploads carry 'Accesories',
+    'Publication' and 'Oils' against a master of 'Accessories', 'Publications' and 'Oil'.
+    Erroring on those would fail thousands of otherwise-good rows, so the match widens in
+    stages: exact -> case/punctuation-insensitive -> plural-insensitive -> a high-cutoff
+    close match. Anything resolved past the exact stage is reported in the upload warnings,
+    so an assumed mapping is always visible rather than silent.
     """
-    required = ['Product String', 'Category']
-    df, err = resolve_required_columns(df, required)
-    if err:
-        raise ValueError(err)
+    raw = (name or '').strip()
+    if not raw:
+        return None, None
+
+    key = _norm_cat(raw)
+    by_key = {_norm_cat(n): (cid, n) for n, cid in cmap.items()}
+    if key in by_key:
+        return by_key[key]
+
+    # 'Oils' vs 'Oil', 'Publication' vs 'Publications'.
+    depluralised = {k.rstrip('s'): v for k, v in by_key.items()}
+    if key.rstrip('s') in depluralised:
+        return depluralised[key.rstrip('s')]
+
+    # 'Accesories' vs 'Accessories' — a typo, not a plural. Cutoff is deliberately high
+    # so unrelated names still fail rather than landing in the wrong category.
+    close = difflib.get_close_matches(key, list(by_key), n=1, cutoff=0.85)
+    if close:
+        return by_key[close[0]]
+    return None, None
+
+
+# Every writable column of the product master, as (file header, product column, value
+# kind, limit, other accepted headers). Only the columns actually present in the uploaded
+# file are written; everything else on an existing row is left exactly as it was.
+#
+# `limit` is the varchar length for text and (digits, decimal places) for a number — both
+# are enforced per row, because one over-long or over-precise value would otherwise abort
+# the whole executemany batch rather than failing just its own row.
+#
+# The aliases let one feed take either of the two shapes the master arrives in: the parts
+# category mapping ('Part Number', 'Name', …) and the Hero part master dump ('Part No',
+# 'Part Description', 'Net Weight', …).
+_PRODUCT_FIELDS = (
+    # header,             column,        kind,      limit,     aliases
+    ('Name',              'name',        'text',    255,       ()),
+    ('Description',       'description', 'text',    None,      ('Part Description',)),
+    ('Product Category',  'subcategory', 'text',    100,       ()),
+    ('Nickname',          'nickname',    'text',    200,       ()),
+    ('UOM',               'uom',         'text',    20,        ('Unit of Measure',)),
+    ('Size',              'size',        'text',    100,       ()),
+    ('Weight',            'weight',      'decimal', (10, 3),   ('Net Weight',)),
+    ('Price',             'price',       'decimal', (10, 2),   ()),
+    ('Barcode',           'barcode',     'text',    100,       ()),
+    ('HSN Code',          'hsn_code',    'text',    20,        ('HSN',)),
+    ('is_active',         'is_active',   'bool',    None,      ()),
+)
+
+_PART_NUMBER_HEADERS = ('Part Number', 'Part No', 'Product String')
+
+_TRUEISH = {'y', 'yes', '1', 'true', 't', 'active'}
+_FALSEISH = {'n', 'no', '0', 'false', 'f', 'inactive'}
+
+
+def _pkey(product_string):
+    """Merge key for a part number, matching the collation of product.product_string."""
+    return (product_string or '').strip().casefold()
+
+
+def _norm_header(name):
+    """Column header reduced to a comparison key: lower-cased, alphanumerics only."""
+    return ''.join(ch for ch in str(name).lower() if ch.isalnum())
+
+
+def _find_header(df, names):
+    """The df column matching any of `names`, ignoring case and punctuation.
+
+    Deliberately an exact match on the normalised header rather than the substring match
+    resolve_required_columns() does — 'Category' is a substring of 'Product Category', and
+    letting those two collide would silently write a sub-category into category_id.
+    """
+    wanted = {_norm_header(n) for n in names}
+    for col in df.columns:
+        if _norm_header(col) in wanted:
+            return col
+    return None
+
+
+def _coerce(val, kind, limit):
+    """File cell -> stored value. Returns (value, error_message)."""
+    if kind == 'bool':
+        low = val.lower()
+        if low in _TRUEISH:
+            return 1, None
+        if low in _FALSEISH:
+            return 0, None
+        return None, f'must be Y or N, got "{val}"'
+
+    if kind == 'decimal':
+        digits, places = limit
+        try:
+            num = round(float(val.replace(',', '')), places)
+        except ValueError:
+            return None, f'must be a number, got "{val}"'
+        if abs(num) >= 10 ** (digits - places):
+            return None, f'{val} is out of range (max {10 ** (digits - places) - 1})'
+        return num, None
+
+    if limit and len(val) > limit:
+        return None, f'is longer than {limit} characters ({len(val)})'
+    return val, None
+
+
+def _load_products(df, company_id):
+    """Merge-upsert the product master from a Part Number -> attributes file.
+
+    Keyed on product_string: a part already in the master is UPDATED, a new one is
+    INSERTED, and nothing is ever deleted. Re-uploading a corrected or extended file is
+    therefore always safe — this is the merge_upsert behaviour every subsequent upload
+    gets, in contrast to the month-scoped feeds that replace a whole period.
+
+    Only the columns present in the file are written, and a blank cell means "no value
+    supplied" rather than "clear this field" — a file carrying just Part Number and
+    Category updates categories and leaves names, descriptions and subcategories intact.
+    """
+    key_col = _find_header(df, _PART_NUMBER_HEADERS)
+    if not key_col:
+        raise ValueError(
+            'Missing required column: Part Number (also accepted: '
+            + ', '.join(_PART_NUMBER_HEADERS[1:]) + '). Available: ' + ', '.join(df.columns))
 
     cmap = _category_map()
-    if not cmap:
+    category_col = _find_header(df, ('Category',))
+    if category_col and not cmap:
         raise ValueError('No active categories exist yet — seed or create categories first.')
 
-    updated, cleared, replaced, skipped, errors = 0, 0, 0, 0, []
-    unknown_categories = set()
+    # Which of the writable columns this particular file carries.
+    present = [(_find_header(df, (header,) + aliases), column, kind, limit)
+               for header, column, kind, limit, aliases in _PRODUCT_FIELDS]
+    present = [p for p in present if p[0]]
 
-    with mysql_manager.get_cursor() as cur:
-        for idx, row in df.iterrows():
-            row_num = idx + 2  # 1-based + header row
-            product_string = _txt(row.get('Product String'))
-            category_name = _txt(row.get('Category'))
+    # Keyed the way MySQL keys the unique index, not the way Python compares strings:
+    # product_string is utf8mb4_unicode_ci, so '…000S' and '…000s' are the SAME product.
+    # Matching case-sensitively here would classify an existing part as new and the INSERT
+    # would then die on a duplicate-key error partway through the batch.
+    existing = {_pkey(r['product_string']): r for r in (mysql_manager.execute_query(
+        "SELECT product_string, category_id FROM product WHERE product_string IS NOT NULL")
+        or [])}
 
-            if not product_string:
-                skipped += 1
-                continue
+    # barcode carries its own UNIQUE index, so a barcode already spoken for by a different
+    # part has to fail its own row here rather than abort the batch at write time.
+    barcode_owner = {}
+    if any(c == 'barcode' for _, c, _, _ in present):
+        barcode_owner = {(r['barcode'] or '').casefold(): _pkey(r['product_string'])
+                         for r in (mysql_manager.execute_query(
+                             "SELECT barcode, product_string FROM product "
+                             "WHERE barcode IS NOT NULL") or [])}
 
-            cur.execute(
-                "SELECT product_id, category_id FROM product WHERE product_string = %s",
-                (product_string,))
-            product = cur.fetchone()
-            if not product:
+    inserts, updates, errors = {}, {}, []
+    skipped, recategorised = 0, 0
+    unknown_categories, fuzzy_categories = set(), {}
+
+    for idx, row in df.iterrows():
+        row_num = idx + 2  # 1-based + header row
+        product_string = _txt(row.get(key_col))
+        if not product_string:
+            skipped += 1
+            continue
+        key = _pkey(product_string)
+
+        values, row_failed = {}, False
+        for src, column, kind, limit in present:
+            val = _txt(row.get(src))
+            if not val:
+                continue                      # blank == not supplied
+            coerced, why = _coerce(val, kind, limit)
+            if why:
                 errors.append({'row': row_num, 'key': product_string,
-                               'reason': 'Product not found'})
-                continue
+                               'reason': f'{src} {why}'})
+                row_failed = True
+                break
+            if column == 'barcode':
+                owner = barcode_owner.get(coerced.casefold())
+                if owner and owner != key:
+                    errors.append({'row': row_num, 'key': product_string,
+                                   'reason': f'Barcode "{coerced}" already belongs to {owner}'})
+                    row_failed = True
+                    break
+                barcode_owner[coerced.casefold()] = key
+            values[column] = coerced
+        if row_failed:
+            continue
 
+        if category_col:
+            category_name = _txt(row.get(category_col))
             if category_name:
-                category_id = cmap.get(category_name.lower())
+                category_id, matched = _resolve_category(category_name, cmap)
                 if not category_id:
                     unknown_categories.add(category_name)
                     errors.append({'row': row_num, 'key': product_string,
                                    'reason': f'Unknown category "{category_name}"'})
                     continue
-            else:
-                category_id = None  # blank clears the assignment
+                if matched != category_name:
+                    fuzzy_categories[category_name] = matched
+                values['category_id'] = category_id
 
-            try:
-                cur.execute(
-                    "UPDATE product SET category_id = %s, updated_at = %s WHERE product_id = %s",
-                    (category_id, datetime.utcnow(), product['product_id']))
-                if category_id is None:
-                    cleared += 1
-                else:
-                    updated += 1
-                    # It already had a (different) category — the upload overwrote it.
-                    if product['category_id'] and product['category_id'] != category_id:
-                        replaced += 1
-            except Exception as e:
-                errors.append({'row': row_num, 'key': product_string, 'reason': str(e)})
+        # Two rows for the same part — including two that differ only in case — are one
+        # product, so they merge into a single write rather than colliding on the index.
+        key = _pkey(product_string)
+        prior = existing.get(key)
+        if prior:
+            # A later row for the same part wins, but its columns merge with the earlier one.
+            updates.setdefault(key, {'product_string': prior['product_string']}).update(values)
+            if values.get('category_id') and prior['category_id'] \
+                    and prior['category_id'] != values['category_id']:
+                recategorised += 1
+        else:
+            # name is NOT NULL — fall back to the description, then the part number itself.
+            row_values = dict(values)
+            row_values.setdefault('name', row_values.get('description') or product_string)
+            inserts.setdefault(key, {'product_string': product_string}).update(row_values)
+
+    with mysql_manager.get_cursor() as cur:
+        now = datetime.utcnow()
+
+        if inserts:
+            cols = sorted({c for v in inserts.values() for c in v} - {'product_string'})
+            placeholders = ', '.join(['%s'] * (len(cols) + 3))
+            sql = (f"INSERT INTO product (product_string, company_id, {', '.join(cols)}, updated_at) "
+                   f"VALUES ({placeholders})")
+            cur.executemany(sql, [
+                (v['product_string'], company_id, *[v.get(c) for c in cols], now)
+                for v in inserts.values()
+            ])
+
+        # Group by the exact column set so each batch is one executemany.
+        by_shape = {}
+        for v in updates.values():
+            cols = tuple(sorted(set(v) - {'product_string'}))
+            if cols:
+                by_shape.setdefault(cols, []).append(v)
+        for cols, rows in by_shape.items():
+            assignments = ', '.join(f"{c} = %s" for c in cols)
+            sql = (f"UPDATE product SET {assignments}, updated_at = %s "
+                   f"WHERE product_string = %s")
+            cur.executemany(
+                sql, [(*[v[c] for c in cols], now, v['product_string']) for v in rows])
 
     warnings = []
+    if not present and not category_col:
+        warnings.append(
+            'The file carried only Part Number, so existing products were left unchanged. '
+            'Recognised columns are: '
+            + ', '.join(f[0] for f in _PRODUCT_FIELDS) + ', Category.')
+    if fuzzy_categories:
+        warnings.append(
+            'These category names did not match exactly and were mapped to the closest '
+            'existing category: '
+            + ', '.join(f'"{k}" -> {v}' for k, v in sorted(fuzzy_categories.items())) + '.')
     if unknown_categories:
         warnings.append(
-            'These categories do not exist and were skipped: '
+            'These categories do not exist and their rows were skipped: '
             + ', '.join(sorted(unknown_categories))
-            + '. Valid categories: ' + ', '.join(sorted(c.title() for c in cmap)) + '.')
-    if cleared:
-        warnings.append(f'{cleared} product(s) had their category cleared (blank Category cell).')
+            + '. Valid categories: ' + ', '.join(sorted(cmap)) + '.')
+    if recategorised:
+        warnings.append(f'{recategorised} product(s) moved to a different category.')
 
-    return replaced, updated + cleared, skipped, errors, warnings
+    # Only parts that actually had a column to write count as updated — a row carrying
+    # nothing but a Part Number touches nothing and shouldn't inflate the total.
+    updated = sum(1 for v in updates.values() if set(v) - {'product_string'})
+    return updated, len(inserts), skipped, errors, warnings, recategorised
 
 
 # ---------------------------------------------------------------------------
@@ -542,8 +747,8 @@ class MonthlyStatus(Resource):
                 'max': str(cov[0]['mx']) if cov[0].get('mx') else None,
                 'total': cov[0].get('c') or 0,
             }
-            # Product categories aren't period-scoped — report how much of the product
-            # master is assigned, plus the category list the upload will accept.
+            # The product master isn't period-scoped — report its size and how much of it
+            # is categorised, plus the category list the upload will accept.
             pc = mysql_manager.execute_query(
                 "SELECT COUNT(*) total, COUNT(category_id) mapped FROM product") or [{}]
             cats = mysql_manager.execute_query(
@@ -570,7 +775,7 @@ class MonthlyStatus(Resource):
                         "SELECT DATE_FORMAT(target_period,'%%Y-%%m-01') p, COUNT(*) c "
                         "FROM dealer_money_target GROUP BY p"),
                     # Not period-scoped — coverage is reported separately below.
-                    'product-categories': {},
+                    'products': {},
                 },
                 'category_coverage': cat_coverage,
             }, 200
@@ -598,19 +803,23 @@ class MonthlyUpload(Resource):
         except ValueError as e:
             return {'success': False, 'msg': str(e)}, 400
 
-        # Product categories update the product master in place — no period involved.
-        if feed == 'product-categories':
+        # Products merge-upsert into the product master — no period involved.
+        if feed == 'products':
             try:
-                replaced, applied, skipped, errors, warnings = _load_product_categories(df)
+                updated, inserted, skipped, errors, warnings, recategorised = _load_products(
+                    df, _company(current_user))
             except ValueError as e:
                 return {'success': False, 'msg': str(e)}, 400
             except Exception as e:
-                logger.exception("Error loading product-categories feed")
+                logger.exception("Error loading products feed")
                 return {'success': False, 'msg': f'Load failed: {str(e)}'}, 400
             return {
                 'success': True, 'feed': feed, 'period': None,
-                'period_label': 'product master', 'replaced': replaced,
-                'inserted': applied, 'skipped': skipped,
+                'period_label': 'product master',
+                # 'replaced' is what the shared upload card renders; for a merge-upsert the
+                # meaningful counterpart to "new" is how many existing rows were updated.
+                'replaced': updated, 'updated': updated, 'inserted': inserted,
+                'recategorised': recategorised, 'skipped': skipped,
                 'error_count': len(errors), 'errors': errors[:200], 'warnings': warnings,
             }, 200
 

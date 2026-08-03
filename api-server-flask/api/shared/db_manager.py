@@ -780,6 +780,9 @@ def create_all_tables():
     _migrate_target_grain()
     _migrate_dealer_visits_columns()
     _migrate_busy_sales_gst()
+    # Runs last: it only adds columns, and several of the migrations above assume the
+    # base tables already exist in their pre-v2 shape.
+    _migrate_v2_api_columns()
 
     # Insert default order states
     insert_default_states()
@@ -985,6 +988,126 @@ def _migrate_invoice_columns():
             logger.info("invoice: added column invoice_status")
     except Exception:
         logger.exception("invoice: migration failed for invoice_status")
+
+
+# Columns that existed only in migration_v2_api.sql — a file an operator had to run by
+# hand. Nothing at boot applied it, so a fresh install came up missing all of these and
+# the /api/v1 (mobile) endpoints failed against their own schema: catalog reads
+# product.uom/barcode/is_active, orders read the potential_order location + approval
+# fields, and the dealer endpoints read dealer.phone/email/gstin. Listing them here makes
+# the boot path self-sufficient — the .sql file stays for historical deployments, but a
+# clone-and-run no longer depends on remembering it.
+#   table -> [(column, ddl, index_name|None)]
+_V2_API_COLUMNS = {
+    'product': [
+        ('uom',       'VARCHAR(20) NULL',                 None),
+        ('size',      'VARCHAR(100) NULL',                None),
+        ('weight',    'DECIMAL(10,3) NULL',               None),
+        ('barcode',   'VARCHAR(100) NULL',                None),
+        ('hsn_code',  'VARCHAR(20) NULL',                 None),
+        ('is_active', 'TINYINT(1) NOT NULL DEFAULT 1',    None),
+        # Added with the Hero parts category mapping: the supplier's own grouping
+        # (HHML Parts, HDX Parts, …) sitting one level under category_id.
+        ('subcategory', 'VARCHAR(100) NULL', 'idx_product_subcategory'),
+    ],
+    'warehouse': [
+        ('code',      'VARCHAR(20) NULL',              None),
+        ('is_active', 'TINYINT(1) NOT NULL DEFAULT 1', None),
+    ],
+    'company': [
+        ('order_capture_mode', "VARCHAR(20) NULL", None),
+    ],
+    'dealer': [
+        ('dealer_code',  'VARCHAR(50) NULL',  None),
+        ('email',        'VARCHAR(255) NULL', None),
+        ('phone',        'VARCHAR(32) NULL',  None),
+        ('gstin',        'VARCHAR(20) NULL',  None),
+        ('address',      'TEXT NULL',         None),
+        ('status',       "VARCHAR(20) NOT NULL DEFAULT 'active'", None),
+        ('activated_on', 'DATETIME NULL',     None),
+    ],
+    'potential_order': [
+        ('submitted_at',            'DATETIME NULL',      None),
+        ('approved_at',             'DATETIME NULL',      None),
+        ('approved_by',             'INT NULL',           None),
+        ('rejection_reason',        'VARCHAR(255) NULL',  None),
+        ('expected_delivery_date',  'DATE NULL',          None),
+        ('notes',                   'TEXT NULL',          None),
+        ('latitude',                'DECIMAL(10,7) NULL', None),
+        ('longitude',               'DECIMAL(10,7) NULL', None),
+        ('location_accuracy_m',     'FLOAT NULL',         None),
+        ('location_captured_at',    'DATETIME NULL',      None),
+    ],
+    'potential_order_product': [
+        ('sku_code',           'VARCHAR(100) NULL', None),
+        ('product_name',       'VARCHAR(255) NULL', None),
+        ('uom',                'VARCHAR(20) NULL',  None),
+        ('quantity_fulfilled', 'INT NULL',          None),
+        ('item_status',        'VARCHAR(30) NULL',  None),
+    ],
+}
+
+
+# Unique keys from the same file. These are not cosmetic: uq_product_string is what stops
+# a re-upload creating a second row for a part (and, under the utf8mb4_unicode_ci
+# collation, what makes '…000S' and '…000s' the same part). Added after the columns they
+# cover. A duplicate already in the table makes the ALTER fail — logged, not hidden,
+# because the right fix is to dedupe the data, not to skip the constraint.
+_V2_API_UNIQUE_KEYS = [
+    ('product',   'uq_product_string',  '(product_string)'),
+    ('product',   'uq_product_barcode', '(barcode)'),
+    ('warehouse', 'uq_warehouse_code',  '(code)'),
+]
+
+
+def _migrate_v2_api_columns():
+    """Bring the v2/mobile-API columns in, for fresh and existing databases alike.
+
+    Idempotent: checks information_schema rather than swallowing ALTER errors, so a
+    genuine failure is logged instead of hidden. Every column is nullable (or defaulted)
+    because existing rows predate it and there is no safe backfill.
+    """
+    for table, wanted in _V2_API_COLUMNS.items():
+        if not mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.TABLES
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s""", (table,)):
+            continue
+        for column, ddl, index_name in wanted:
+            try:
+                if not mysql_manager.execute_query(
+                        """SELECT 1 FROM information_schema.COLUMNS
+                           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                             AND COLUMN_NAME = %s""", (table, column)):
+                    mysql_manager.execute_query(
+                        f"ALTER TABLE `{table}` ADD COLUMN `{column}` {ddl}", fetch=False)
+                    logger.info("%s: added column %s", table, column)
+                if index_name and not mysql_manager.execute_query(
+                        """SELECT 1 FROM information_schema.STATISTICS
+                           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                             AND INDEX_NAME = %s""", (table, index_name)):
+                    mysql_manager.execute_query(
+                        f"ALTER TABLE `{table}` ADD INDEX `{index_name}` (`{column}`)",
+                        fetch=False)
+                    logger.info("%s: added index %s", table, index_name)
+            except Exception:
+                logger.exception("%s: migration failed for column %s", table, column)
+
+    for table, key, cols in _V2_API_UNIQUE_KEYS:
+        try:
+            if not mysql_manager.execute_query(
+                    """SELECT 1 FROM information_schema.TABLES
+                       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s""", (table,)):
+                continue
+            if mysql_manager.execute_query(
+                    """SELECT 1 FROM information_schema.STATISTICS
+                       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                         AND INDEX_NAME = %s""", (table, key)):
+                continue
+            mysql_manager.execute_query(
+                f"ALTER TABLE `{table}` ADD UNIQUE KEY `{key}` {cols}", fetch=False)
+            logger.info("%s: added unique key %s", table, key)
+        except Exception:
+            logger.exception("%s: could not add unique key %s (duplicate rows?)", table, key)
 
 
 def _migrate_busy_sales_gst():

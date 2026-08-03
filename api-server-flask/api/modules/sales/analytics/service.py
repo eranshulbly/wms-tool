@@ -622,14 +622,28 @@ def dealer_suggestions(dealer_id, company_id=DEFAULT_COMPANY, category_ids=None)
     #     the unit is the whole scheme and its target is the SUM of its part
     #     groups' targets.
     # Suggestions are defined at this UNIT level, never per individual product.
+    # Quantity targets carry their OWN category_id, so the category filter is a
+    # plain column test. It used to be inferred by joining part_groups -> product,
+    # which could only ever match a scheme'd unit — a target set on a whole
+    # category (blank part group and scheme, e.g. all of Oil) matched nothing and
+    # was silently dropped from the sheet.
+    tcat_cond, tcat_params = "", ()
+    if category_ids is not None:
+        if category_ids:
+            ph = ",".join(["%s"] * len(category_ids))
+            tcat_cond = f"AND dpg.category_id IN ({ph}) "
+            tcat_params = tuple(category_ids)
+        else:
+            tcat_cond = "AND 1 = 0 "
     trows = mysql_manager.execute_query(
         f"""SELECT dpg.part_group, COALESCE(dpg.scheme, '') AS scheme,
-                   COALESCE(dpg.target_qty, 0) AS t, c.name AS category
+                   COALESCE(dpg.target_qty, 0) AS t, dpg.category_id,
+                   c.name AS category
             FROM dealer_part_group_target dpg
             LEFT JOIN categories c ON c.category_id = dpg.category_id
             WHERE dpg.dealer_id = %s AND dpg.target_period = {_PERIOD}
-              AND dpg.target_qty > 0""",
-        (dealer_id,)) or []
+              AND dpg.target_qty > 0 {tcat_cond}""",
+        (dealer_id, *tcat_params)) or []
     units = {}  # unit_key -> {name, scheme, is_pg, target}
     for r in trows:
         is_pg = (r['scheme'] or '').upper() == 'PG'
@@ -645,29 +659,11 @@ def dealer_suggestions(dealer_id, company_id=DEFAULT_COMPANY, category_ids=None)
             key, name = f"sc:{r['scheme']}", r['scheme']
         u = units.setdefault(key, {
             'name': name, 'scheme': 'PG' if is_pg else r['scheme'],
-            'is_pg': is_pg, 'target': 0.0})
+            'is_pg': is_pg, 'target': 0.0,
+            # A category-level unit is measured against the category's own sales,
+            # not against any part-group mapping.
+            'category_id': r['category_id'] if key.startswith('cat:') else None})
         u['target'] += float(r['t'])
-
-    # Scope the units to the requested product category. Targets themselves aren't
-    # category-tagged, so a unit belongs to whatever category its PARTS sit in
-    # (part_groups -> product -> category_id). Without this every dealer target
-    # shows under BOTH Parts and Pro Parts — e.g. Basket 1 (a Parts scheme) would
-    # wrongly appear on the Pro Parts tab, where its sold qty is simply 0.
-    if category_ids is not None:
-        if category_ids:
-            ph = ",".join(["%s"] * len(category_ids))
-            allowed = {r['unit_key'] for r in (mysql_manager.execute_query(
-                f"""SELECT DISTINCT
-                       CASE WHEN pg.scheme = 'PG' THEN CONCAT('pg:', pg.part_group)
-                            ELSE CONCAT('sc:', pg.scheme) END AS unit_key
-                    FROM part_groups pg
-                    JOIN product p ON p.product_string = pg.part_number
-                    WHERE pg.period = {_PERIOD} AND pg.scheme IS NOT NULL
-                      AND p.category_id IN ({ph})""",
-                tuple(category_ids)) or [])}
-        else:
-            allowed = set()
-        units = {k: u for k, u in units.items() if k in allowed}
 
     # Per-UNIT sales: this dealer's this-month qty (progress) and the prior-6-months
     # baseline. A part maps to its unit by the same PG-vs-scheme rule as the targets,
@@ -694,6 +690,33 @@ def dealer_suggestions(dealer_id, company_id=DEFAULT_COMPANY, category_ids=None)
             # two dealer_id (this-month, prior-6m), then the category ids.
             (dealer_id, dealer_id, *cat_params)) or []
         sales = {r['unit_key']: r for r in srows}
+
+        # A category-level unit (blank part group and scheme) has no part-group
+        # mapping to sum through, so its progress is the dealer's sales in that
+        # whole category — the same grain the target was set at.
+        cat_units = {k: u for k, u in units.items() if u.get('category_id')}
+        if cat_units:
+            ids = sorted({u['category_id'] for u in cat_units.values()})
+            ph = ",".join(["%s"] * len(ids))
+            crows = mysql_manager.execute_query(
+                f"""SELECT p.category_id,
+                           SUM(CASE WHEN {_MONTH} THEN b.quantity ELSE 0 END) AS dealer_qty,
+                           SUM(CASE WHEN b.sale_date < {_PERIOD}
+                                    THEN b.quantity ELSE 0 END) AS dealer_last6m
+                    FROM busy_sales_data b
+                    JOIN dealer d ON d.name = b.particulars
+                                 AND d.company_id = {int(company_id)}
+                    JOIN product p ON p.product_string = b.item_code
+                    WHERE d.dealer_id = %s
+                      AND b.sale_date >= DATE_SUB({_PERIOD}, INTERVAL 6 MONTH)
+                      AND p.category_id IN ({ph})
+                    GROUP BY p.category_id""",
+                (dealer_id, *ids)) or []
+            by_cat = {r['category_id']: r for r in crows}
+            for key, u in cat_units.items():
+                row = by_cat.get(u['category_id'])
+                if row:
+                    sales[key] = row
 
     # EVERY targeted unit, hit or not. On day one nothing has sold, so the rep sees
     # the whole sheet at "0 / N"; later in the month the hit ones simply read 100%+.
@@ -730,15 +753,20 @@ def dealer_suggestions(dealer_id, company_id=DEFAULT_COMPANY, category_ids=None)
 # ── Category-split analytics (mobile dealer session) ─────────────────────────────
 #
 # The Busy feed carries sales across every product category (Parts, Pro Parts, Oil,
-# Battery, …), but dealer targets and part suggestions are only meaningful for
-# Parts / Pro Parts. The mobile Stats tab therefore measures ONLY the selected
-# parts category's sales against the dealer's (whole) money target, and lists
-# suggestions from that category alone. Every other category is reported as plain
-# month / last-6-months sales in a separate "Other stats" view — no target, no
-# suggestions. Category comes from product.category_id, joined to the Busy row by
+# Battery, …), but money targets are set for only three of them, and it is those
+# three the app works against: each gets its own sales, its own target, its target
+# sheet and its peer-spend opportunities. Every other category is reported as plain
+# month / last-6-months sales — no target, no detail. Category comes from
+# product.category_id, joined to the Busy row by
 # product.product_string = busy_sales_data.item_code.
 
-# The two categories that carry targets + suggestions, in display order.
+# The categories that carry money targets and therefore detail, in display order.
+# Keep this in step with what dealer_money_target actually holds: a category listed
+# here with no target rows costs a few pointless queries per dealer view, and one
+# omitted silently loses its target sheet and opportunities in the app.
+TARGETED_CATEGORY_NAMES = ('Parts', 'Pro Parts', 'Oil')
+
+# Kept for callers that still name it; the two parts categories are a subset.
 PARTS_CATEGORY_NAMES = ('Parts', 'Pro Parts')
 
 
@@ -839,7 +867,7 @@ def dealer_category_analytics(dealer_id, company_id=DEFAULT_COMPANY):
     cat_targets = _dealer_category_targets(dealer_id)
 
     categories = []
-    for name in PARTS_CATEGORY_NAMES:
+    for name in TARGETED_CATEGORY_NAMES:
         cid = ids_by_name.get(name)
         ids = [cid] if cid is not None else []
         sales = _dealer_category_sales(dealer_id, ids, company_id=company_id)

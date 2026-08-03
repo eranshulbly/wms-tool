@@ -37,7 +37,7 @@ import {
 import api from '../../services/api';
 
 // ---------------------------------------------------------------------------
-// Feed catalogue — the four monthly manual uploads. `columns` drives both the
+// Feed catalogue — the manual admin uploads. `columns` drives both the
 // "required format" dialog and the downloadable template.
 // ---------------------------------------------------------------------------
 const FEEDS = [
@@ -121,21 +121,33 @@ const FEEDS = [
     ],
   },
   {
-    id: 'product-categories',
-    label: 'Product Categories',
-    table: 'product.category_id',
+    id: 'products',
+    label: 'Products',
+    table: 'product',
     color: '#00838f',
     noPeriod: true,
     blurb:
-      'Assign products to a category. Updates the product master in place — not tied to a month. ' +
-      'Products are never created: an unknown Product String is reported as a row error.',
+      'The product master itself — not tied to a month. Matched on Part Number: existing ' +
+      'products are updated, new ones are created, nothing is ever deleted. Every column is ' +
+      'optional, so a file covering just a few of them updates only those.',
     columns: [
-      { name: 'Product String', required: true, note: 'Must match an existing product string' },
-      { name: 'Category', required: true, note: 'Oil / Battery / Tyre / Accessories / Pro Parts — blank clears it' },
+      { name: 'Part Number', required: true, note: 'The key rows are matched on. Also accepted: Part No, Product String' },
+      { name: 'Name', required: false, note: 'Product name; on a new product defaults to the description' },
+      { name: 'Description', required: false, note: 'Longer description. Also accepted: Part Description' },
+      { name: 'Product Category', required: false, note: 'Sub-category, e.g. HHML Parts / HDX Parts / VIDA Parts' },
+      { name: 'Category', required: false, note: 'Parts / Oil / Battery / Tyre / Accessories / Publications / Pro Parts' },
+      { name: 'Nickname', required: false, note: 'Short display name (max 200 chars)' },
+      { name: 'UOM', required: false, note: 'Selling unit, e.g. Pcs. (max 20 chars)' },
+      { name: 'Size', required: false, note: 'Packed size, e.g. 390 x 240 x 330 MM (max 100 chars)' },
+      { name: 'Weight', required: false, note: 'Number, stored as-is with no unit conversion. Also accepted: Net Weight' },
+      { name: 'Price', required: false, note: 'Number, up to 2 decimal places' },
+      { name: 'Barcode', required: false, note: 'Must be unique across products (max 100 chars)' },
+      { name: 'HSN Code', required: false, note: 'Max 20 chars. Also accepted: HSN' },
+      { name: 'is_active', required: false, note: 'Y or N — defaults to active on a new product' },
     ],
     sample: [
-      ['14100KCC910S', 'Pro Parts'],
-      ['43120365H70S', 'Accessories'],
+      ['HDH96600060220FS', 'SOCKET BOLT 6X22', 'SOCKET BOLT 6X22', 'HDX Parts', 'Parts', '', 'Pcs.', '90 x 40 x 40 MM', '12', '', '', '', 'Y'],
+      ['22121198900S', 'CENTER CLUTCH', 'CENTER CLUTCH', 'HHML Parts', 'Parts', '', 'Pcs.', '390 x 240 x 330 MM', '223', '', '', '', 'Y'],
     ],
   },
 ];
@@ -202,7 +214,7 @@ function FeedCard({ feed, year, month, disabled, loadedRows, statusLoading, stat
   const [showFormat, setShowFormat] = useState(false);
 
   // Feeds that ignore the Year / Month selector: sales (dated rows drive it) and
-  // product categories (a standing product attribute, not a monthly fact).
+  // the product master (standing reference data, not a monthly fact).
   const periodless = feed.byDateRange || feed.noPeriod;
 
   // Reset transient state when the period changes.
@@ -223,7 +235,7 @@ function FeedCard({ feed, year, month, disabled, loadedRows, statusLoading, stat
     setUploading(true); setResult(null); setError(null);
     const fd = new FormData();
     fd.append('file', file);
-    // Sales loads by the dates in the file; product categories are periodless.
+    // Sales loads by the dates in the file; the product master is periodless.
     if (!periodless) {
       fd.append('year', year);
       fd.append('month', month);
@@ -235,7 +247,9 @@ function FeedCard({ feed, year, month, disabled, loadedRows, statusLoading, stat
       if (res.data.success) {
         setResult(res.data);
         onSnack(
-          `${feed.label}: ${res.data.inserted} loaded, ${res.data.replaced} replaced`,
+          feed.noPeriod
+            ? `${feed.label}: ${res.data.inserted} created, ${res.data.updated ?? res.data.replaced} updated`
+            : `${feed.label}: ${res.data.inserted} loaded, ${res.data.replaced} replaced`,
           'success',
         );
         setFile(null);
@@ -339,7 +353,7 @@ function FeedCard({ feed, year, month, disabled, loadedRows, statusLoading, stat
             : feed.byDateRange
               ? 'Upload sales data'
               : feed.noPeriod
-                ? 'Update product categories'
+                ? 'Merge into product master'
                 : `Replace ${MONTHS[month - 1]} ${year}`}
         </Button>
       </Box>
@@ -349,7 +363,11 @@ function FeedCard({ feed, year, month, disabled, loadedRows, statusLoading, stat
       {result && (
         <Box mt={1.5}>
           <Alert severity={result.error_count > 0 ? 'warning' : 'success'}>
-            Loaded <strong>{result.inserted}</strong> · replaced {result.replaced} · skipped {result.skipped}
+            {feed.noPeriod ? (
+              <>Created <strong>{result.inserted}</strong> · updated {result.updated ?? result.replaced} · skipped {result.skipped}</>
+            ) : (
+              <>Loaded <strong>{result.inserted}</strong> · replaced {result.replaced} · skipped {result.skipped}</>
+            )}
             {result.error_count > 0 && <> · <strong>{result.error_count} errors</strong></>}
           </Alert>
           {result.warnings?.map((w, i) => (
@@ -443,11 +461,13 @@ function FeedCard({ feed, year, month, disabled, loadedRows, statusLoading, stat
                 file are left untouched. (e.g. having Jul 1–10 and uploading Jul 8–13 keeps 1–7, replaces 8–10,
                 adds 11–13.)</>
             ) : feed.noPeriod ? (
-              <>A product's category is a <strong>standing attribute</strong>, so the Year / Month selector
-                doesn't apply. Each row <strong>updates the product in place</strong>; products not listed in
-                the file keep whatever category they already had. Nothing is ever deleted, and a product is
-                <strong> never created</strong> — an unknown Product String is reported as a row error.
-                Leave <strong>Category</strong> blank to clear a product's category.</>
+              <>The product master is <strong>standing reference data</strong>, so the Year / Month selector
+                doesn't apply. Rows are <strong>merged on Part Number</strong>: a part already in the master
+                is updated, a new one is created, and nothing is ever deleted — so re-uploading a corrected
+                or extended file is always safe. Only the <strong>columns present in the file</strong> are
+                written, and a <strong>blank cell means "no value supplied"</strong> rather than "clear this
+                field" — a file carrying just Part Number and Category updates categories and leaves names
+                and descriptions intact.</>
             ) : (
               <>The period is taken from the <strong>Year / Month</strong> selector above — you don't put it in the file.
                 Uploading <strong>replaces</strong> everything already loaded for that period.</>
