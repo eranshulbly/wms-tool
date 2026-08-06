@@ -3,8 +3,9 @@
 sales module — table DDL (registered with the schema registry).
 
 The four feeds behind Sales-Executive Analytics. All of them are LOADED, never entered by
-hand: modules/sales/analytics/router_uploads.py parses the monthly spreadsheets and writes
-them; modules/sales/analytics/service.py + router.py read them back. See
+hand: modules/sales/uploads/router.py parses the monthly spreadsheets and writes them;
+modules/sales/field_sales/service.py and modules/sales/target_tracker/service.py read
+them back. See
 docs/ANALYTICS_CALCULATIONS.md for the calculations these support.
 
   busy_sales_data          one row per sales line exported from Busy
@@ -73,13 +74,12 @@ CREATE TABLE IF NOT EXISTS part_groups (
     description VARCHAR(500) DEFAULT NULL,
     part_group  VARCHAR(150) DEFAULT NULL,
     scheme      VARCHAR(150) DEFAULT NULL,
-    month       VARCHAR(30) DEFAULT NULL,
-    period      DATE NOT NULL,
+    time_period DATE NOT NULL,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    UNIQUE KEY uq_period_part (period, part_number),
+    UNIQUE KEY uq_period_part (time_period, part_number),
     KEY idx_part_group (part_group),
-    KEY idx_period (period)
+    KEY idx_period (time_period)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """, order=61)
 
@@ -112,6 +112,12 @@ CREATE TABLE IF NOT EXISTS dealer_part_group_target (
     id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     dealer_id     INT NOT NULL,
     category_id   INT NOT NULL,
+    -- A target set against one specific product rather than a part group. Nothing writes
+    -- it yet, so every current target carries the 0 sentinel meaning "no single product".
+    -- NOT NULL DEFAULT 0 for the same reason `scheme` is NOT NULL DEFAULT '': it is part
+    -- of uq_dpgt_grain, and MySQL treats every NULL in a UNIQUE index as distinct, so a
+    -- nullable product_id would let the key wave through duplicates it exists to block.
+    product_id    INT NOT NULL DEFAULT 0,
     part_group    VARCHAR(150) NOT NULL,
     scheme        VARCHAR(150) NOT NULL DEFAULT '',
     target_qty    DECIMAL(14,4) NOT NULL DEFAULT 0,
@@ -120,10 +126,11 @@ CREATE TABLE IF NOT EXISTS dealer_part_group_target (
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    UNIQUE KEY uq_dpgt_grain (dealer_id, category_id, scheme, part_group, target_period),
+    UNIQUE KEY uq_dpgt_grain (dealer_id, category_id, product_id, scheme, part_group, target_period),
     KEY idx_target_period (target_period),
     KEY idx_part_group (part_group),
-    KEY idx_dpgt_category (category_id)
+    KEY idx_dpgt_category (category_id),
+    KEY idx_dpgt_product (product_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """, order=63)
 

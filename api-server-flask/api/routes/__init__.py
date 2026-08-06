@@ -35,8 +35,8 @@ def register_all_routes():
     from ..modules.logistics.supply_sheet import router as _supply_sheet_router  # noqa: F401
     from ..modules.inventory import router as _inventory_router        # noqa: F401
     from ..modules.fulfillment.assignment import router as _assignment_router      # noqa: F401
-    from ..modules.sales.analytics import router as _analytics_router        # noqa: F401
-    from ..modules.sales.analytics import router_uploads as _monthly_uploads  # noqa: F401
+    from ..modules.sales.uploads import router as _monthly_uploads  # noqa: F401
+    from ..modules.sales.target_tracker import router as _target_tracker_router  # noqa: F401
 
     # Mobile API (/api/v1/*) — ported from wms-v2-backend, see docs/V2_API_PORT.md
     from ..modules.platform.user_auth import router_v1 as _v1_auth_router        # noqa: F401
@@ -45,4 +45,4 @@ def register_all_routes():
     from ..modules.inventory import router_v1 as _v1_inventory_router   # noqa: F401
     from ..modules.fulfillment.assignment import router_v1 as _v1_assignment_router # noqa: F401
     from ..modules.sales.visit import router_v1 as _v1_visit_router           # noqa: F401
-    from ..modules.sales.analytics import router_v1 as _v1_analytics_router    # noqa: F401
+    from ..modules.sales.field_sales import router_v1 as _v1_field_sales_router # noqa: F401

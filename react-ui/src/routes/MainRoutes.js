@@ -27,7 +27,7 @@ const ProductUpload = Loadable(lazy(() => import('../views/warehouse/ProductUplo
 const EwayBillGenerator = Loadable(lazy(() => import('../views/warehouse/EwayBillGenerator')));
 
 // analytics routing
-const SalesExecutiveAnalytics = Loadable(lazy(() => import('../views/analytics/SalesExecutiveAnalytics')));
+const TargetTracker = Loadable(lazy(() => import('../views/analytics/TargetTracker')));
 
 // admin routing
 const AdminControls = Loadable(lazy(() => import('../views/admin/AdminControls')));
@@ -54,7 +54,7 @@ const MainRoutes = () => {
                 '/warehouse/supply-sheet',
                 '/warehouse/eway-bill',
                 '/analytics',
-                '/analytics/sales-executives',
+                '/analytics/target-tracker',
                 // Admin routes
                 '/admin-controls',
                 // Monthly data upload (top-level, admin only)
@@ -104,9 +104,9 @@ const MainRoutes = () => {
                         )}
                     />
 
-                    {/* Analytics — /analytics lands straight on Target Tracker */}
-                    <Route path="/analytics/sales-executives" render={() => <AuthGuard><SalesExecutiveAnalytics /></AuthGuard>} />
-                    <Route exact path="/analytics" render={() => <Redirect to="/analytics/sales-executives" />} />
+                    {/* Analytics — Target Tracker is the only screen, so /analytics lands on it */}
+                    <Route path="/analytics/target-tracker" render={() => <AuthGuard><TargetTracker /></AuthGuard>} />
+                    <Route exact path="/analytics" render={() => <Redirect to="/analytics/target-tracker" />} />
 
                     {/* Admin routes */}
                     <Route

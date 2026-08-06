@@ -86,6 +86,11 @@ def _read_csv(temp_path, encoding):
         raise Exception(f"All CSV parsing strategies failed: {str(e)}")
 
 
+def _normalize_header(name):
+    """Lower-case and drop the punctuation exports vary on ('Qty.' vs 'Qty', 'Bill #')."""
+    return name.lower().replace(' ', '').replace('#', '').replace('.', '')
+
+
 def resolve_required_columns(df, required_columns):
     """
     Fuzzy-match required column names (exact → case-insensitive → partial).
@@ -109,8 +114,7 @@ def resolve_required_columns(df, required_columns):
                     break
         if not match:
             for col in df.columns:
-                if req.lower().replace(' ', '').replace('#', '') in \
-                        col.lower().replace(' ', '').replace('#', ''):
+                if _normalize_header(req) in _normalize_header(col):
                     match = col
                     break
         if match:

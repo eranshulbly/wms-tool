@@ -778,11 +778,18 @@ def create_all_tables():
     _migrate_invoice_columns()
     _migrate_company_id()
     _migrate_target_grain()
+    # After _migrate_target_grain: that one creates the table's category-level shape on an
+    # old database, and product_id is added relative to category_id.
+    _migrate_dpgt_product_id()
     _migrate_dealer_visits_columns()
     _migrate_busy_sales_gst()
+    _migrate_part_groups_period()
     # Runs last: it only adds columns, and several of the migrations above assume the
     # base tables already exist in their pre-v2 shape.
     _migrate_v2_api_columns()
+    # Strictly last: it MODIFYs columns the migrations above are responsible for adding,
+    # so it has to see the schema in its final shape.
+    _migrate_schema_convergence()
 
     # Insert default order states
     insert_default_states()
@@ -842,8 +849,8 @@ def _migrate_dealer_columns():
     DDL never reaches a database that already has the table. Each column below is read by
     live code and its absence is a hard 'Unknown column' failure, not a degraded feature:
 
-      company_id         sales/analytics — _dealer_map() scopes dealers to Hero
-      sales_executive_id sales/analytics — how a sale is attributed to an executive
+      company_id         sales/uploads — _dealer_map() scopes dealers to Hero
+      sales_executive_id sales/field_sales, sales/target_tracker — how a sale is attributed
       town               logistics/supply_sheet — printed on the supply sheet
       latitude/longitude platform/user_auth — set when a location submission is approved
 
@@ -967,6 +974,73 @@ _COMPANY_ID_TABLES = [
 ]
 
 
+def _migrate_dpgt_product_id():
+    """Add dealer_part_group_target.product_id and widen uq_dpgt_grain onto it (idempotent).
+
+    product_id is a target set against ONE product instead of a part group. Nothing writes
+    it yet, so every existing target carries the 0 sentinel meaning "no single product".
+
+    It is NOT NULL DEFAULT 0 rather than nullable, for exactly the reason _migrate_target_grain
+    made `scheme` NOT NULL DEFAULT '': the column is part of the unique key, and MySQL treats
+    every NULL in a UNIQUE index as distinct. A nullable product_id sitting in uq_dpgt_grain
+    would make every row unique on sight and quietly retire the key — which exists to stop a
+    malformed file double-loading a period and inflating every target it feeds.
+
+    The key has to carry product_id before per-product targets can be written at all: two of
+    them for the same dealer and category would share a blank part_group and scheme, so the
+    old key would reject the second as a duplicate of the first.
+    """
+    table = 'dealer_part_group_target'
+    try:
+        if not mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.TABLES
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s""", (table,)):
+            return  # fresh install — the registry DDL already has the new shape
+
+        col = mysql_manager.execute_query(
+            """SELECT IS_NULLABLE FROM information_schema.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                 AND COLUMN_NAME = 'product_id'""", (table,))
+        if not col:
+            mysql_manager.execute_query(
+                f"ALTER TABLE {table} "
+                "ADD COLUMN product_id INT NOT NULL DEFAULT 0 AFTER category_id", fetch=False)
+            mysql_manager.execute_query(
+                f"ALTER TABLE {table} ADD INDEX idx_dpgt_product (product_id)", fetch=False)
+            logger.info("%s: added column product_id", table)
+        elif col[0]['IS_NULLABLE'] == 'YES':
+            # Carried the nullable first cut of this column — settle the NULLs on the
+            # sentinel before the key starts depending on the value being present.
+            mysql_manager.execute_query(
+                f"UPDATE {table} SET product_id = 0 WHERE product_id IS NULL", fetch=False)
+            mysql_manager.execute_query(
+                f"ALTER TABLE {table} MODIFY product_id INT NOT NULL DEFAULT 0", fetch=False)
+            logger.info("%s: product_id is now NOT NULL DEFAULT 0", table)
+
+        # Rebuild the unique key only if it isn't already keyed on product_id. Dropping and
+        # re-adding is safe in either order here: 0 is constant across every existing row,
+        # so the widened key is exactly as strict as the one it replaces and cannot fail on
+        # duplicates that the old key already permitted.
+        keyed = mysql_manager.execute_query(
+            """SELECT 1 FROM information_schema.STATISTICS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                 AND INDEX_NAME = 'uq_dpgt_grain' AND COLUMN_NAME = 'product_id'""", (table,))
+        if not keyed:
+            if mysql_manager.execute_query(
+                    """SELECT 1 FROM information_schema.STATISTICS
+                       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                         AND INDEX_NAME = 'uq_dpgt_grain'""", (table,)):
+                mysql_manager.execute_query(
+                    f"ALTER TABLE {table} DROP INDEX uq_dpgt_grain", fetch=False)
+            mysql_manager.execute_query(
+                f"ALTER TABLE {table} ADD UNIQUE KEY uq_dpgt_grain "
+                "(dealer_id, category_id, product_id, scheme, part_group, target_period)",
+                fetch=False)
+            logger.info("%s: widened uq_dpgt_grain onto product_id", table)
+    except Exception:
+        logger.exception("%s: migration failed for product_id", table)
+
+
 def _migrate_invoice_columns():
     """Add invoice columns the read path selects but the upload path never writes.
 
@@ -1015,7 +1089,7 @@ _V2_API_COLUMNS = {
         ('is_active', 'TINYINT(1) NOT NULL DEFAULT 1', None),
     ],
     'company': [
-        ('order_capture_mode', "VARCHAR(20) NULL", None),
+        ('order_capture_mode', "VARCHAR(20) NOT NULL DEFAULT 'itemised'", None),
     ],
     'dealer': [
         ('dealer_code',  'VARCHAR(50) NULL',  None),
@@ -1024,7 +1098,7 @@ _V2_API_COLUMNS = {
         ('gstin',        'VARCHAR(20) NULL',  None),
         ('address',      'TEXT NULL',         None),
         ('status',       "VARCHAR(20) NOT NULL DEFAULT 'active'", None),
-        ('activated_on', 'DATETIME NULL',     None),
+        ('activated_on', 'DATETIME NULL DEFAULT CURRENT_TIMESTAMP', None),
     ],
     'potential_order': [
         ('submitted_at',            'DATETIME NULL',      None),
@@ -1043,7 +1117,7 @@ _V2_API_COLUMNS = {
         ('product_name',       'VARCHAR(255) NULL', None),
         ('uom',                'VARCHAR(20) NULL',  None),
         ('quantity_fulfilled', 'INT NULL',          None),
-        ('item_status',        'VARCHAR(30) NULL',  None),
+        ('item_status',        "VARCHAR(30) NOT NULL DEFAULT 'pending'", None),
     ],
 }
 
@@ -1132,6 +1206,106 @@ def _migrate_busy_sales_gst():
                 logger.info("busy_sales_data: added generated column %s", column)
         except Exception:
             logger.exception("busy_sales_data: migration failed for column %s", column)
+
+
+# Columns that create-vs-migrate left in two different shapes: the CREATE TABLE path and
+# the ADD COLUMN path disagreed, so a database built fresh and one grown by migration ended
+# up differing. Each entry pins ONE canonical definition, as (type, nullable, default)
+# exactly as information_schema reports it once correct, plus the DDL that gets it there.
+# Where the two shapes differed, the stricter one wins.
+_CONVERGE_COLUMNS = [
+    # Read straight back to the mobile client by user_auth/router_v1.py — a NULL here
+    # surfaces as `null` in the API response instead of the mode the app expects.
+    ('company', 'order_capture_mode',
+     ('varchar(20)', 'NO', 'itemised'), "VARCHAR(20) NOT NULL DEFAULT 'itemised'"),
+    ('dealer', 'activated_on',
+     ('datetime', 'YES', 'CURRENT_TIMESTAMP'), 'DATETIME NULL DEFAULT CURRENT_TIMESTAMP'),
+    ('potential_order_product', 'item_status',
+     ('varchar(30)', 'NO', 'pending'), "VARCHAR(30) NOT NULL DEFAULT 'pending'"),
+    # These two matter most: category_id is part of uq_dmt_grain / uq_dpgt_grain, and
+    # MySQL counts every NULL in a unique index as distinct. Left nullable, the key stops
+    # blocking the duplicate loads it exists to block — on one database but not the other.
+    ('dealer_money_target', 'category_id', ('int', 'NO', None), 'INT NOT NULL'),
+    ('dealer_part_group_target', 'category_id', ('int', 'NO', None), 'INT NOT NULL'),
+]
+
+
+def _migrate_schema_convergence():
+    """Pin the columns where a fresh build and a migrated build disagreed (idempotent).
+
+    Runs last, after every ADD COLUMN migration, so the columns it MODIFYs already exist.
+    Each column is checked against its canonical shape first, so a database already in the
+    right shape issues no ALTER at all and this costs one information_schema read per boot.
+
+    Tightening to NOT NULL is skipped, loudly, if the column still holds NULLs. Filling
+    them would mean inventing a category_id, and a wrong id is worse than a delayed
+    migration — the fix is to correct the data, then reboot.
+    """
+    for table, column, want, ddl in _CONVERGE_COLUMNS:
+        try:
+            row = mysql_manager.execute_query(
+                """SELECT COLUMN_TYPE t, IS_NULLABLE n, COLUMN_DEFAULT d
+                   FROM information_schema.COLUMNS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                     AND COLUMN_NAME = %s""", (table, column))
+            if not row:
+                continue  # table or column absent on this deployment — nothing to pin
+            if (row[0]['t'], row[0]['n'], row[0]['d']) == want:
+                continue  # already canonical
+
+            if want[1] == 'NO':
+                nulls = mysql_manager.execute_query(
+                    f"SELECT COUNT(*) c FROM `{table}` WHERE `{column}` IS NULL")
+                if nulls and nulls[0]['c']:
+                    logger.warning(
+                        "%s.%s: %s row(s) still NULL — leaving nullable. Fix the data, "
+                        "then restart to apply.", table, column, nulls[0]['c'])
+                    continue
+
+            mysql_manager.execute_query(
+                f"ALTER TABLE `{table}` MODIFY `{column}` {ddl}", fetch=False)
+            logger.info("%s.%s: pinned to %s", table, column, ddl)
+        except Exception:
+            logger.exception("%s.%s: convergence migration failed", table, column)
+
+
+def _migrate_part_groups_period():
+    """part_groups: drop `month`, rename `period` -> `time_period` (idempotent).
+
+    `month` held the period's name ('July') alongside `period` = 2026-07-01, so it was
+    pure duplication of a value the date already carries and nothing read it back.
+
+    The rename is a plain RENAME COLUMN: MySQL rewrites uq_period_part and idx_period to
+    point at the new name by itself, so the index *names* are deliberately left as they
+    are — that keeps a migrated database byte-identical to what the registry DDL builds
+    on a fresh install.
+    """
+    table = 'part_groups'
+
+    def _column(name):
+        return mysql_manager.execute_query(
+            """SELECT 1 FROM information_schema.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                 AND COLUMN_NAME = %s""", (table, name))
+
+    try:
+        if not mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.TABLES
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s""", (table,)):
+            return  # fresh install — the registry DDL already has the new shape
+
+        if _column('month'):
+            mysql_manager.execute_query(
+                f"ALTER TABLE {table} DROP COLUMN `month`", fetch=False)
+            logger.info("%s: dropped column month", table)
+
+        # Guard on both names so a half-applied run, or a re-run, is a no-op.
+        if _column('period') and not _column('time_period'):
+            mysql_manager.execute_query(
+                f"ALTER TABLE {table} RENAME COLUMN `period` TO `time_period`", fetch=False)
+            logger.info("%s: renamed column period -> time_period", table)
+    except Exception:
+        logger.exception("%s: period/month migration failed", table)
 
 
 def _migrate_dealer_visits_columns():

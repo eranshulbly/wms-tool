@@ -170,7 +170,7 @@ class V1Skus(Resource):
                                              INTERVAL 6 MONTH)
                 UNION
                 SELECT part_number FROM part_groups
-                 WHERE period = DATE_FORMAT(CURDATE(), '%%Y-%%m-01'))""")
+                 WHERE time_period = DATE_FORMAT(CURDATE(), '%%Y-%%m-01'))""")
 
         # Server-side search for parts outside the working set. A leading
         # wildcard can't use a B-tree index, so this is a scan of ~59k rows —

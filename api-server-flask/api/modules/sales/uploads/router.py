@@ -102,7 +102,9 @@ def _read_df(uploaded_file):
     df = pd.read_csv(BytesIO(raw), dtype=str) if ext == 'csv' \
         else pd.read_excel(BytesIO(raw), dtype=str)
     df.columns = [str(c).strip() for c in df.columns]
-    return df
+    # dtype=str still leaves empty cells as NaN (a float), and `nan or ''` is truthy —
+    # every `(row.get(...) or '').strip()` below would blow up on a blank cell.
+    return df.where(pd.notna(df), None)
 
 
 def _dealer_map(company_id):
@@ -145,6 +147,39 @@ def _num(val):
 # Per-feed loaders — each returns (inserted, skipped, errors, warnings)
 # ---------------------------------------------------------------------------
 
+def _parse_sale_date(raw):
+    """Busy writes sale dates as DD-MM-YYYY. Returns (Timestamp|None, was_unswapped).
+
+    Two shapes reach us, because the Date column is only *sometimes* text:
+      * text 'DD-MM-YYYY'  — parse day-first, as Busy wrote it.
+      * a real datetime    — Excel already coerced the cell on open, reading Busy's
+        DD-MM as its own locale's MM-DD. That only happens when DD <= 12 (otherwise
+        the month is invalid and the cell stays text), so such a cell always has its
+        day and month transposed and is recovered by swapping them back.
+    The swap is reported so a caller can warn rather than silently move a sale's date.
+    """
+    if raw is None:
+        return None, False
+    s = str(raw).strip()
+    if not s:
+        return None, False
+
+    # A real (Excel-coerced) datetime cell arrives stringified as ISO with a time part.
+    iso = pd.to_datetime(s, format='%Y-%m-%d %H:%M:%S', errors='coerce')
+    if not pd.isna(iso):
+        if iso.day <= 12:      # transposable -> undo Excel's MM-DD misread
+            return pd.Timestamp(year=iso.year, month=iso.day, day=iso.month), True
+        return iso.normalize(), False
+
+    for fmt in ('%d-%m-%Y', '%Y-%m-%d'):   # Busy's own format, then plain ISO
+        d = pd.to_datetime(s, format=fmt, errors='coerce')
+        if not pd.isna(d):
+            return d, False
+    # Anything else (other separators, month names): day-first, as Busy writes dates.
+    d = pd.to_datetime(s, errors='coerce', dayfirst=True)
+    return (None, False) if pd.isna(d) else (d, False)
+
+
 def _load_sales(df, company_id):
     """Sales is NOT month-scoped: it loads by the dates in the file itself.
 
@@ -161,9 +196,19 @@ def _load_sales(df, company_id):
     for opt in ('Vch/Bill No', 'Unit', 'Price'):
         df, _ = resolve_required_columns(df, [opt])  # renames if present, ignore miss
 
+    # Busy prints a voucher's Date / Vch No / Particulars on its first line only; the
+    # rest of that voucher's line items leave them blank and inherit from above. Without
+    # this the date check below drops every line but the first of each voucher.
+    for col in ('Date', 'Vch/Bill No', 'Particulars'):
+        if col in df.columns:
+            df[col] = df[col].ffill()
+
     dealers = set(_dealer_map(company_id).keys())
     skipped, errors, unmatched = 0, [], 0
-    rows = []  # parsed, valid rows awaiting insert
+    # Excel-mangled dates, reported per *date* rather than per row: one bad voucher cell
+    # forward-fills onto all of that voucher's lines, so a row count wildly overstates it.
+    swaps = {}   # raw cell -> [corrected Timestamp, rows affected]
+    rows = []    # parsed, valid rows awaiting insert
 
     # First pass: parse + validate every row (no DB writes yet).
     for idx, row in df.iterrows():
@@ -174,12 +219,12 @@ def _load_sales(df, company_id):
         if not raw_date or not item:
             skipped += 1
             continue
-        d = pd.to_datetime(raw_date, errors='coerce', dayfirst=False)
-        if pd.isna(d):
-            d = pd.to_datetime(raw_date, errors='coerce', dayfirst=True)
-        if pd.isna(d):
+        d, swapped = _parse_sale_date(raw_date)
+        if d is None:
             errors.append({'row': row_num, 'key': str(raw_date), 'reason': 'Unparseable date'})
             continue
+        if swapped:
+            swaps.setdefault(str(raw_date), [d, 0])[1] += 1
         if particulars and particulars not in dealers:
             unmatched += 1
         rows.append({
@@ -218,12 +263,21 @@ def _load_sales(df, company_id):
                 errors.append({'row': r['row_num'], 'key': r['item'], 'reason': str(e)})
 
     warnings = []
-    if len(dates) > 1:
-        warnings.append(f'Replaced {len(dates)} date(s) from {dates[0]} to {dates[-1]}; '
-                        f'other dates were left untouched.')
     if unmatched:
         warnings.append(f'{unmatched} row(s) have a "Particulars" that matches no dealer '
                         f'— they are stored but will not be attributed to an executive.')
+    if swaps:
+        # Name each date that moved so the correction can be eyeballed; keep the list short.
+        shown = sorted(swaps.items(), key=lambda kv: kv[1][0])[:5]
+        pairs = '; '.join(f"{pd.to_datetime(raw):%d %b %Y} → {fixed:%d %b %Y}"
+                          for raw, (fixed, _n) in shown)
+        if len(swaps) > len(shown):
+            pairs += f'; and {len(swaps) - len(shown)} more'
+        n_rows = sum(n for _f, n in swaps.values())
+        warnings.append(
+            f'Corrected {len(swaps)} date{"" if len(swaps) == 1 else "s"} mangled by Excel: '
+            f'{pairs} ({n_rows} row{"" if n_rows == 1 else "s"}). '
+            f'Save the Date column as Text to avoid this.')
     covered = {'min': dates[0], 'max': dates[-1]} if dates else None
     return replaced, inserted, skipped, errors, warnings, covered
 
@@ -233,12 +287,13 @@ def _load_part_groups(df, period_date, year, month, label, company_id):
     df, err = resolve_required_columns(df, required)
     if err:
         raise ValueError(err)
-    for opt in ('Description', 'Scheme'):
-        df, _ = resolve_required_columns(df, [opt])
+    # Sr. No. and Description are no longer taken from this feed. A file that still
+    # carries those columns loads fine — anything not resolved here is simply ignored.
+    df, _ = resolve_required_columns(df, ['Scheme'])
 
     inserted, skipped, errors = 0, 0, []
     with mysql_manager.get_cursor() as cur:
-        cur.execute("DELETE FROM part_groups WHERE period=%s AND company_id=%s",
+        cur.execute("DELETE FROM part_groups WHERE time_period=%s AND company_id=%s",
                     (period_date, company_id))
         replaced = cur.rowcount
         for idx, row in df.iterrows():
@@ -251,12 +306,11 @@ def _load_part_groups(df, period_date, year, month, label, company_id):
             try:
                 cur.execute(
                     """INSERT INTO part_groups
-                       (part_number, description, part_group, scheme, month, period,
+                       (part_number, part_group, scheme, time_period,
                         company_id, created_at)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
-                    (part, (row.get('Description') or '').strip() or None,
-                     group or None, (row.get('Scheme') or '').strip() or None,
-                     label, period_date, company_id, datetime.utcnow()))
+                       VALUES (%s,%s,%s,%s,%s,%s)""",
+                    (part, group or None, (row.get('Scheme') or '').strip() or None,
+                     period_date, company_id, datetime.utcnow()))
                 inserted += 1
             except Exception as e:
                 errors.append({'row': row_num, 'key': part, 'reason': str(e)})
@@ -280,7 +334,7 @@ def _load_qty_targets(df, period_date, year, month, label, company_id):
     # part_group -> scheme, taken from this period's mapping
     scheme_rows = mysql_manager.execute_query(
         "SELECT part_group, MAX(scheme) AS scheme FROM part_groups "
-        "WHERE period=%s AND company_id=%s GROUP BY part_group",
+        "WHERE time_period=%s AND company_id=%s GROUP BY part_group",
         (period_date, company_id)) or []
     # '' rather than NULL: scheme is part of the replacement key, and MySQL treats every
     # NULL in a UNIQUE index as distinct, so a NULL scheme would defeat the replacement.
@@ -766,7 +820,7 @@ class MonthlyStatus(Resource):
                         "SELECT DATE_FORMAT(sale_date,'%%Y-%%m-01') p, COUNT(*) c "
                         "FROM busy_sales_data WHERE company_id=1 GROUP BY p"),
                     'part-groups': periods(
-                        "SELECT DATE_FORMAT(period,'%%Y-%%m-01') p, COUNT(*) c "
+                        "SELECT DATE_FORMAT(time_period,'%%Y-%%m-01') p, COUNT(*) c "
                         "FROM part_groups GROUP BY p"),
                     'qty-targets': periods(
                         "SELECT DATE_FORMAT(target_period,'%%Y-%%m-01') p, COUNT(*) c "

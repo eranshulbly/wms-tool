@@ -43,7 +43,7 @@ def _base(company_id):
     return (f"FROM busy_sales_data b "
             f"JOIN dealer d ON d.name = b.particulars AND d.company_id = {int(company_id)} "
             f"LEFT JOIN part_groups pg ON pg.part_number = b.item_code "
-            f"AND pg.period = DATE_FORMAT(b.sale_date, '%%Y-%%m-01') ")
+            f"AND pg.time_period = DATE_FORMAT(b.sale_date, '%%Y-%%m-01') ")
 
 
 # Named period filters for the analytics tab. Each maps to (sales-date WHERE clause,
@@ -309,7 +309,7 @@ def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None
                 FROM busy_sales_data b
                 JOIN dealer d2 ON d2.name = b.particulars AND d2.company_id = {int(company_id)}
                 LEFT JOIN part_groups pg ON pg.part_number = b.item_code
-                    AND pg.period = DATE_FORMAT(b.sale_date, '%%Y-%%m-01')
+                    AND pg.time_period = DATE_FORMAT(b.sale_date, '%%Y-%%m-01')
                 LEFT JOIN product p ON p.product_string = b.item_code
                     AND p.company_id = {int(company_id)}
                 WHERE {sales_where}
@@ -525,7 +525,7 @@ def _peer_product_opportunities(dealer_id, peer_ids, company_id=DEFAULT_COMPANY,
             -- Which scheme the part feeds, when it feeds one; shown as context on
             -- the row. LEFT so an unscheme'd part is still an opportunity.
             LEFT JOIN part_groups pg
-                   ON pg.part_number = b.item_code AND pg.period = {_PERIOD}
+                   ON pg.part_number = b.item_code AND pg.time_period = {_PERIOD}
             WHERE d.dealer_id IN ({peer_ph})
               AND b.sale_date >= {window}
               {cat_cond}
@@ -683,7 +683,7 @@ def dealer_suggestions(dealer_id, company_id=DEFAULT_COMPANY, category_ids=None)
                 FROM busy_sales_data b
                 JOIN dealer d ON d.name = b.particulars AND d.company_id = {int(company_id)}
                 {cat_join}
-                JOIN part_groups pg ON pg.part_number = b.item_code AND pg.period = {_PERIOD}
+                JOIN part_groups pg ON pg.part_number = b.item_code AND pg.time_period = {_PERIOD}
                 WHERE b.sale_date >= DATE_SUB({_PERIOD}, INTERVAL 6 MONTH)
                   AND pg.scheme IS NOT NULL {cat_cond}
                 GROUP BY unit_key""",

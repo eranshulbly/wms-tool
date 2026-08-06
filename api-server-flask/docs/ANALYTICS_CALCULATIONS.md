@@ -180,10 +180,16 @@ GROUP BY b.item_code;
 
 ## 5. Consuming the existing APIs (recommended)
 
-Instead of re‑implementing the SQL, the mobile app can call the web endpoints (JWT‑authenticated,
+Instead of re‑implementing the SQL, call the existing endpoints (JWT‑authenticated,
 `Authorization: Bearer <token>`). All amounts/quantities are plain numbers; `pct` may be `null`.
 
-### `GET /api/analytics/sales` — exec & dealer % achieved
+> **Removed:** the web `/api/analytics/*` endpoints below no longer exist. The screens that
+> called them (Sales Executive Analytics, Dealer Overview) were removed; Target Tracker
+> (`/api/target-tracker/*`) is the only analytics UI. The shapes are kept here because the
+> mobile `/api/v1/analytics/*` endpoints still return the same figures from the same
+> `analytics/service.py`.
+
+### `GET /api/analytics/sales` — exec & dealer % achieved *(removed)*
 Optional query filters: `executive_id`, `dealer_id`, `part_group`, `part`.
 ```jsonc
 {
@@ -204,7 +210,7 @@ Optional query filters: `executive_id`, `dealer_id`, `part_group`, `part`.
 }
 ```
 
-### `GET /api/analytics/dealer-suggestions?dealer_id=<id>` — suggestions
+### `GET /api/analytics/dealer-suggestions?dealer_id=<id>` — suggestions *(removed — see `/api/v1/analytics/dealer/<id>`)*
 Progress shown is the dealer's **group** progress (`group_*`), not a per‑part/company figure.
 ```jsonc
 {

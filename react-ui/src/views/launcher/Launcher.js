@@ -78,11 +78,11 @@ const Launcher = () => {
         {
             key: 'analytics',
             title: 'Analytics',
-            description: 'Dashboards and reports across orders, sales and dealers.',
+            description: 'Target Tracker — sales against target by executive, dealer and part.',
             icon: IconChartBar,
             color: theme.palette.error.dark,
             tint: theme.palette.error.light,
-            path: '/analytics/sales-executives',
+            path: '/analytics/target-tracker',
             // Visible to everyone for now; gate with a permission when analytics grow.
             show: true
         },

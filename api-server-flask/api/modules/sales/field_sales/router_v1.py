@@ -2,8 +2,7 @@
 """
 Mobile API — sales analytics (/api/v1/analytics/*), JWT-authenticated.
 
-Thin wrappers over analytics.service (the same computation the web dashboards use),
-scoped to the signed-in salesperson:
+Thin wrappers over field_sales.service, scoped to the signed-in salesperson:
 
   GET /api/v1/analytics/my-summary          this exec's month sales / target / %
   GET /api/v1/analytics/dealer/<dealer_id>  that dealer's month sales / target / %
@@ -16,7 +15,7 @@ from flask_restx import Resource
 
 from api.extensions import rest_api
 from api.shared.auth_v1 import v1_auth_required
-from api.modules.sales.analytics import service
+from api.modules.sales.field_sales import service
 
 
 @rest_api.route('/api/v1/analytics/my-summary')

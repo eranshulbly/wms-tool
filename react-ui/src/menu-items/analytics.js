@@ -13,9 +13,9 @@ const analytics = {
     children: [
         {
             id: 'analytics-target-tracker',
-            title: 'Target Tracker Analytics',
+            title: 'Target Tracker',
             type: 'item',
-            url: '/analytics/sales-executives',
+            url: '/analytics/target-tracker',
             icon: icons.IconTargetArrow,
             breadcrumbs: false
         }

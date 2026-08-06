@@ -49,18 +49,18 @@ const FEEDS = [
     byDateRange: true,
     blurb: 'Hero sales exported from Busy — any date range. Dates in the file replace existing rows on those same dates; other dates are left untouched. Not tied to the month selector.',
     columns: [
-      { name: 'Date', required: true, note: 'YYYY-MM-DD — any dates; existing rows on these dates get replaced' },
-      { name: 'Vch/Bill No', required: false, note: 'Voucher / bill number' },
-      { name: 'Particulars', required: true, note: 'Dealer name (attributed by exact match)' },
+      { name: 'Date', required: true, note: 'DD-MM-YYYY — blank on a voucher\'s follow-on lines; existing rows on these dates get replaced' },
+      { name: 'Vch/Bill No', required: false, note: 'Voucher / bill number (first line of the voucher only)' },
+      { name: 'Particulars', required: true, note: 'Dealer name, attributed by exact match (first line of the voucher only)' },
       { name: 'Item Details', required: true, note: 'Part number' },
-      { name: 'Qty.', required: true, note: 'Quantity sold' },
+      { name: 'Qty', required: true, note: 'Quantity sold ("Qty." also accepted)' },
       { name: 'Unit', required: false, note: 'e.g. Pcs.' },
       { name: 'Price', required: false, note: 'Unit price' },
       { name: 'Amount', required: true, note: 'Line amount (₹)' },
     ],
     sample: [
-      ['2026-07-01', '26-27/01429/Hero', 'Janta Auto Parts | AFM | Meerganj', '14100KCC910S', '1', 'Pcs.', '802.9', '802.9'],
-      ['2026-07-01', '26-27/01429/Hero', 'Janta Auto Parts | AFM | Meerganj', '14311035000S', '5', 'Pcs.', '39.82', '199.1'],
+      ['01-07-2026', '26-27/01429/Hero', 'Janta Auto Parts | AFM | Meerganj', '14100KCC910S', '1', 'Pcs.', '802.9', '802.9'],
+      ['', '', '', '14311035000S', '5', 'Pcs.', '39.82', '199.1'],
     ],
   },
   {
@@ -70,15 +70,13 @@ const FEEDS = [
     color: '#2e7d32',
     blurb: 'Part → part-group → scheme mapping for the month. Replaces the whole mapping for the selected period.',
     columns: [
-      { name: 'Sr. No.', required: false, note: 'Ignored' },
       { name: 'Part number', required: true, note: 'Matches the part number in sales data' },
-      { name: 'Description', required: false, note: 'Part description' },
       { name: 'Part Group', required: true, note: 'Group this part rolls up to' },
       { name: 'Scheme', required: false, note: 'PG / Basket 1 / Basket 2 / Ancillary / Chainsets' },
     ],
     sample: [
-      ['1', '20K1010S', 'CHAIN SPROCKET KIT( XTREME/HUNK)', 'Chain Sprocket Kit', 'PG'],
-      ['37', '43120365H70S', 'SHOE COMP.BRAKE', 'Brake Shoe', 'PG'],
+      ['20K1010S', 'Chain Sprocket Kit', 'PG'],
+      ['43120365H70S', 'Brake Shoe', 'PG'],
     ],
   },
   {
