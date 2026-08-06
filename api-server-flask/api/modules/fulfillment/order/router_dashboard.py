@@ -966,12 +966,12 @@ class SubmittedOrderPhoto(Resource):
         if not att or att['submitted_order_id'] != order_id:
             return {'success': False, 'msg': 'attachment not found'}, 404
         try:
-            path = media.absolute_path(att['file_path'])
+            resp = media.send_media(att['file_path'], att['mime_type'])
         except media.MediaError as e:
             return {'success': False, 'msg': str(e)}, 400
-        if not os.path.exists(path):
+        if resp is None:
             return {'success': False, 'msg': 'attachment file is missing'}, 404
-        return send_file(path, mimetype=att['mime_type'] or 'image/jpeg')
+        return resp
 
 
 @rest_api.route('/api/orders/submitted/<int:order_id>/part-convertor')

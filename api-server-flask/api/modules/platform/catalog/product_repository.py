@@ -31,23 +31,27 @@ class ProductRepository(BaseRepository):
         )
         return {r['product_string']: r for r in rows} if rows else {}
 
-    def bulk_insert_products(self, new_products: dict, current_time) -> None:
+    def bulk_insert_products(self, new_products: dict, current_time, company_id=None) -> None:
         """
         INSERT IGNORE new products (product_string, name, description) into the product table.
 
         Args:
             new_products: dict mapping part_no → description
             current_time: datetime to use for created_at / updated_at
+            company_id:   owning company for the new rows. Products auto-created by an
+                          upload used to land with company_id NULL, which hides them from
+                          every company-scoped user and from the New Order picker. The
+                          uploader always chooses a company, so pass it through.
         """
         rows = [
-            (part_no, description, description, current_time, current_time)
+            (part_no, description, description, company_id, current_time, current_time)
             for part_no, description in new_products.items()
         ]
         with self._db.get_cursor() as cursor:
             cursor.executemany(
                 """INSERT IGNORE INTO product
-                   (product_string, name, description, created_at, updated_at)
-                   VALUES (%s, %s, %s, %s, %s)""",
+                   (product_string, name, description, company_id, created_at, updated_at)
+                   VALUES (%s, %s, %s, %s, %s, %s)""",
                 rows
             )
 

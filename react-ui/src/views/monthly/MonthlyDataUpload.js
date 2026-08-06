@@ -33,8 +33,10 @@ import {
   IconInfoCircle,
   IconDownload,
   IconCalendar,
+  IconBuildingStore,
 } from '@tabler/icons';
 import api from '../../services/api';
+import { useWarehouse } from '../../context/WarehouseContext';
 
 // ---------------------------------------------------------------------------
 // Feed catalogue — the manual admin uploads. `columns` drives both the
@@ -202,7 +204,7 @@ const useStyles = makeStyles((theme) => ({
 // ---------------------------------------------------------------------------
 // Single feed upload card
 // ---------------------------------------------------------------------------
-function FeedCard({ feed, year, month, disabled, loadedRows, statusLoading, statusError, onUploaded, onSnack }) {
+function FeedCard({ feed, year, month, companyId, disabled, loadedRows, statusLoading, statusError, onUploaded, onSnack }) {
   const classes = useStyles();
   const inputRef = useRef(null);
   const [file, setFile] = useState(null);
@@ -215,8 +217,9 @@ function FeedCard({ feed, year, month, disabled, loadedRows, statusLoading, stat
   // the product master (standing reference data, not a monthly fact).
   const periodless = feed.byDateRange || feed.noPeriod;
 
-  // Reset transient state when the period changes.
-  useEffect(() => { setFile(null); setResult(null); setError(null); }, [year, month]);
+  // Reset transient state when the period or company changes — a result for one
+  // company must not stay on screen while another is selected.
+  useEffect(() => { setFile(null); setResult(null); setError(null); }, [year, month, companyId]);
 
   const pick = (f) => {
     if (!f) return;
@@ -233,6 +236,9 @@ function FeedCard({ feed, year, month, disabled, loadedRows, statusLoading, stat
     setUploading(true); setResult(null); setError(null);
     const fd = new FormData();
     fd.append('file', file);
+    // Which company's rows this file becomes. Sent alongside the file for every feed —
+    // the sheet itself never carries a company column.
+    fd.append('company_id', companyId);
     // Sales loads by the dates in the file; the product master is periodless.
     if (!periodless) {
       fd.append('year', year);
@@ -488,6 +494,7 @@ function FeedCard({ feed, year, month, disabled, loadedRows, statusLoading, stat
 // ---------------------------------------------------------------------------
 const MonthlyDataUpload = () => {
   const classes = useStyles();
+  const { companies, selectedCompany, setSelectedCompany } = useWarehouse();
   const [tab, setTab] = useState(0);
   const [year, setYear] = useState(NOW_YEAR);
   const [month, setMonth] = useState(7); // July
@@ -499,9 +506,14 @@ const MonthlyDataUpload = () => {
   const showSnack = (msg, severity = 'success') => setSnack({ open: true, msg, severity });
 
   const fetchStatus = useCallback(async () => {
+    if (!selectedCompany) { setStatus({}); setStatusLoading(false); return; }
     setStatusLoading(true);
     try {
-      const res = await api.get('admin/monthly/status');
+      // Scoped to the selected company so "already loaded" describes the rows this
+      // upload would actually replace, not another tenant's.
+      const res = await api.get('admin/monthly/status', {
+        params: { company_id: selectedCompany },
+      });
       if (res.data.success) {
         setStatus(res.data.status || {});
         setStatusError(null);
@@ -518,7 +530,7 @@ const MonthlyDataUpload = () => {
     } finally {
       setStatusLoading(false);
     }
-  }, []);
+  }, [selectedCompany]);
 
   useEffect(() => { fetchStatus(); }, [fetchStatus]);
 
@@ -537,6 +549,38 @@ const MonthlyDataUpload = () => {
         <Box mb={2}>
           <Alert severity="error">
             Couldn't check what's already loaded: {statusError}
+          </Alert>
+        </Box>
+      )}
+
+      {/* Company — applies to every feed. Sent with the file; the sheet itself never
+          carries a company column. */}
+      <Box className={classes.periodBar} mb={2}>
+        <IconBuildingStore size={22} />
+        <Box>
+          <Typography variant="subtitle1" style={{ fontWeight: 600, lineHeight: 1.2 }}>Company</Typography>
+          <Typography variant="caption" color="textSecondary">
+            Every feed loads into this company. Products the upload has to create are added under it too.
+          </Typography>
+        </Box>
+        <FormControl size="small" variant="outlined" style={{ minWidth: 220 }}>
+          <InputLabel>Company</InputLabel>
+          <Select
+            value={selectedCompany || ''}
+            label="Company"
+            onChange={(e) => setSelectedCompany(e.target.value)}
+          >
+            <MenuItem value=""><em>Select a company</em></MenuItem>
+            {companies.map((c) => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}
+          </Select>
+        </FormControl>
+        <Box flexGrow={1} />
+      </Box>
+
+      {!selectedCompany && (
+        <Box mb={2}>
+          <Alert severity="info">
+            Pick a company before uploading — it decides which company&apos;s data is replaced.
           </Alert>
         </Box>
       )}
@@ -596,11 +640,12 @@ const MonthlyDataUpload = () => {
 
       {/* Active feed */}
       <FeedCard
-        key={activeFeed.id}
+        key={`${activeFeed.id}-${selectedCompany}`}
         feed={activeFeed}
         year={year}
         month={month}
-        disabled={(activeFeed.byDateRange || activeFeed.noPeriod) ? false : !ready}
+        companyId={selectedCompany}
+        disabled={!selectedCompany || ((activeFeed.byDateRange || activeFeed.noPeriod) ? false : !ready)}
         loadedRows={status[activeFeed.id]?.[periodKey] || 0}
         statusLoading={statusLoading}
         statusError={statusError}

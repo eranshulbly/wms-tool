@@ -25,7 +25,7 @@ from api.core.logging import get_logger
 logger = get_logger(__name__)
 
 
-def process_product_upload_dataframe(df, _company_id, _user_id, _upload_batch_id=None):
+def process_product_upload_dataframe(df, company_id, _user_id, _upload_batch_id=None):
     """
     Process a dataframe of product data and link products to orders.
 
@@ -33,7 +33,8 @@ def process_product_upload_dataframe(df, _company_id, _user_id, _upload_batch_id
 
     Args:
         df:               Pandas DataFrame
-        _company_id:      Company ID (part of uniform upload API; not used in SQL)
+        company_id:       Owning company for products this upload has to create. Comes
+                          from the uploader's selection, never from a column in the file.
         _user_id:         User performing the upload (part of uniform upload API; not used in SQL)
         _upload_batch_id: Upload batch tracking ID (part of uniform upload API; not used in SQL)
 
@@ -133,7 +134,7 @@ def process_product_upload_dataframe(df, _company_id, _user_id, _upload_batch_id
 
     # 3a. INSERT IGNORE new products; re-fetch to get their IDs
     if new_products:
-        product_repo.bulk_insert_products(new_products, current_time)
+        product_repo.bulk_insert_products(new_products, current_time, company_id)
         fresh = product_repo.find_bulk_by_part_numbers(list(new_products.keys()))
         products_map.update(fresh)
         logger.debug("Inserted new products", extra={'count': len(new_products)})

@@ -40,19 +40,38 @@ from api.shared.upload_utils import resolve_required_columns
 
 logger = get_logger(__name__)
 
-# The Busy feed belongs to one company. It used to be hardcoded to Hero; it is now the
-# uploading admin's own company, so a second tenant loads into its own rows rather than
-# silently overwriting Hero's.
-DEFAULT_COMPANY = 1
+
+class CompanyRequired(ValueError):
+    """No single company could be resolved, so the upload has no unambiguous owner."""
 
 
-def _company(current_user):
-    """The company this upload belongs to — the caller's own, not a request parameter."""
+def _company(current_user, requested=None):
+    """The company this upload's rows belong to.
+
+    The company is chosen by the operator and sent with the file; it is never read from
+    the uploaded sheet. `resolve_company_scope` decides whether the caller may use the
+    one they asked for and raises CompanyAccessDenied if not, so a scoped admin cannot
+    load another tenant's data by posting someone else's id.
+
+    With nothing selected we fall back to the caller's own scope, but only when that is
+    unambiguous. An unrestricted admin has no single "own" company — this used to answer
+    a hardcoded 1, so every such upload silently landed on company 1 regardless of which
+    tenant the operator meant. Now it asks instead.
+    """
     from api.permissions import resolve_company_scope
-    scope = resolve_company_scope(current_user)
-    if not scope:            # None => unrestricted admin; [] => no grants
-        return DEFAULT_COMPANY
+    scope = resolve_company_scope(current_user, requested)
+    if scope is None:
+        raise CompanyRequired('Select a company for this upload.')
+    if not scope:
+        raise CompanyRequired('You are not assigned to any company.')
+    if len(scope) > 1:
+        raise CompanyRequired('Select a company for this upload — you have access to several.')
     return scope[0]
+
+
+def _requested_company():
+    """The company id the operator picked, from the form (POST) or query (GET)."""
+    return request.form.get('company_id', type=int) or request.args.get('company_id', type=int)
 
 # feed -> the table it (re)loads, keyed for the status endpoint
 _FEEDS = ('sales', 'part-groups', 'qty-targets', 'money-targets', 'products')
@@ -789,13 +808,34 @@ class MonthlyStatus(Resource):
     @active_required
     @_admin_required
     def get(self, current_user):
+        from api.permissions import CompanyAccessDenied
+
+        # Same company the upload will use, so "already loaded" always describes the
+        # rows this operator is about to replace. Before this, the counts were read
+        # from company 1 (or unfiltered) no matter who asked, so a second tenant saw
+        # Hero's periods marked as loaded and its own as empty.
+        try:
+            company_id = _company(current_user, _requested_company())
+        except CompanyRequired as e:
+            # Nothing selected yet — the page renders before the operator picks a
+            # company, so this is an empty state, not a failure.
+            return {
+                'success': True, 'company_id': None, 'needs_company': True,
+                'msg': str(e), 'sales_coverage': None,
+                'status': {f: {} for f in _FEEDS},
+                'category_coverage': None,
+            }, 200
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
+
         try:
             def periods(sql):
-                return {r['p']: r['c'] for r in (mysql_manager.execute_query(sql) or [])}
+                return {r['p']: r['c']
+                        for r in (mysql_manager.execute_query(sql, (company_id,)) or [])}
             # Sales isn't month-scoped — report its overall coverage (min/max date + total).
             cov = mysql_manager.execute_query(
                 "SELECT MIN(sale_date) mn, MAX(sale_date) mx, COUNT(*) c "
-                "FROM busy_sales_data WHERE company_id=1") or [{}]
+                "FROM busy_sales_data WHERE company_id=%s", (company_id,)) or [{}]
             sales_coverage = {
                 'min': str(cov[0]['mn']) if cov[0].get('mn') else None,
                 'max': str(cov[0]['mx']) if cov[0].get('mx') else None,
@@ -804,7 +844,8 @@ class MonthlyStatus(Resource):
             # The product master isn't period-scoped — report its size and how much of it
             # is categorised, plus the category list the upload will accept.
             pc = mysql_manager.execute_query(
-                "SELECT COUNT(*) total, COUNT(category_id) mapped FROM product") or [{}]
+                "SELECT COUNT(*) total, COUNT(category_id) mapped "
+                "FROM product WHERE company_id=%s", (company_id,)) or [{}]
             cats = mysql_manager.execute_query(
                 "SELECT name FROM categories WHERE is_active = 1 ORDER BY name") or []
             cat_coverage = {
@@ -814,20 +855,21 @@ class MonthlyStatus(Resource):
             }
             return {
                 'success': True,
+                'company_id': company_id,
                 'sales_coverage': sales_coverage,
                 'status': {
                     'sales': periods(
                         "SELECT DATE_FORMAT(sale_date,'%%Y-%%m-01') p, COUNT(*) c "
-                        "FROM busy_sales_data WHERE company_id=1 GROUP BY p"),
+                        "FROM busy_sales_data WHERE company_id=%s GROUP BY p"),
                     'part-groups': periods(
                         "SELECT DATE_FORMAT(time_period,'%%Y-%%m-01') p, COUNT(*) c "
-                        "FROM part_groups GROUP BY p"),
+                        "FROM part_groups WHERE company_id=%s GROUP BY p"),
                     'qty-targets': periods(
                         "SELECT DATE_FORMAT(target_period,'%%Y-%%m-01') p, COUNT(*) c "
-                        "FROM dealer_part_group_target GROUP BY p"),
+                        "FROM dealer_part_group_target WHERE company_id=%s GROUP BY p"),
                     'money-targets': periods(
                         "SELECT DATE_FORMAT(target_period,'%%Y-%%m-01') p, COUNT(*) c "
-                        "FROM dealer_money_target GROUP BY p"),
+                        "FROM dealer_money_target WHERE company_id=%s GROUP BY p"),
                     # Not period-scoped — coverage is reported separately below.
                     'products': {},
                 },
@@ -846,8 +888,19 @@ class MonthlyUpload(Resource):
     @active_required
     @_admin_required
     def post(self, current_user, feed):
+        from api.permissions import CompanyAccessDenied
+
         if feed not in _FEEDS:
             return {'success': False, 'msg': f'Unknown feed "{feed}"'}, 404
+
+        # Resolved once, before the file is read: every feed below writes company-scoped
+        # rows, so there is no point parsing a spreadsheet we have no owner for.
+        try:
+            company_id = _company(current_user, _requested_company())
+        except CompanyRequired as e:
+            return {'success': False, 'msg': str(e)}, 422
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
 
         uploaded_file = request.files.get('file')
         if not uploaded_file:
@@ -861,7 +914,7 @@ class MonthlyUpload(Resource):
         if feed == 'products':
             try:
                 updated, inserted, skipped, errors, warnings, recategorised = _load_products(
-                    df, _company(current_user))
+                    df, company_id)
             except ValueError as e:
                 return {'success': False, 'msg': str(e)}, 400
             except Exception as e:
@@ -880,7 +933,7 @@ class MonthlyUpload(Resource):
         # Sales loads by the dates inside the file — the month/year selector doesn't apply.
         if feed == 'sales':
             try:
-                replaced, inserted, skipped, errors, warnings, covered = _load_sales(df, _company(current_user))
+                replaced, inserted, skipped, errors, warnings, covered = _load_sales(df, company_id)
             except ValueError as e:
                 return {'success': False, 'msg': str(e)}, 400
             except Exception as e:
@@ -907,13 +960,13 @@ class MonthlyUpload(Resource):
         try:
             if feed == 'part-groups':
                 replaced, inserted, skipped, errors, warnings = _load_part_groups(
-                    df, period_date, year, month, label, _company(current_user))
+                    df, period_date, year, month, label, company_id)
             elif feed == 'qty-targets':
                 replaced, inserted, skipped, errors, warnings = _load_qty_targets(
-                    df, period_date, year, month, label, _company(current_user))
+                    df, period_date, year, month, label, company_id)
             else:  # money-targets
                 replaced, inserted, skipped, errors, warnings = _load_money_targets(
-                    df, period_date, year, month, label, _company(current_user))
+                    df, period_date, year, month, label, company_id)
         except ValueError as e:
             return {'success': False, 'msg': str(e)}, 400
         except Exception as e:

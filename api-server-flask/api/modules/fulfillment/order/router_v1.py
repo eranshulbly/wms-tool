@@ -7,10 +7,9 @@ Contracts match wms-v2-backend; storage is the app's own submitted_* tables
 app's potential_order (see docs/V2_API_PORT.md).
 """
 
-import os
 from datetime import datetime, date
 
-from flask import request, send_file
+from flask import request
 from flask_restx import Resource
 
 from api.extensions import rest_api
@@ -270,12 +269,12 @@ class V1OrderPhoto(Resource):
         if not att or att['submitted_order_id'] != order_id:
             return {"detail": "attachment not found"}, 404
         try:
-            path = media.absolute_path(att['file_path'])
+            resp = media.send_media(att['file_path'], att['mime_type'])
         except media.MediaError as e:
             return {"detail": str(e)}, 400
-        if not os.path.exists(path):
+        if resp is None:
             return {"detail": "attachment file is missing"}, 404
-        return send_file(path, mimetype=att['mime_type'] or 'image/jpeg')
+        return resp
 
 
 @rest_api.route('/api/v1/orders/list')

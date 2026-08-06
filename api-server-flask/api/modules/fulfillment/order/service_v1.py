@@ -322,7 +322,6 @@ def clear_attachments(order_id):
 
     Used when a photo order is re-photographed — the old image is superseded.
     """
-    import os
     from api.shared import media
     rows = attachments_for(order_id)
     mysql_manager.execute_query(
@@ -331,7 +330,9 @@ def clear_attachments(order_id):
     )
     for a in rows:
         try:
-            os.remove(media.absolute_path(a['file_path']))
+            # delete_media, not os.remove: the bytes may live in S3, where there
+            # is no local path to unlink.
+            media.delete_media(a['file_path'])
         except (OSError, media.MediaError):
             pass  # best-effort: a missing file must not block the replacement
 

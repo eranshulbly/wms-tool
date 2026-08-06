@@ -1,13 +1,13 @@
 # WMS Tool — Database Schema
 
 **Database:** `warehouse_management` (MySQL 8.0, InnoDB, `utf8mb4`)
-**ORM:** none — raw SQL via PyMySQL. Canonical DDL lives in [db_manager.py](../api-server-flask/api/db_manager.py) (`create_all_tables()`); incremental changes in the `migration_*.sql` files.
+**ORM:** none — raw SQL via PyMySQL. Canonical DDL lives in [shared/db_manager.py](../api-server-flask/api/shared/db_manager.py) (`create_all_tables()`), with per-module tables registered via `schema_registry`. Incremental changes are applied **at boot**, not by hand: `_migrate_v2_api_columns()` idempotently adds the columns the v1/mobile API needs. The `migration_*.sql` files are kept for historical deployments — do not run `migration_v2_api.sql` against a live database, it also contains one-way data moves (`DELETE FROM potential_order WHERE status='submitted'`, a `DROP TABLE`) alongside the DDL.
 
 There are **27 tables**, grouped into three layers:
 
 | Layer | Tables | Partitioned? | DB-level FKs? |
 |-------|--------|--------------|---------------|
-| **Reference / master** | `users`, `roles`, `role_order_states`, `role_uploads`, `user_warehouse_company`, `warehouse`, `company`, `dealer`, `product`, `box`, `order_state`, `supply_sheet_counter`, `invoice_processing_config`, `company_schema_mappings` | No | Yes |
+| **Reference / master** | `users`, `roles`, `role_order_states`, `role_uploads`, `user_warehouse_company`, `warehouse`, `company`, `dealer`, `product`, `categories`, `box`, `order_state`, `supply_sheet_counter`, `invoice_processing_config`, `company_schema_mappings` | No | Yes |
 | **E-way bill automation** | `transport_routes`, `customer_route_mappings`, `daily_route_manifests` | No | Yes |
 | **Transactional (order lifecycle)** | `potential_order`, `potential_order_product`, `order`, `order_product`, `order_box`, `box_product`, `order_state_history`, `invoice`, `upload_batches`, `jwt_token_blocklist` | **Yes** (RANGE COLUMNS by date) | **No** (see note) |
 
@@ -80,13 +80,31 @@ erDiagram
         datetime created_at
         datetime updated_at
     }
+    categories {
+        int category_id PK
+        varchar name UK "NOT NULL"
+        int parent_id "self-referencing; no FK so a child may precede its parent"
+        varchar description
+        boolean is_active "NOT NULL DEFAULT 1"
+        datetime created_at
+        datetime updated_at
+    }
     product {
         int product_id PK
-        varchar product_string
+        int company_id FK "NULL = unassigned, hidden from company-scoped users"
+        varchar product_string UK "the v1 API's sku_code"
         varchar name "NOT NULL"
         text description
-        varchar nickname
+        varchar nickname "overrides description on supply sheet PDFs"
         decimal price
+        int category_id FK "-> categories"
+        varchar subcategory "supplier's own grouping, one level under category_id"
+        varchar uom
+        varchar size
+        decimal weight
+        varchar barcode UK
+        varchar hsn_code
+        boolean is_active "NOT NULL DEFAULT 1"
         datetime created_at
         datetime updated_at
     }
@@ -276,6 +294,9 @@ erDiagram
     warehouse  ||--o| supply_sheet_counter    : "counter"
     company    ||--o| company_schema_mappings : "column map"
     dealer     ||--o| customer_route_mappings : "mapped to"
+    categories ||--o{ product                 : "classifies"
+    categories ||--o{ categories              : "parent of"
+    company    ||--o{ product                 : "owns"
     transport_routes ||--o{ customer_route_mappings : "groups"
     transport_routes ||--o{ daily_route_manifests   : "vehicle/day"
 

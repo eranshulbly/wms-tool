@@ -47,6 +47,9 @@ pandas>=2.0.0
 
 Pillow>=10.0.0  # For PNG image generation
 reportlab>=4.0.0  # For PDF supply sheet generation
+# Only needed when MEDIA_BACKEND=s3 (order photos in S3 instead of local disk).
+# api/shared/media.py imports it lazily, so a local-disk deployment runs without it.
+boto3>=1.34.0
 # Note: Removed all SQLAlchemy dependencies
 # Removed: Flask-SQLAlchemy, SQLAlchemy, greenlet
 # This application now uses direct MySQL connectivity via PyMySQL

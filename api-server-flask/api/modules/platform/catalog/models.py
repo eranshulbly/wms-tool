@@ -117,11 +117,22 @@ class Product(MySQLModel):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.product_id = kwargs.get('product_id')
+        self.company_id = kwargs.get('company_id')
         self.product_string = kwargs.get('product_string')
         self.name = kwargs.get('name')
         self.description = kwargs.get('description')
         self.nickname = kwargs.get('nickname')
         self.price = kwargs.get('price')
+        self.category_id = kwargs.get('category_id')
+        self.subcategory = kwargs.get('subcategory')
+        self.uom = kwargs.get('uom')
+        self.size = kwargs.get('size')
+        self.weight = kwargs.get('weight')
+        self.barcode = kwargs.get('barcode')
+        self.hsn_code = kwargs.get('hsn_code')
+        # NOT NULL in the table, so mirror the column default rather than None —
+        # a bare Product(...) must still be insertable.
+        self.is_active = 1 if kwargs.get('is_active') is None else kwargs.get('is_active')
         self.created_at = kwargs.get('created_at')
         self.updated_at = kwargs.get('updated_at')
 
@@ -129,19 +140,27 @@ class Product(MySQLModel):
         """Save product"""
         if self.product_id:
             mysql_manager.execute_query(
-                """UPDATE product SET product_string=%s, name=%s, description=%s,
-                   nickname=%s, price=%s, updated_at=%s WHERE product_id=%s""",
-                (self.product_string, self.name, self.description, self.nickname,
-                 self.price, datetime.utcnow(), self.product_id),
+                """UPDATE product SET company_id=%s, product_string=%s, name=%s,
+                   description=%s, nickname=%s, price=%s, category_id=%s, subcategory=%s,
+                   uom=%s, size=%s, weight=%s, barcode=%s, hsn_code=%s, is_active=%s,
+                   updated_at=%s WHERE product_id=%s""",
+                (self.company_id, self.product_string, self.name, self.description,
+                 self.nickname, self.price, self.category_id, self.subcategory,
+                 self.uom, self.size, self.weight, self.barcode, self.hsn_code,
+                 self.is_active, datetime.utcnow(), self.product_id),
                 fetch=False
             )
         else:
             with mysql_manager.get_cursor() as cursor:
                 cursor.execute(
-                    """INSERT INTO product (product_string, name, description, nickname,
-                       price, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                    (self.product_string, self.name, self.description, self.nickname,
-                     self.price, datetime.utcnow(), datetime.utcnow())
+                    """INSERT INTO product (company_id, product_string, name, description,
+                       nickname, price, category_id, subcategory, uom, size, weight,
+                       barcode, hsn_code, is_active, created_at, updated_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (self.company_id, self.product_string, self.name, self.description,
+                     self.nickname, self.price, self.category_id, self.subcategory,
+                     self.uom, self.size, self.weight, self.barcode, self.hsn_code,
+                     self.is_active, datetime.utcnow(), datetime.utcnow())
                 )
                 self.product_id = cursor.lastrowid
 

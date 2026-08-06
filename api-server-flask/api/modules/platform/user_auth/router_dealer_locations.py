@@ -21,7 +21,7 @@ Routes:
 from datetime import datetime
 from functools import wraps
 
-from flask import request, send_file
+from flask import request
 from flask_restx import Resource
 
 from api.extensions import rest_api
@@ -112,10 +112,12 @@ class DealerLocationPhoto(Resource):
         if not rows[0]['photo_path']:
             return {'success': False, 'msg': 'photo was removed after review'}, 410
         try:
-            path = media.absolute_path(rows[0]['photo_path'])
+            resp = media.send_media(rows[0]['photo_path'], rows[0]['mime_type'])
         except media.MediaError:
             return {'success': False, 'msg': 'photo unavailable'}, 404
-        return send_file(path, mimetype=rows[0]['mime_type'] or 'image/jpeg')
+        if resp is None:
+            return {'success': False, 'msg': 'photo unavailable'}, 404
+        return resp
 
 
 def _decide(submission_id, current_user, approve, note=None):
