@@ -64,9 +64,17 @@ CREATE TABLE IF NOT EXISTS busy_sales_data (
 """, order=60)
 
 
-# Part -> part-group for one period. UNIQUE (period, part_number) matters: analytics
-# LEFT JOINs this on part_number, so a duplicated part would multiply every sales row it
-# matches and overstate quantities.
+# Part -> part-group for one period. uq_period_part matters: analytics LEFT JOINs this on
+# part_number, so a duplicated part would multiply every sales row it matches and overstate
+# quantities.
+#
+# The key is created here as (time_period, part_number) and widened to
+# (company_id, time_period, part_number) by _migrate_part_groups_company_uq() in
+# db_manager.py — company_id is added by the _COMPANY_ID_TABLES manifest, which is the
+# authority for the tenant column, so it does not exist yet at CREATE TABLE time. The
+# company has to be in the key: the upload replaces a period with
+# `DELETE ... WHERE time_period=%s AND company_id=%s`, and a key that ignores company
+# rejects one tenant's rows over another tenant's, which that delete cannot clear.
 register_table("part_groups", """
 CREATE TABLE IF NOT EXISTS part_groups (
     id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

@@ -784,6 +784,9 @@ def create_all_tables():
     _migrate_dealer_visits_columns()
     _migrate_busy_sales_gst()
     _migrate_part_groups_period()
+    # After both _migrate_company_id (adds company_id) and _migrate_part_groups_period
+    # (renames period -> time_period): the widened key names both of those columns.
+    _migrate_part_groups_company_uq()
     # Runs last: it only adds columns, and several of the migrations above assume the
     # base tables already exist in their pre-v2 shape.
     _migrate_v2_api_columns()
@@ -1306,6 +1309,55 @@ def _migrate_part_groups_period():
             logger.info("%s: renamed column period -> time_period", table)
     except Exception:
         logger.exception("%s: period/month migration failed", table)
+
+
+def _migrate_part_groups_company_uq():
+    """Widen uq_period_part onto company_id (idempotent).
+
+    The key was (time_period, part_number) while the upload clears a period with
+    `DELETE FROM part_groups WHERE time_period=%s AND company_id=%s`. Those two grains
+    disagree, and the gap is reachable: a company loading a period it has never loaded
+    before still collides with *another* company's rows for the same period and part, and
+    its own scoped delete cannot clear them because they are not its rows. The operator
+    sees "Duplicate entry '<period>-<part>' for key 'part_groups.uq_period_part'" on a
+    period they have never uploaded. Keying on company_id puts the constraint at the same
+    grain the loader replaces at.
+
+    Rows predating the tenant column keep company_id NULL, and MySQL treats every NULL in a
+    unique index as distinct — so those legacy rows fall out of this key. They are equally
+    invisible to the company-scoped delete, so leaving them unconstrained is consistent
+    with how the loader already treats them; they want a one-off cleanup, not a key.
+    """
+    table = 'part_groups'
+    try:
+        if not mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.COLUMNS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                     AND COLUMN_NAME = 'company_id'""", (table,)):
+            return  # _migrate_company_id has not landed here — nothing to widen onto
+
+        keyed = mysql_manager.execute_query(
+            """SELECT 1 FROM information_schema.STATISTICS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                 AND INDEX_NAME = 'uq_period_part' AND COLUMN_NAME = 'company_id'""",
+            (table,))
+        if keyed:
+            return
+
+        if mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.STATISTICS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                     AND INDEX_NAME = 'uq_period_part'""", (table,)):
+            mysql_manager.execute_query(
+                f"ALTER TABLE {table} DROP INDEX uq_period_part", fetch=False)
+        # Adding a column to a unique key only ever relaxes it, so every row the old key
+        # accepted is still accepted and this cannot fail on existing data.
+        mysql_manager.execute_query(
+            f"ALTER TABLE {table} ADD UNIQUE KEY uq_period_part "
+            "(company_id, time_period, part_number)", fetch=False)
+        logger.info("%s: widened uq_period_part onto company_id", table)
+    except Exception:
+        logger.exception("%s: migration failed for uq_period_part", table)
 
 
 def _migrate_dealer_visits_columns():

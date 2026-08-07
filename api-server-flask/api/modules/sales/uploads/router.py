@@ -36,7 +36,10 @@ from api.extensions import rest_api
 from api.core.auth import token_required, active_required
 from api.shared.db_manager import mysql_manager
 from api.core.logging import get_logger
-from api.shared.upload_utils import resolve_required_columns
+# _normalize_header is private-by-convention, but header DETECTION must normalise
+# exactly as column RESOLUTION does — a second copy would drift and reintroduce the
+# "Qty." vs "Qty" class of mismatch.
+from api.shared.upload_utils import resolve_required_columns, _normalize_header
 
 logger = get_logger(__name__)
 
@@ -111,26 +114,126 @@ def _period(year, month):
             f"{calendar.month_name[month]} {year}")
 
 
-def _read_df(uploaded_file):
-    """Parse the uploaded CSV/Excel into a str DataFrame with trimmed headers."""
+# Distinctive column names per feed, used to locate the real header row. Busy and most
+# accounting exports put the firm name and the reporting period in the first rows, so the
+# actual header sits further down and pandas would otherwise take the title as the header
+# ("Om Marketing, Unnamed: 1, Unnamed: 2, …").
+_FEED_HEADER_HINTS = {
+    'sales':         ('Date', 'Particulars', 'Item Details', 'Qty.', 'Amount'),
+    'part-groups':   ('Part number', 'Part Group'),
+    'qty-targets':   ('Dealer', 'Category', 'Part Group', 'Target Qty'),
+    'money-targets': ('Dealer', 'Category', 'Money Target'),
+    'products':      ('Part Number', 'Part No', 'Product String', 'Category'),
+}
+
+# How far down to look. Deep enough for a title block, shallow enough that a headerless
+# file fails on its own merits instead of matching some stray cell far into the data.
+_HEADER_SCAN_ROWS = 25
+
+# Rows per executemany. Big enough that 150k lines finish well inside the request
+# timeout, small enough to stay under MySQL's max_allowed_packet and to keep the
+# retry-row-by-row fallback cheap when a chunk fails.
+_INSERT_CHUNK = 1000
+
+
+def _looks_like_header(cells, hints):
+    """Whether `cells` carries enough of `hints` to be the header row.
+
+    Uses the same normalisation as resolve_required_columns ('Qty.' == 'Qty'), and
+    requires two distinct hits so a data row holding one word like "Date" can't win.
+    """
+    norm = [_normalize_header(str(c)) for c in cells if c is not None and str(c).strip()]
+    hit = {h for h in hints if any(_normalize_header(h) in c for c in norm)}
+    return len(hit) >= min(2, len(hints))
+
+
+def _read_df(uploaded_file, feed=None):
+    """Parse the uploaded CSV/Excel into a str DataFrame with trimmed headers.
+
+    When the first row isn't the header — a title block above it — the header row is
+    located by `feed`'s hints and the file re-read from there. Without a feed (or with no
+    hints matching) the first row is used, exactly as before.
+    """
     filename = uploaded_file.filename or ''
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
     if ext not in ('csv', 'xls', 'xlsx'):
         raise ValueError('File must be CSV, XLS, or XLSX')
     raw = uploaded_file.read()
-    df = pd.read_csv(BytesIO(raw), dtype=str) if ext == 'csv' \
-        else pd.read_excel(BytesIO(raw), dtype=str)
+
+    def _read(header):
+        if ext == 'csv':
+            return pd.read_csv(BytesIO(raw), dtype=str, header=header)
+        return pd.read_excel(BytesIO(raw), dtype=str, header=header)
+
+    df = _read(0)
     df.columns = [str(c).strip() for c in df.columns]
+
+    hints = _FEED_HEADER_HINTS.get(feed or '')
+    if hints and not _looks_like_header(df.columns, hints):
+        probe = _read(None).head(_HEADER_SCAN_ROWS)
+        for i in range(len(probe)):
+            if _looks_like_header(probe.iloc[i].tolist(), hints):
+                df = _read(i)
+                df.columns = [str(c).strip() for c in df.columns]
+                logger.info("%s: header found on row %d, skipped %d title row(s)",
+                            feed, i + 1, i)
+                break
+
     # dtype=str still leaves empty cells as NaN (a float), and `nan or ''` is truthy —
     # every `(row.get(...) or '').strip()` below would blow up on a blank cell.
     return df.where(pd.notna(df), None)
 
 
+def _norm_dealer(name):
+    """Normalise a dealer name for matching: trim, collapse inner runs of whitespace,
+    casefold.
+
+    The database join these uploads feed (`busy_sales_data.particulars = dealer.name`)
+    runs under utf8mb4_unicode_ci, which is case-INsensitive. Matching here used to be a
+    plain Python dict lookup, which is case-sensitive — so "ABC Motors" in a file was
+    reported as an unknown dealer even though it joins perfectly in the analytics. Lining
+    the two up removes that false mismatch, and stops the create-missing path below from
+    minting a duplicate of a dealer that already exists under different capitalisation.
+    """
+    return ' '.join((name or '').split()).casefold()
+
+
 def _dealer_map(company_id):
-    """Dealer name -> dealer_id within one company (exact match, as the sales data uses)."""
+    """Normalised dealer name -> dealer_id within one company.
+
+    Keys are normalised by `_norm_dealer`, so every lookup must normalise too.
+    """
     rows = mysql_manager.execute_query(
         "SELECT dealer_id, name FROM dealer WHERE company_id = %s", (company_id,)) or []
-    return {(r['name'] or '').strip(): r['dealer_id'] for r in rows}
+    return {_norm_dealer(r['name']): r['dealer_id'] for r in rows}
+
+
+def _create_dealers(names, company_id):
+    """Create dealers for `names` (original spelling preserved) under one company.
+
+    Returns {normalised name: dealer_id} for what was created. Only `name` and `status`
+    are NOT NULL on dealer, and `dealer_code` is UNIQUE but nullable — MySQL permits many
+    NULLs in a unique index — so a name and a company are enough to make a valid row.
+
+    `sales_executive_id` is deliberately left NULL: nothing in a Busy export says who
+    owns the dealer, and guessing would silently attribute someone's sales to the wrong
+    executive. Until it is set, these dealers match by name but attribute to no one, which
+    is why the upload reports exactly which ones it created.
+    """
+    created = {}
+    if not names:
+        return created
+    with mysql_manager.get_cursor() as cur:
+        for name in names:
+            try:
+                cur.execute(
+                    "INSERT INTO dealer (name, company_id, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (name, company_id, datetime.utcnow(), datetime.utcnow()))
+                created[_norm_dealer(name)] = cur.lastrowid
+            except Exception:
+                logger.exception("could not auto-create dealer %r", name)
+    return created
 
 
 def _category_id_map():
@@ -166,15 +269,45 @@ def _num(val):
 # Per-feed loaders — each returns (inserted, skipped, errors, warnings)
 # ---------------------------------------------------------------------------
 
-def _parse_sale_date(raw):
+def _dates_look_transposed(values):
+    """Whether this file's datetime-typed Date cells were mangled by Excel.
+
+    Decided ONCE per file, not per cell, because the per-cell test is unsound.
+
+    The mangling being corrected: Excel opens a Busy export, reads a text 'DD-MM-YYYY'
+    as its own locale's MM-DD, and stores a real date with day and month swapped. That
+    misread can only succeed when DD <= 12 — a day of 29 would mean month 29, which is
+    invalid, so such a cell stays TEXT.
+
+    So a datetime-typed cell whose day is > 12 is proof the column was never misread:
+    under the mangling theory that cell could not exist as a date at all. One such cell
+    settles it for the whole column, since Excel applies its locale uniformly.
+
+    Judging cell-by-cell instead meant every date with day <= 12 got transposed even in a
+    perfectly good export — turning 2 Apr into 4 Feb, and pushing sales into the future.
+    """
+    saw_datetime = False
+    for v in values:
+        if v is None:
+            continue
+        iso = pd.to_datetime(str(v).strip(), format='%Y-%m-%d %H:%M:%S', errors='coerce')
+        if pd.isna(iso):
+            continue
+        saw_datetime = True
+        if iso.day > 12:
+            return False
+    # All datetime cells have day <= 12: consistent with a misread, so correct it.
+    return saw_datetime
+
+
+def _parse_sale_date(raw, transposed=True):
     """Busy writes sale dates as DD-MM-YYYY. Returns (Timestamp|None, was_unswapped).
 
     Two shapes reach us, because the Date column is only *sometimes* text:
       * text 'DD-MM-YYYY'  — parse day-first, as Busy wrote it.
-      * a real datetime    — Excel already coerced the cell on open, reading Busy's
-        DD-MM as its own locale's MM-DD. That only happens when DD <= 12 (otherwise
-        the month is invalid and the cell stays text), so such a cell always has its
-        day and month transposed and is recovered by swapping them back.
+      * a real datetime    — either a genuine date, or one Excel transposed on open.
+        `transposed` comes from `_dates_look_transposed`, which decides that for the
+        whole file; when False the cell is taken exactly as it stands.
     The swap is reported so a caller can warn rather than silently move a sale's date.
     """
     if raw is None:
@@ -186,7 +319,7 @@ def _parse_sale_date(raw):
     # A real (Excel-coerced) datetime cell arrives stringified as ISO with a time part.
     iso = pd.to_datetime(s, format='%Y-%m-%d %H:%M:%S', errors='coerce')
     if not pd.isna(iso):
-        if iso.day <= 12:      # transposable -> undo Excel's MM-DD misread
+        if transposed and iso.day <= 12:   # undo Excel's MM-DD misread
             return pd.Timestamp(year=iso.year, month=iso.day, day=iso.month), True
         return iso.normalize(), False
 
@@ -199,7 +332,28 @@ def _parse_sale_date(raw):
     return (None, False) if pd.isna(d) else (d, False)
 
 
-def _load_sales(df, company_id):
+# Busy closes its export with a grand-total line, and prints sub-totals mid-report. On
+# those lines Date, Vch No and Particulars are all blank — but the ffill in _load_sales
+# inherits them from the voucher above, so a total arrives looking like an ordinary line
+# item and loads as one: an `item_code` of 'Total' carrying the whole report's amount and
+# quantity, attributed to whichever dealer happened to be last. That single row roughly
+# doubles every SUM over the feed.
+_SUMMARY_ITEM_LABELS = frozenset({
+    'total', 'grandtotal', 'subtotal', 'openingbalance', 'closingbalance',
+})
+
+
+def _is_summary_item(item):
+    """True when an 'Item Details' cell is one of Busy's total lines, not a real part.
+
+    Matched as a whole label against a closed set, deliberately not as a prefix — real
+    part descriptions can legitimately begin with a listed word, and a prefix rule would
+    silently drop genuine sales.
+    """
+    return ''.join(ch for ch in item.lower() if ch.isalnum()) in _SUMMARY_ITEM_LABELS
+
+
+def _load_sales(df, company_id, create_missing_dealers=False):
     """Sales is NOT month-scoped: it loads by the dates in the file itself.
 
     Every date that appears in the file is replaced (its existing rows deleted,
@@ -222,8 +376,15 @@ def _load_sales(df, company_id):
         if col in df.columns:
             df[col] = df[col].ffill()
 
+    # Decided once for the whole file — see _dates_look_transposed.
+    transposed = _dates_look_transposed(df['Date']) if 'Date' in df.columns else True
+
     dealers = set(_dealer_map(company_id).keys())
     skipped, errors, unmatched = 0, [], 0
+    summary_rows = 0   # Busy total lines dropped — reported, never silently swallowed
+    # Original spelling of each unmatched name, keyed by its normalised form, so a name
+    # appearing on 200 voucher lines is reported (and created) exactly once.
+    unknown_names = {}
     # Excel-mangled dates, reported per *date* rather than per row: one bad voucher cell
     # forward-fills onto all of that voucher's lines, so a row count wildly overstates it.
     swaps = {}   # raw cell -> [corrected Timestamp, rows affected]
@@ -238,14 +399,20 @@ def _load_sales(df, company_id):
         if not raw_date or not item:
             skipped += 1
             continue
-        d, swapped = _parse_sale_date(raw_date)
+        # Checked before the date parse: the total line's own Date cell is blank and only
+        # looks valid because of the ffill, so parsing it would just launder a bad row.
+        if _is_summary_item(item):
+            summary_rows += 1
+            continue
+        d, swapped = _parse_sale_date(raw_date, transposed)
         if d is None:
             errors.append({'row': row_num, 'key': str(raw_date), 'reason': 'Unparseable date'})
             continue
         if swapped:
             swaps.setdefault(str(raw_date), [d, 0])[1] += 1
-        if particulars and particulars not in dealers:
+        if particulars and _norm_dealer(particulars) not in dealers:
             unmatched += 1
+            unknown_names.setdefault(_norm_dealer(particulars), particulars)
         rows.append({
             'row_num': row_num,
             'date': d.strftime('%Y-%m-%d'),
@@ -253,12 +420,27 @@ def _load_sales(df, company_id):
             'particulars': particulars, 'item': item,
             'qty': _num(row.get('Qty.')) or 0,
             'unit': (row.get('Unit') or '').strip() or None,
-            'price': _num(row.get('Price')),
+            # `or 0` like quantity/amount below: Price is documented optional and the
+            # column is NOT NULL DEFAULT 0. A column default does not apply when the
+            # INSERT passes an explicit NULL, so a blank Price used to fail the row with
+            # "Column 'price' cannot be null" while the upload still reported success.
+            'price': _num(row.get('Price')) or 0,
             'amount': _num(row.get('Amount')) or 0,
         })
 
     dates = sorted({r['date'] for r in rows})
     inserted, replaced = 0, 0
+
+    # Opt-in: turn the names this file mentions but the master doesn't have into dealers.
+    # Done before the sales insert so a later failure can't leave dealers created for rows
+    # that never landed.
+    created_dealers = []
+    if create_missing_dealers and unknown_names:
+        made = _create_dealers(list(unknown_names.values()), company_id)
+        created_dealers = sorted(unknown_names[k] for k in made)
+        dealers.update(made.keys())
+        unmatched = sum(1 for r in rows
+                        if r['particulars'] and _norm_dealer(r['particulars']) not in dealers)
 
     with mysql_manager.get_cursor() as cur:
         # Replace only the dates the file actually covers.
@@ -268,23 +450,60 @@ def _load_sales(df, company_id):
                 f"DELETE FROM busy_sales_data WHERE company_id=%s AND sale_date IN ({placeholders})",
                 (company_id, *dates))
             replaced = cur.rowcount
-        for r in rows:
+        # Batched: a year of Busy data is ~150k lines, and one round-trip to RDS per row
+        # takes far longer than the 120s gunicorn/nginx timeout, so the upload died
+        # mid-insert. executemany sends a chunk per round-trip instead.
+        sql = ("""INSERT INTO busy_sales_data
+                  (sale_date, voucher_no, particulars, item_code, quantity,
+                   unit, price, amount, company_id, created_at)
+                  VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""")
+        now = datetime.utcnow()
+
+        def params(r):
+            return (r['date'], r['vch'], r['particulars'], r['item'], r['qty'],
+                    r['unit'], r['price'], r['amount'], company_id, now)
+
+        for start in range(0, len(rows), _INSERT_CHUNK):
+            chunk = rows[start:start + _INSERT_CHUNK]
             try:
-                cur.execute(
-                    """INSERT INTO busy_sales_data
-                       (sale_date, voucher_no, particulars, item_code, quantity,
-                        unit, price, amount, company_id, created_at)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                    (r['date'], r['vch'], r['particulars'], r['item'], r['qty'],
-                     r['unit'], r['price'], r['amount'], company_id, datetime.utcnow()))
-                inserted += 1
-            except Exception as e:
-                errors.append({'row': r['row_num'], 'key': r['item'], 'reason': str(e)})
+                cur.executemany(sql, [params(r) for r in chunk])
+                inserted += len(chunk)
+            except Exception:
+                # One bad row fails its whole chunk, so retry the chunk row by row to
+                # attribute the error to the actual line — the per-row error report is
+                # what makes a 150k-line upload diagnosable.
+                for r in chunk:
+                    try:
+                        cur.execute(sql, params(r))
+                        inserted += 1
+                    except Exception as e:
+                        errors.append({'row': r['row_num'], 'key': r['item'],
+                                       'reason': str(e)})
 
     warnings = []
+    if summary_rows:
+        warnings.append(
+            f'Ignored {summary_rows} total line(s) from the report footer. Loading one '
+            f'would add the whole report\'s amount and quantity as a single line item, '
+            f'roughly doubling every sales figure.')
+    if created_dealers:
+        shown = ', '.join(created_dealers[:10])
+        if len(created_dealers) > 10:
+            shown += f'; and {len(created_dealers) - 10} more'
+        warnings.append(
+            f'Created {len(created_dealers)} dealer(s) from names in this file: {shown}. '
+            f'They have no sales executive assigned yet, so their sales still will not be '
+            f'attributed until you set one.')
     if unmatched:
+        # Names, not just a count — a bare number gives no way to tell a real missing
+        # dealer from an accounting ledger line like "Cash" or a typo.
+        names = sorted(unknown_names[k] for k in unknown_names
+                       if k not in dealers)
+        listed = ', '.join(names[:10]) + (f'; and {len(names) - 10} more'
+                                          if len(names) > 10 else '')
         warnings.append(f'{unmatched} row(s) have a "Particulars" that matches no dealer '
-                        f'— they are stored but will not be attributed to an executive.')
+                        f'— they are stored but will not be attributed to an executive. '
+                        f'Unmatched: {listed}')
     if swaps:
         # Name each date that moved so the correction can be eyeballed; keep the list short.
         shown = sorted(swaps.items(), key=lambda kv: kv[1][0])[:5]
@@ -298,7 +517,7 @@ def _load_sales(df, company_id):
             f'{pairs} ({n_rows} row{"" if n_rows == 1 else "s"}). '
             f'Save the Date column as Text to avoid this.')
     covered = {'min': dates[0], 'max': dates[-1]} if dates else None
-    return replaced, inserted, skipped, errors, warnings, covered
+    return replaced, inserted, skipped, errors, warnings, covered, created_dealers
 
 
 def _load_part_groups(df, period_date, year, month, label, company_id):
@@ -310,6 +529,23 @@ def _load_part_groups(df, period_date, year, month, label, company_id):
     # carries those columns loads fine — anything not resolved here is simply ignored.
     df, _ = resolve_required_columns(df, ['Scheme'])
 
+    def _cell(row, name):
+        value = row.get(name)
+        return '' if value is None or pd.isna(value) else str(value).strip()
+
+    # A part maps to exactly one group per period, and uq_period_part enforces that — so a
+    # file naming the same part on several rows fails every row after the first with a
+    # duplicate-key error the operator cannot act on. Decide the winner here instead: the
+    # later row is the correction, so keep the last occurrence of each part and report the
+    # ones it supersedes as a warning. Without this the file's own repeats look identical
+    # to a collision with data already in the table.
+    last_row_for = {}
+    for idx, row in df.iterrows():
+        part = _cell(row, 'Part number')
+        if part:
+            last_row_for[part] = idx
+    superseded = []
+
     inserted, skipped, errors = 0, 0, []
     with mysql_manager.get_cursor() as cur:
         cur.execute("DELETE FROM part_groups WHERE time_period=%s AND company_id=%s",
@@ -317,9 +553,13 @@ def _load_part_groups(df, period_date, year, month, label, company_id):
         replaced = cur.rowcount
         for idx, row in df.iterrows():
             row_num = idx + 2
-            part = (row.get('Part number') or '').strip()
-            group = (row.get('Part Group') or '').strip()
+            part = _cell(row, 'Part number')
+            group = _cell(row, 'Part Group')
             if not part:
+                skipped += 1
+                continue
+            if last_row_for[part] != idx:
+                superseded.append((row_num, part))
                 skipped += 1
                 continue
             try:
@@ -328,12 +568,23 @@ def _load_part_groups(df, period_date, year, month, label, company_id):
                        (part_number, part_group, scheme, time_period,
                         company_id, created_at)
                        VALUES (%s,%s,%s,%s,%s,%s)""",
-                    (part, group or None, (row.get('Scheme') or '').strip() or None,
+                    (part, group or None, _cell(row, 'Scheme') or None,
                      period_date, company_id, datetime.utcnow()))
                 inserted += 1
             except Exception as e:
                 errors.append({'row': row_num, 'key': part, 'reason': str(e)})
-    return replaced, inserted, skipped, errors, []
+
+    warnings = []
+    if superseded:
+        listed = '; '.join(f'row {r} ({p})' for r, p in superseded[:10])
+        if len(superseded) > 10:
+            listed += f'; and {len(superseded) - 10} more'
+        n_parts = len({p for _r, p in superseded})
+        warnings.append(
+            f'{len(superseded)} row(s) repeat a part number listed again later in the file '
+            f'({n_parts} part{"" if n_parts == 1 else "s"} affected). The last row for each '
+            f'part was loaded and these earlier ones were ignored: {listed}')
+    return replaced, inserted, skipped, errors, warnings
 
 
 def _load_qty_targets(df, period_date, year, month, label, company_id):
@@ -370,7 +621,7 @@ def _load_qty_targets(df, period_date, year, month, label, company_id):
         if not dealer and not group and not category:
             skipped += 1
             continue
-        dealer_id = dmap.get(dealer)
+        dealer_id = dmap.get(_norm_dealer(dealer))
         if not dealer_id:
             errors.append({'row': row_num, 'key': dealer, 'reason': 'Unknown dealer'})
             continue
@@ -444,7 +695,7 @@ def _load_money_targets(df, period_date, year, month, label, company_id):
         if not dealer and not category:
             skipped += 1
             continue
-        dealer_id = dmap.get(dealer)
+        dealer_id = dmap.get(_norm_dealer(dealer))
         if not dealer_id:
             errors.append({'row': row_num, 'key': dealer, 'reason': 'Unknown dealer'})
             continue
@@ -570,7 +821,9 @@ _PRODUCT_FIELDS = (
     # header,             column,        kind,      limit,     aliases
     ('Name',              'name',        'text',    255,       ()),
     ('Description',       'description', 'text',    None,      ('Part Description',)),
-    ('Product Category',  'subcategory', 'text',    100,       ()),
+    # 'Subcategory' is the product table's own column name, so a file exported straight
+    # from the database round-trips instead of silently dropping this column.
+    ('Product Category',  'subcategory', 'text',    100,       ('Subcategory',)),
     ('Nickname',          'nickname',    'text',    200,       ()),
     ('UOM',               'uom',         'text',    20,        ('Unit of Measure',)),
     ('Size',              'size',        'text',    100,       ()),
@@ -582,6 +835,13 @@ _PRODUCT_FIELDS = (
 )
 
 _PART_NUMBER_HEADERS = ('Part Number', 'Part No', 'Product String')
+
+# The category is resolved by NAME against the categories table — a category_id column in
+# the file is deliberately ignored, since an id is only meaningful in the database that
+# issued it. _find_header matches on the normalised header, so these reduce to 'category'
+# and 'categoryname': both stay distinct from 'productcategory' (the subcategory) and from
+# 'categoryid', neither of which may be mistaken for this column.
+_CATEGORY_HEADERS = ('Category', 'Category Name')
 
 _TRUEISH = {'y', 'yes', '1', 'true', 't', 'active'}
 _FALSEISH = {'n', 'no', '0', 'false', 'f', 'inactive'}
@@ -655,7 +915,7 @@ def _load_products(df, company_id):
             + ', '.join(_PART_NUMBER_HEADERS[1:]) + '). Available: ' + ', '.join(df.columns))
 
     cmap = _category_map()
-    category_col = _find_header(df, ('Category',))
+    category_col = _find_header(df, _CATEGORY_HEADERS)
     if category_col and not cmap:
         raise ValueError('No active categories exist yet — seed or create categories first.')
 
@@ -776,7 +1036,8 @@ def _load_products(df, company_id):
         warnings.append(
             'The file carried only Part Number, so existing products were left unchanged. '
             'Recognised columns are: '
-            + ', '.join(f[0] for f in _PRODUCT_FIELDS) + ', Category.')
+            + ', '.join(f[0] for f in _PRODUCT_FIELDS)
+            + ', ' + ' / '.join(_CATEGORY_HEADERS) + '.')
     if fuzzy_categories:
         warnings.append(
             'These category names did not match exactly and were mapped to the closest '
@@ -906,7 +1167,7 @@ class MonthlyUpload(Resource):
         if not uploaded_file:
             return {'success': False, 'msg': 'No file uploaded'}, 400
         try:
-            df = _read_df(uploaded_file)
+            df = _read_df(uploaded_file, feed)
         except ValueError as e:
             return {'success': False, 'msg': str(e)}, 400
 
@@ -932,8 +1193,14 @@ class MonthlyUpload(Resource):
 
         # Sales loads by the dates inside the file — the month/year selector doesn't apply.
         if feed == 'sales':
+            # Off unless the operator ticks it: "Particulars" is free ledger text, so
+            # blind creation would turn accounting lines ("Cash", GST rows) and typos
+            # into dealers that then show up in every dealer picker.
+            create_missing = (request.form.get('create_missing_dealers') or '').strip().lower() \
+                in ('1', 'true', 'yes', 'on')
             try:
-                replaced, inserted, skipped, errors, warnings, covered = _load_sales(df, company_id)
+                replaced, inserted, skipped, errors, warnings, covered, created_dealers = \
+                    _load_sales(df, company_id, create_missing)
             except ValueError as e:
                 return {'success': False, 'msg': str(e)}, 400
             except Exception as e:
@@ -945,6 +1212,7 @@ class MonthlyUpload(Resource):
                 'covered': covered, 'replaced': replaced, 'inserted': inserted,
                 'skipped': skipped, 'error_count': len(errors),
                 'errors': errors[:200], 'warnings': warnings,
+                'created_dealers': created_dealers,
             }, 200
 
         # The other three feeds are month-scoped and need a period.

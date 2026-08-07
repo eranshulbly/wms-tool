@@ -12,6 +12,8 @@ import {
   Select,
   MenuItem,
   FormControl,
+  FormControlLabel,
+  Checkbox,
   InputLabel,
   Dialog,
   DialogTitle,
@@ -49,6 +51,7 @@ const FEEDS = [
     table: 'busy_sales_data',
     color: '#1565c0',
     byDateRange: true,
+    canCreateDealers: true,
     blurb: 'Hero sales exported from Busy — any date range. Dates in the file replace existing rows on those same dates; other dates are left untouched. Not tied to the month selector.',
     columns: [
       { name: 'Date', required: true, note: 'DD-MM-YYYY — blank on a voucher\'s follow-on lines; existing rows on these dates get replaced' },
@@ -212,6 +215,9 @@ function FeedCard({ feed, year, month, companyId, disabled, loadedRows, statusLo
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [showFormat, setShowFormat] = useState(false);
+  // Opt-in per upload, never remembered — creating dealers should be a deliberate act
+  // each time, not a setting someone turned on months ago and forgot.
+  const [createDealers, setCreateDealers] = useState(false);
 
   // Feeds that ignore the Year / Month selector: sales (dated rows drive it) and
   // the product master (standing reference data, not a monthly fact).
@@ -219,7 +225,9 @@ function FeedCard({ feed, year, month, companyId, disabled, loadedRows, statusLo
 
   // Reset transient state when the period or company changes — a result for one
   // company must not stay on screen while another is selected.
-  useEffect(() => { setFile(null); setResult(null); setError(null); }, [year, month, companyId]);
+  useEffect(() => {
+    setFile(null); setResult(null); setError(null); setCreateDealers(false);
+  }, [year, month, companyId]);
 
   const pick = (f) => {
     if (!f) return;
@@ -239,6 +247,7 @@ function FeedCard({ feed, year, month, companyId, disabled, loadedRows, statusLo
     // Which company's rows this file becomes. Sent alongside the file for every feed —
     // the sheet itself never carries a company column.
     fd.append('company_id', companyId);
+    if (feed.canCreateDealers && createDealers) fd.append('create_missing_dealers', 'true');
     // Sales loads by the dates in the file; the product master is periodless.
     if (!periodless) {
       fd.append('year', year);
@@ -342,6 +351,31 @@ function FeedCard({ feed, year, month, companyId, disabled, loadedRows, statusLo
         style={{ display: 'none' }}
         onChange={(e) => pick(e.target.files[0])}
       />
+
+      {feed.canCreateDealers && (
+        <Box mt={1.5}>
+          <FormControlLabel
+            control={
+              <Checkbox
+                size="small"
+                checked={createDealers}
+                disabled={disabled || uploading}
+                onChange={(e) => setCreateDealers(e.target.checked)}
+              />
+            }
+            label={
+              <Typography variant="caption" color="textSecondary">
+                Create dealers for names not yet in the system
+              </Typography>
+            }
+          />
+          <Typography variant="caption" color="textSecondary" display="block" style={{ marginLeft: 30, marginTop: -4 }}>
+            Off by default — &quot;Particulars&quot; also carries ledger lines like Cash or GST.
+            New dealers are created with no sales executive, so assign one before their
+            sales will be attributed.
+          </Typography>
+        </Box>
+      )}
 
       <Box mt={1.5}>
         <Button
