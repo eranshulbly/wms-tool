@@ -168,7 +168,7 @@ class V1DealerVisitNotes(Resource):
 
         rows = mysql_manager.execute_query(
             f"""SELECT v.visit_id, v.user_id, v.dealer_id, v.check_in_at, v.check_out_at,
-                       v.status, v.notes, v.updated_at, u.username AS author
+                       v.status, v.notes, v.updated_at, u.name AS author
                 FROM dealer_visits v
                 LEFT JOIN users u ON u.id = v.user_id
                 WHERE {' AND '.join(conds)}

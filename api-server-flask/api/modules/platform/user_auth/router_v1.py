@@ -46,17 +46,24 @@ class V1AuthStatus(Resource):
 @rest_api.route('/api/v1/auth/login')
 class V1Login(Resource):
     def post(self):
+        """Email is the only credential, on this app and the web one alike.
+
+        The installed order app still posts the identifier under the key `username`, and
+        there is no way to change that without shipping a new build — so both keys are
+        accepted, but the lookup is on EMAIL either way. A person's name is not a login:
+        typing it here fails exactly as any other wrong value would.
+        """
         body = request.get_json(silent=True) or {}
-        username = (body.get('username') or '').strip()
+        email = (body.get('email') or body.get('username') or '').strip()
         password = body.get('password') or ''
-        if not username or not password:
-            return {"detail": "username and password are required"}, 422
+        if not email or not password:
+            return {"detail": "email and password are required"}, 422
 
         rows = mysql_manager.execute_query(
-            "SELECT id, username, password, status FROM users WHERE username = %s", (username,)
+            "SELECT id, name AS username, password, status FROM users WHERE email = %s", (email,)
         )
         if not rows or not check_password_hash(rows[0]['password'], password):
-            return {"detail": "Invalid username or password"}, 401
+            return {"detail": "Invalid email or password"}, 401
 
         user = rows[0]
         if user['status'] != 'active':
@@ -131,8 +138,8 @@ class V1Users(Resource):
     def get(self, current_user):
         """List users, for admin pickers (e.g. the salesperson order filter)."""
         rows = mysql_manager.execute_query(
-            """SELECT id AS user_id, username, email, status, role
-               FROM users WHERE status = 'active' ORDER BY username"""
+            """SELECT id AS user_id, name AS username, email, status, role
+               FROM users WHERE status = 'active' ORDER BY name"""
         ) or []
         return [{
             "user_id": r['user_id'], "username": r['username'],
@@ -148,7 +155,7 @@ class V1Users(Resource):
         if len(username) < 3 or len(username) > 64 or not email or len(password) < 8:
             return {"detail": "username (3-64), email and password (min 8) are required"}, 422
 
-        if mysql_manager.execute_query("SELECT id FROM users WHERE username = %s", (username,)):
+        if mysql_manager.execute_query("SELECT id FROM users WHERE name = %s", (username,)):
             return {"detail": f"username '{username}' already exists"}, 409
         if mysql_manager.execute_query("SELECT id FROM users WHERE email = %s", (email,)):
             return {"detail": f"email '{email}' already exists"}, 409
@@ -169,14 +176,14 @@ class V1Users(Resource):
         # users.role keeps the primary role for the existing web app.
         primary_role = role_names[0] if role_names else 'viewer'
         mysql_manager.execute_query(
-            """INSERT INTO users (username, email, password, jwt_auth_active, date_joined, status, role)
+            """INSERT INTO users (name, email, password, jwt_auth_active, date_joined, status, role)
                VALUES (%s, %s, %s, %s, %s, %s, %s)""",
             (username, email, generate_password_hash(password), False,
              now_local(), 'active', primary_role),
             fetch=False,
         )
         new_user = mysql_manager.execute_query(
-            "SELECT id, username, email, status, date_joined FROM users WHERE username = %s", (username,)
+            "SELECT id, name AS username, email, status, date_joined FROM users WHERE name = %s", (username,)
         )[0]
 
         for r in roles:

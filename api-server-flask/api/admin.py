@@ -47,7 +47,7 @@ class SecureAdminIndexView(AdminIndexView):
             password = request.form.get('password', '')
 
             result = mysql_manager.execute_query(
-                "SELECT id, username, email, password, role, status FROM users WHERE email = %s",
+                "SELECT id, name AS username, email, password, role, status FROM users WHERE email = %s",
                 (email,)
             )
             if result:
@@ -97,7 +97,7 @@ class UserManagementView(SecureView):
     @expose('/')
     def index(self):
         users = mysql_manager.execute_query(
-            "SELECT id, username, email, status, role, date_joined FROM users ORDER BY date_joined DESC"
+            "SELECT id, name AS username, email, status, role, date_joined FROM users ORDER BY date_joined DESC"
         )
         roles = mysql_manager.execute_query("SELECT name FROM roles ORDER BY name")
         role_names = [r['name'] for r in roles]
@@ -165,14 +165,14 @@ class AccessManagementView(SecureView):
     @expose('/')
     def index(self):
         users = mysql_manager.execute_query(
-            "SELECT id, username, email, role, status FROM users WHERE status='active' ORDER BY username"
+            "SELECT id, name AS username, email, role, status FROM users WHERE status='active' ORDER BY name"
         )
         return self.render('admin/access.html', users=users)
 
     @expose('/user/<int:user_id>')
     def user_access(self, user_id):
         user = mysql_manager.execute_query(
-            "SELECT id, username, email, role FROM users WHERE id=%s", (user_id,)
+            "SELECT id, name AS username, email, role FROM users WHERE id=%s", (user_id,)
         )
         if not user:
             flash('User not found.', 'danger')

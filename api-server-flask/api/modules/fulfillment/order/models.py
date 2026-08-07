@@ -162,7 +162,7 @@ class PotentialOrder(MySQLModel):
         pf_sql, pf_params = partition_filter('potential_order', alias='po')
         cf_sql, cf_params = company_filter_sql(company_ids, alias='po')
         query = f"""
-        SELECT po.*, d.name as dealer_name, u.username as assigned_username
+        SELECT po.*, d.name as dealer_name, u.name as assigned_username
         FROM potential_order po
         LEFT JOIN dealer d ON po.dealer_id = d.dealer_id
         LEFT JOIN users u ON po.requested_by = u.id

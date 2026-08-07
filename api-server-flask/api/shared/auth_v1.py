@@ -51,7 +51,7 @@ def _resolve_current_user():
         return None, _unauthenticated("Invalid or expired token")
 
     rows = mysql_manager.execute_query(
-        "SELECT id, username, email, status FROM users WHERE id = %s", (user_id,)
+        "SELECT id, name AS username, email, status FROM users WHERE id = %s", (user_id,)
     )
     if not rows or rows[0]['status'] != 'active':
         return None, _unauthenticated("Account not active")

@@ -26,6 +26,8 @@ import {
   TableHead,
   TableRow,
   Snackbar,
+  TextField,
+  Link as MuiLink,
 } from '@material-ui/core';
 import { makeStyles } from '@material-ui/styles';
 import {
@@ -73,15 +75,19 @@ const FEEDS = [
     label: 'Part Group Mapping',
     table: 'part_groups',
     color: '#2e7d32',
-    blurb: 'Part → part-group → scheme mapping for the month. Replaces the whole mapping for the selected period.',
+    needsScheme: true,
+    blurb:
+      'One scheme at a time. Pick the scheme and month first — the scheme is not read from '
+      + 'the file — then upload the parts that belong to it. Uploading replaces that scheme for '
+      + 'the selected month only; the other schemes in that month are left alone.',
     columns: [
       { name: 'Part number', required: true, note: 'Matches the part number in sales data' },
-      { name: 'Part Group', required: true, note: 'Group this part rolls up to' },
-      { name: 'Scheme', required: false, note: 'PG / Basket 1 / Basket 2 / Ancillary / Chainsets' },
+      { name: 'Part Group', required: false, note: 'Group this part rolls up to. Leave blank and the scheme name is used.' },
     ],
     sample: [
-      ['20K1010S', 'Chain Sprocket Kit', 'PG'],
-      ['43120365H70S', 'Brake Shoe', 'PG'],
+      ['20K1010S', 'Chain Sprocket Kit'],
+      ['43120365H70S', 'Brake Shoe'],
+      ['14100KCC910S', ''],
     ],
   },
   {
@@ -159,6 +165,10 @@ const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
+// Sentinel for the "add a new scheme" row. Not a valid scheme name, so it can never
+// collide with a real one.
+const NEW_SCHEME = '__new__';
+
 const NOW_YEAR = 2026;
 const YEARS = [NOW_YEAR - 2, NOW_YEAR - 1, NOW_YEAR, NOW_YEAR + 1];
 
@@ -187,6 +197,14 @@ const useStyles = makeStyles((theme) => ({
     flexDirection: 'column',
     borderTop: '4px solid',
   },
+  // The scheme sits in its own tinted band so it reads as part of the period context
+  // above it, not as one more field inside the upload form.
+  schemeBar: {
+    padding: theme.spacing(1.5),
+    borderRadius: theme.shape.borderRadius,
+    backgroundColor: theme.palette.grey[50],
+    border: `1px solid ${theme.palette.divider}`,
+  },
   dropZone: {
     border: `2px dashed ${theme.palette.divider}`,
     borderRadius: theme.shape.borderRadius,
@@ -207,7 +225,9 @@ const useStyles = makeStyles((theme) => ({
 // ---------------------------------------------------------------------------
 // Single feed upload card
 // ---------------------------------------------------------------------------
-function FeedCard({ feed, year, month, companyId, disabled, loadedRows, statusLoading, statusError, onUploaded, onSnack }) {
+function FeedCard({ feed, year, month, companyId, schemes, disabled, loadedRows, statusLoading, statusError, onUploaded, onSnack }) {
+  const [scheme, setScheme] = useState('');
+  const [addingScheme, setAddingScheme] = useState(false);
   const classes = useStyles();
   const inputRef = useRef(null);
   const [file, setFile] = useState(null);
@@ -253,6 +273,8 @@ function FeedCard({ feed, year, month, companyId, disabled, loadedRows, statusLo
       fd.append('year', year);
       fd.append('month', month);
     }
+    // The scheme is an operator choice, not a column — one upload is one basket.
+    if (feed.needsScheme) fd.append('scheme', scheme);
     try {
       const res = await api.post(`admin/monthly/${feed.id}`, fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
@@ -331,9 +353,71 @@ function FeedCard({ feed, year, month, companyId, disabled, loadedRows, statusLo
         </Box>
       )}
 
-      {/* Drop zone */}
+      {/* One upload is one scheme, and the scheme decides what the upload REPLACES — so
+          it is answered before the file is chosen, not after. A closed list, so a typo
+          can't silently create a stray basket that nothing rolls up to. There is no
+          scheme master table, though, so "add a new scheme" has to stay reachable —
+          it is an explicit choice in the list rather than free typing. */}
+      {feed.needsScheme && (
+        <Box className={classes.schemeBar} mt={1.5}>
+          {addingScheme ? (
+            <TextField
+              fullWidth
+              size="small"
+              autoFocus
+              label="New scheme name"
+              value={scheme}
+              onChange={(e) => setScheme(e.target.value)}
+              helperText={
+                <>
+                  Creates the scheme on upload.{' '}
+                  <MuiLink component="button" type="button" onClick={() => { setAddingScheme(false); setScheme(''); }}>
+                    Pick an existing one instead
+                  </MuiLink>
+                </>
+              }
+            />
+          ) : (
+            <TextField
+              select
+              fullWidth
+              size="small"
+              required
+              label="Scheme"
+              value={scheme}
+              onChange={(e) => {
+                if (e.target.value === NEW_SCHEME) {
+                  setAddingScheme(true);
+                  setScheme('');
+                } else {
+                  setScheme(e.target.value);
+                }
+              }}
+              helperText={
+                // The period comes from the selector above, so name it here — this pair
+                // is the whole scope of what the upload is about to overwrite.
+                scheme
+                  ? `Replaces "${scheme}" for ${MONTHS[month - 1]} ${year} only`
+                  : 'Pick the scheme this file belongs to'
+              }
+            >
+              {schemes.map((x) => (
+                <MenuItem key={x.name} value={x.name}>{x.name}</MenuItem>
+              ))}
+              {schemes.length === 0 && (
+                <MenuItem disabled value="">No schemes loaded yet</MenuItem>
+              )}
+              <MenuItem value={NEW_SCHEME}>＋ Add a new scheme…</MenuItem>
+            </TextField>
+          )}
+        </Box>
+      )}
+
+      {/* Drop zone — after the scheme, because the file is meaningless without it. */}
       <Box
-        className={`${classes.dropZone} ${disabled ? classes.dropZoneDisabled : ''}`}
+        className={`${classes.dropZone} ${disabled ? classes.dropZoneDisabled : ''} ${
+          feed.needsScheme && !scheme.trim() ? classes.dropZoneDisabled : ''
+        }`}
         onClick={() => inputRef.current?.click()}
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => { e.preventDefault(); pick(e.dataTransfer.files[0]); }}
@@ -342,7 +426,9 @@ function FeedCard({ feed, year, month, companyId, disabled, loadedRows, statusLo
         <Typography variant="body2" style={{ marginTop: 4 }}>
           {file ? file.name : 'Drop file or click to browse'}
         </Typography>
-        <Typography variant="caption" color="textSecondary">CSV · XLS · XLSX</Typography>
+        <Typography variant="caption" color="textSecondary">
+          {feed.needsScheme && !scheme.trim() ? 'Pick a scheme first' : 'CSV · XLS · XLSX'}
+        </Typography>
       </Box>
       <input
         ref={inputRef}
@@ -381,7 +467,7 @@ function FeedCard({ feed, year, month, companyId, disabled, loadedRows, statusLo
         <Button
           fullWidth
           variant="contained"
-          disabled={disabled || !file || uploading}
+          disabled={disabled || !file || uploading || (feed.needsScheme && !scheme.trim())}
           onClick={upload}
           startIcon={uploading ? <CircularProgress size={15} color="inherit" /> : <IconUpload size={16} />}
           style={{ backgroundColor: disabled || !file ? undefined : feed.color, color: disabled || !file ? undefined : '#fff' }}
@@ -529,6 +615,8 @@ function FeedCard({ feed, year, month, companyId, disabled, loadedRows, statusLo
 const MonthlyDataUpload = () => {
   const classes = useStyles();
   const { companies, selectedCompany, setSelectedCompany } = useWarehouse();
+  // Scheme names already in use, for the Part Group Mapping dropdown.
+  const [schemes, setSchemes] = useState([]);
   const [tab, setTab] = useState(0);
   const [year, setYear] = useState(NOW_YEAR);
   const [month, setMonth] = useState(7); // July
@@ -540,7 +628,11 @@ const MonthlyDataUpload = () => {
   const showSnack = (msg, severity = 'success') => setSnack({ open: true, msg, severity });
 
   const fetchStatus = useCallback(async () => {
-    if (!selectedCompany) { setStatus({}); setStatusLoading(false); return; }
+    if (!selectedCompany) { setStatus({}); setStatusLoading(false); setSchemes([]); return; }
+    api
+      .get('admin/monthly/schemes', { params: { company_id: selectedCompany } })
+      .then((r) => setSchemes(r.data.success ? r.data.schemes : []))
+      .catch(() => setSchemes([]));
     setStatusLoading(true);
     try {
       // Scoped to the selected company so "already loaded" describes the rows this
@@ -679,6 +771,7 @@ const MonthlyDataUpload = () => {
         year={year}
         month={month}
         companyId={selectedCompany}
+        schemes={schemes}
         disabled={!selectedCompany || ((activeFeed.byDateRange || activeFeed.noPeriod) ? false : !ready)}
         loadedRows={status[activeFeed.id]?.[periodKey] || 0}
         statusLoading={statusLoading}

@@ -112,7 +112,7 @@ class UploadBatchList(Resource):
                     ub.reverted_at,
                     w.name       AS warehouse_name,
                     c.name       AS company_name,
-                    u.username   AS uploaded_by_name,
+                    u.name   AS uploaded_by_name,
                     rv.username  AS reverted_by_name
                 FROM upload_batches ub
                 LEFT JOIN warehouse w  ON ub.warehouse_id = w.warehouse_id
@@ -936,3 +936,189 @@ class AdminProductNickname(Resource):
         except Exception as e:
             logger.exception("Error in PATCH /api/admin/products/<product_id>/nickname")
             return {'success': False, 'msg': f'Error updating nickname: {str(e)}'}, 400
+
+
+# ---------------------------------------------------------------------------
+# User management — admin only
+#
+# Until now the web app could not create a user at all. A person could only get an
+# account by self-registering (/api/users/register), which lands them 'pending' with the
+# 'viewer' role, and then being approved from the separate Flask-Admin panel. The mobile
+# API could create users properly (POST /api/v1/auth/users) but needs a mobile JWT, so an
+# admin at a desk had no route to it. These endpoints close that gap for the web app.
+#
+# `status` matters more than it looks: the mobile app refuses to log in unless it is
+# exactly 'active', while the web app accepts anything that is not 'pending'. Creating a
+# user 'active' is therefore the only value that works for both, and is the default here.
+# ---------------------------------------------------------------------------
+
+VALID_STATUSES = ('active', 'pending', 'blocked')
+
+
+def _role_map():
+    return {r['name']: r['role_id'] for r in
+            (mysql_manager.execute_query("SELECT role_id, name FROM roles") or [])}
+
+
+@rest_api.route('/api/admin/users')
+class AdminUsers(Resource):
+    """GET  — every user with role, status and scope grants.
+       POST — create a user and their login."""
+
+    @token_required
+    @active_required
+    @_admin_required
+    def get(self, current_user):
+        try:
+            rows = mysql_manager.execute_query(
+                """SELECT u.id, u.name, u.email, u.status, u.role, u.date_joined,
+                          (SELECT GROUP_CONCAT(DISTINCT r2.name ORDER BY r2.name SEPARATOR ', ')
+                             FROM user_roles ur JOIN roles r2 ON r2.role_id = ur.role_id
+                            WHERE ur.user_id = u.id) AS roles,
+                          (SELECT COUNT(*) FROM user_warehouse_company uwc
+                            WHERE uwc.user_id = u.id) AS grants
+                   FROM users u ORDER BY u.date_joined DESC""") or []
+            roles = mysql_manager.execute_query(
+                "SELECT role_id, name, description FROM roles ORDER BY name") or []
+            return {'success': True,
+                    'users': [{
+                        'id': r['id'], 'name': r['name'], 'email': r['email'],
+                        'status': r['status'], 'role': r['role'],
+                        'roles': r['roles'] or r['role'], 'grants': r['grants'],
+                        'date_joined': r['date_joined'].isoformat() if r['date_joined'] else None,
+                    } for r in rows],
+                    'roles': [{'id': r['role_id'], 'name': r['name'],
+                               'description': r['description']} for r in roles]}, 200
+        except Exception as e:
+            logger.exception('Error listing users')
+            return {'success': False, 'msg': str(e)}, 400
+
+    @token_required
+    @active_required
+    @_admin_required
+    def post(self, current_user):
+        from werkzeug.security import generate_password_hash
+        body = request.get_json(silent=True) or {}
+        # `name` is the person's display name; `email` is the credential. The request
+        # still accepts `username` as an alias so nothing calling the older shape breaks.
+        name = (body.get('name') or body.get('username') or '').strip()
+        email = (body.get('email') or '').strip()
+        password = body.get('password') or ''
+        role = (body.get('role') or 'viewer').strip()
+        status = (body.get('status') or 'active').strip()
+
+        if not 3 <= len(name) <= 32:
+            return {'success': False, 'msg': 'Name must be 3–32 characters.'}, 422
+        # Email is the login for both apps, so an account without one cannot sign in.
+        if '@' not in email or len(email) > 64:
+            return {'success': False, 'msg': 'A valid email is required — it is the login.'}, 422
+        # The web login model caps the password at 16, so a longer one would be created
+        # here and then rejected at sign-in — bound it to what can actually be used.
+        if not 8 <= len(password) <= 16:
+            return {'success': False, 'msg': 'Password must be 8–16 characters.'}, 422
+        if status not in VALID_STATUSES:
+            return {'success': False, 'msg': f'status must be one of {", ".join(VALID_STATUSES)}'}, 422
+
+        roles = _role_map()
+        if role not in roles:
+            return {'success': False, 'msg': f'Unknown role "{role}".'}, 422
+        if mysql_manager.execute_query("SELECT id FROM users WHERE email = %s", (email,)):
+            return {'success': False, 'msg': f'Email "{email}" already has an account.'}, 409
+
+        try:
+            mysql_manager.execute_query(
+                """INSERT INTO users (name, email, password, jwt_auth_active,
+                                      date_joined, status, role)
+                   VALUES (%s, %s, %s, 0, %s, %s, %s)""",
+                (name, email, generate_password_hash(password),
+                 datetime.utcnow(), status, role), fetch=False)
+            new_id = mysql_manager.execute_query(
+                "SELECT id FROM users WHERE email = %s", (email,))[0]['id']
+
+            # users.role is the legacy single-role column; user_roles is what the unified
+            # RBAC reads. Write both, or the user's permissions fall back to legacy
+            # defaults and quietly differ from the role that was chosen.
+            mysql_manager.execute_query(
+                "INSERT IGNORE INTO user_roles (user_id, role_id) VALUES (%s, %s)",
+                (new_id, roles[role]), fetch=False)
+
+            # Warehouse/company scope. Grants are (warehouse, company) pairs because
+            # company_id is NOT NULL; a warehouse list alone cannot be stored.
+            grants = body.get('grants') or []
+            if not grants:
+                wids, cids = body.get('warehouse_ids') or [], body.get('company_ids') or []
+                grants = [{'warehouse_id': w, 'company_id': c} for w in wids for c in cids]
+            for g in grants:
+                mysql_manager.execute_query(
+                    """INSERT IGNORE INTO user_warehouse_company (user_id, warehouse_id, company_id)
+                       VALUES (%s, %s, %s)""",
+                    (new_id, g.get('warehouse_id'), g.get('company_id')), fetch=False)
+
+            logger.info('admin %s created user %s <%s> (%s)', current_user.id, name, email, role)
+            return {'success': True, 'id': new_id, 'name': name, 'email': email,
+                    'role': role, 'status': status, 'grants': len(grants),
+                    'msg': f'User "{name}" created — they sign in with {email}.'}, 201
+        except Exception as e:
+            logger.exception('Error creating user')
+            return {'success': False, 'msg': str(e)}, 400
+
+
+@rest_api.route('/api/admin/users/<int:user_id>')
+class AdminUserDetail(Resource):
+    """Change a user's role, status, or password. Only the fields sent are touched."""
+
+    @token_required
+    @active_required
+    @_admin_required
+    def put(self, current_user, user_id):
+        from werkzeug.security import generate_password_hash
+        body = request.get_json(silent=True) or {}
+        row = mysql_manager.execute_query(
+            "SELECT id, name, role FROM users WHERE id = %s", (user_id,))
+        if not row:
+            return {'success': False, 'msg': 'User not found.'}, 404
+
+        sets, params, changed = [], [], []
+        if 'status' in body:
+            status = (body.get('status') or '').strip()
+            if status not in VALID_STATUSES:
+                return {'success': False, 'msg': f'status must be one of {", ".join(VALID_STATUSES)}'}, 422
+            # An admin locking themselves out is a support call, not a feature.
+            if user_id == current_user.id and status != 'active':
+                return {'success': False, 'msg': 'You cannot change your own status.'}, 422
+            sets.append('status = %s'); params.append(status); changed.append('status')
+        if 'role' in body:
+            role = (body.get('role') or '').strip()
+            roles = _role_map()
+            if role not in roles:
+                return {'success': False, 'msg': f'Unknown role "{role}".'}, 422
+            if user_id == current_user.id and role != row[0]['role']:
+                return {'success': False, 'msg': 'You cannot change your own role.'}, 422
+            sets.append('role = %s'); params.append(role); changed.append('role')
+        if 'password' in body:
+            pw = body.get('password') or ''
+            if not 8 <= len(pw) <= 16:
+                return {'success': False, 'msg': 'Password must be 8–16 characters.'}, 422
+            sets.append('password = %s'); params.append(generate_password_hash(pw))
+            changed.append('password')
+
+        if not sets:
+            return {'success': False, 'msg': 'Nothing to update.'}, 422
+        try:
+            mysql_manager.execute_query(
+                f"UPDATE users SET {', '.join(sets)} WHERE id = %s",
+                tuple(params + [user_id]), fetch=False)
+            # Keep user_roles in step with the legacy column, as on create.
+            if 'role' in body:
+                roles = _role_map()
+                mysql_manager.execute_query(
+                    "DELETE FROM user_roles WHERE user_id = %s", (user_id,), fetch=False)
+                mysql_manager.execute_query(
+                    "INSERT IGNORE INTO user_roles (user_id, role_id) VALUES (%s, %s)",
+                    (user_id, roles[body['role'].strip()]), fetch=False)
+            logger.info('admin %s updated user %s: %s', current_user.id, user_id, changed)
+            return {'success': True, 'msg': f"Updated {', '.join(changed)} for "
+                                            f"\"{row[0]['name']}\"."}, 200
+        except Exception as e:
+            logger.exception('Error updating user')
+            return {'success': False, 'msg': str(e)}, 400

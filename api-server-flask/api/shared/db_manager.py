@@ -319,14 +319,17 @@ def create_all_tables():
     users_sql = """
     CREATE TABLE IF NOT EXISTS users (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        username VARCHAR(32) NOT NULL,
-        email VARCHAR(64) UNIQUE,
+        -- `name` is the person's display name, NOT a credential. Email is the only
+        -- login, on the web app and the order app alike, which is why it is NOT NULL
+        -- and UNIQUE while name is neither.
+        name VARCHAR(32) NOT NULL,
+        email VARCHAR(64) NOT NULL UNIQUE,
         password TEXT,
         jwt_auth_active BOOLEAN DEFAULT FALSE,
         date_joined DATETIME DEFAULT CURRENT_TIMESTAMP,
         status VARCHAR(20) DEFAULT 'pending',
         role VARCHAR(20) DEFAULT 'viewer',
-        INDEX idx_users_username (username),
+        INDEX idx_users_name (name),
         INDEX idx_users_email (email)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
@@ -805,7 +808,40 @@ def create_all_tables():
 
 
 def _migrate_users_table():
-    """Add status and role columns to existing users table if missing"""
+    """Bring an existing users table up to the current shape (idempotent).
+
+    Besides status/role, this renames `username` -> `name`. The column never held a
+    credential — email is the login for both apps — and calling it username invited
+    exactly the confusion of trying to sign in with it. Email also becomes NOT NULL,
+    since a user without one could never log in at all.
+    """
+    try:
+        has_username = mysql_manager.execute_query(
+            """SELECT 1 FROM information_schema.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'
+                 AND COLUMN_NAME = 'username'""")
+        if has_username:
+            mysql_manager.execute_query(
+                "ALTER TABLE users CHANGE COLUMN username name VARCHAR(32) NOT NULL",
+                fetch=False)
+            logger.info("users: renamed column username -> name")
+    except Exception:
+        logger.exception("users: could not rename username -> name")
+
+    try:
+        # Only tighten email once every row has one — an ALTER against NULLs would fail
+        # and, worse, a silent skip would leave a user who can never sign in.
+        nulls = mysql_manager.execute_query(
+            "SELECT COUNT(*) AS n FROM users WHERE email IS NULL OR email = ''")
+        if nulls and not nulls[0]['n']:
+            mysql_manager.execute_query(
+                "ALTER TABLE users MODIFY COLUMN email VARCHAR(64) NOT NULL", fetch=False)
+        elif nulls:
+            logger.warning("users: %s row(s) have no email; leaving the column nullable "
+                           "— those accounts cannot log in", nulls[0]['n'])
+    except Exception:
+        logger.exception("users: could not make email NOT NULL")
+
     try:
         mysql_manager.execute_query(
             "ALTER TABLE users ADD COLUMN status VARCHAR(20) DEFAULT 'pending'",

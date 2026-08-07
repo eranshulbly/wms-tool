@@ -142,7 +142,7 @@ class TTDashboard(Resource):
                 out['schemes'] = tt.by_category(s, 'scheme')
                 out['opportunity'] = tt.opportunity(s, s.dealers[0])
                 d = mysql_manager.execute_query(
-                    """SELECT d.dealer_id, d.name, d.dealer_code, d.town, u.username AS exec_name
+                    """SELECT d.dealer_id, d.name, d.dealer_code, d.town, u.name AS exec_name
                        FROM dealer d LEFT JOIN users u ON u.id = d.sales_executive_id
                        WHERE d.dealer_id = %s""", (s.dealers[0],))
                 out['dealer'] = d[0] if d else None

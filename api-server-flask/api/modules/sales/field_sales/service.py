@@ -210,11 +210,11 @@ def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None
         tuple(dcparams)) or [{'n': 0}])[0]['n']
 
     by_executive = mysql_manager.execute_query(
-        f"""SELECT u.id AS user_id, u.username,
+        f"""SELECT u.id AS user_id, u.name,
                    SUM({_SALES}) AS sales, SUM(b.quantity) AS qty
             {_base(company_id)} JOIN users u ON u.id = d.sales_executive_id
             WHERE {where}
-            GROUP BY u.id, u.username ORDER BY sales DESC""", params) or []
+            GROUP BY u.id, u.name ORDER BY sales DESC""", params) or []
 
     by_dealer = mysql_manager.execute_query(
         f"""SELECT d.dealer_id, d.name AS dealer,

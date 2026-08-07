@@ -16,7 +16,10 @@ class Users(MySQLModel):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.id = kwargs.get('id')
-        self.username = kwargs.get('username')
+        # The column is `name`; `username` is still accepted so callers built from the
+        # older key keep working. Falling back to None here is what previously let
+        # save() write a NULL over a loaded row.
+        self.name = kwargs.get('name', kwargs.get('username'))
         self.email = kwargs.get('email')
         self.password = kwargs.get('password')
         self.jwt_auth_active = kwargs.get('jwt_auth_active', False)
@@ -28,19 +31,19 @@ class Users(MySQLModel):
         """Save user to database"""
         if self.id:
             mysql_manager.execute_query(
-                """UPDATE users SET username=%s, email=%s, password=%s,
+                """UPDATE users SET name=%s, email=%s, password=%s,
                    jwt_auth_active=%s, status=%s, role=%s WHERE id=%s""",
-                (self.username, self.email, self.password,
+                (self.name, self.email, self.password,
                  self.jwt_auth_active, self.status, self.role, self.id),
                 fetch=False
             )
         else:
             with mysql_manager.get_cursor() as cursor:
                 cursor.execute(
-                    """INSERT INTO users (username, email, password, jwt_auth_active,
+                    """INSERT INTO users (name, email, password, jwt_auth_active,
                        date_joined, status, role)
                        VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                    (self.username, self.email, self.password, self.jwt_auth_active,
+                    (self.name, self.email, self.password, self.jwt_auth_active,
                      self.date_joined or datetime.utcnow(), self.status, self.role)
                 )
                 self.id = cursor.lastrowid
@@ -57,9 +60,14 @@ class Users(MySQLModel):
         """Update email"""
         self.email = new_email
 
+    @property
+    def username(self):
+        """Legacy alias for `name`, kept so existing callers and JSON keys still work."""
+        return self.name
+
     def update_username(self, new_username):
-        """Update username"""
-        self.username = new_username
+        """Update the display name."""
+        self.name = new_username
 
     def check_jwt_auth_active(self):
         """Check if JWT auth is active"""
@@ -93,7 +101,7 @@ class Users(MySQLModel):
     def get_by_username(cls, username):
         """Get user by username"""
         result = mysql_manager.execute_query(
-            "SELECT * FROM users WHERE username = %s", (username,)
+            "SELECT * FROM users WHERE name = %s", (username,)
         )
         if result:
             return cls(**result[0])
@@ -103,7 +111,7 @@ class Users(MySQLModel):
         """Convert to JSON"""
         return {
             '_id': self.id,
-            'username': self.username,
+            'username': self.name,
             'email': self.email
         }
 

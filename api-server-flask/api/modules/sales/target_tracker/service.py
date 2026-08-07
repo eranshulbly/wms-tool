@@ -514,10 +514,10 @@ def by_executive(scope):
     """Sales by executive (§5.3). Worst achievement first, no-target rows last (§9.1)."""
     dwhere, dparams = scope.dealer_where()
     execs = mysql_manager.execute_query(
-        f"""SELECT u.id AS exec_id, u.username,
+        f"""SELECT u.id AS exec_id, u.name,
                    COUNT(DISTINCT d.dealer_id) AS dealers
             FROM dealer d JOIN users u ON u.id = d.sales_executive_id
-            WHERE {dwhere} GROUP BY u.id, u.username""", tuple(dparams)) or []
+            WHERE {dwhere} GROUP BY u.id, u.name""", tuple(dparams)) or []
 
     q, p = scope.sql("d.sales_executive_id AS k, "
                      "COUNT(DISTINCT CASE WHEN b.quantity > 0 THEN d.dealer_id END) AS billed",
@@ -533,7 +533,7 @@ def by_executive(scope):
         v = visits.get(e['exec_id'], {'visits': 0, 'avg_minutes': None})
         cats = cells.get(e['exec_id'], {})
         out.append({
-            'id': e['exec_id'], 'name': e['username'],
+            'id': e['exec_id'], 'name': e['name'],
             'dealers': e['dealers'], 'billed': billed.get(e['exec_id'], {}).get('billed', 0) or 0,
             'cats': cats,
             'visits': v['visits'], 'avg_minutes': v['avg_minutes'],
@@ -546,7 +546,7 @@ def by_dealer(scope):
     """Dealers under the current scope (§6.1). Same ordering rule as executives."""
     dwhere, dparams = scope.dealer_where()
     dealers = mysql_manager.execute_query(
-        f"""SELECT d.dealer_id, d.name, u.username AS exec_name
+        f"""SELECT d.dealer_id, d.name, u.name AS exec_name
             FROM dealer d LEFT JOIN users u ON u.id = d.sales_executive_id
             WHERE {dwhere}""", tuple(dparams)) or []
     visits = visit_stats(scope, by='dealer')

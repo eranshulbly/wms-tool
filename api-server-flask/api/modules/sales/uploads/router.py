@@ -520,20 +520,38 @@ def _load_sales(df, company_id, create_missing_dealers=False):
     return replaced, inserted, skipped, errors, warnings, covered, created_dealers
 
 
-def _load_part_groups(df, period_date, year, month, label, company_id):
-    required = ['Part number', 'Part Group']
+def _load_part_groups(df, period_date, year, month, label, company_id, scheme):
+    """Load one scheme's part-group mapping for one period.
+
+    The scheme is chosen in the UI, not read from the file: a single upload is one
+    basket, and taking it from a column let a file quietly write into schemes the
+    uploader never intended.
+
+    The file supplies Part number and, optionally, Part Group. A row with no part group
+    takes the SCHEME NAME as its group — that is the case where a basket is not broken
+    into groups, and it keeps every row groupable rather than leaving nulls that fall out
+    of every roll-up.
+
+    Replacement is scoped to (period, scheme): loading Basket 1 leaves Basket 2 and PG
+    for that month untouched.
+    """
+    required = ['Part number']
     df, err = resolve_required_columns(df, required)
     if err:
         raise ValueError(err)
-    # Sr. No. and Description are no longer taken from this feed. A file that still
-    # carries those columns loads fine — anything not resolved here is simply ignored.
-    df, _ = resolve_required_columns(df, ['Scheme'])
+    # Part Group is optional; Sr. No. / Description / Scheme columns are ignored if
+    # present, so an older file still loads.
+    df, _ = resolve_required_columns(df, ['Part Group'])
+
+    scheme = (scheme or '').strip()
+    if not scheme:
+        raise ValueError('A scheme must be selected for this upload')
 
     def _cell(row, name):
         value = row.get(name)
         return '' if value is None or pd.isna(value) else str(value).strip()
 
-    # A part maps to exactly one group per period, and uq_period_part enforces that — so a
+    # A part maps to exactly one row per period, and uq_period_part enforces that — so a
     # file naming the same part on several rows fails every row after the first with a
     # duplicate-key error the operator cannot act on. Decide the winner here instead: the
     # later row is the correction, so keep the last occurrence of each part and report the
@@ -546,11 +564,20 @@ def _load_part_groups(df, period_date, year, month, label, company_id):
             last_row_for[part] = idx
     superseded = []
 
-    inserted, skipped, errors = 0, 0, []
+    inserted, skipped, errors, moved = 0, 0, [], 0
     with mysql_manager.get_cursor() as cur:
-        cur.execute("DELETE FROM part_groups WHERE time_period=%s AND company_id=%s",
-                    (period_date, company_id))
+        cur.execute(
+            "DELETE FROM part_groups WHERE time_period=%s AND company_id=%s AND scheme=%s",
+            (period_date, company_id, scheme))
         replaced = cur.rowcount
+
+        # Which parts already sit in a DIFFERENT scheme this period. uq_period_part means
+        # a part belongs to exactly one scheme per month, so loading it here moves it —
+        # counted and reported rather than done silently.
+        existing = {r['part_number']: r['scheme'] for r in (mysql_manager.execute_query(
+            "SELECT part_number, scheme FROM part_groups WHERE time_period=%s AND company_id=%s",
+            (period_date, company_id)) or [])}
+
         for idx, row in df.iterrows():
             row_num = idx + 2
             part = _cell(row, 'Part number')
@@ -562,19 +589,27 @@ def _load_part_groups(df, period_date, year, month, label, company_id):
                 superseded.append((row_num, part))
                 skipped += 1
                 continue
+            if part in existing:
+                moved += 1
             try:
                 cur.execute(
                     """INSERT INTO part_groups
                        (part_number, part_group, scheme, time_period,
                         company_id, created_at)
-                       VALUES (%s,%s,%s,%s,%s,%s)""",
-                    (part, group or None, _cell(row, 'Scheme') or None,
+                       VALUES (%s,%s,%s,%s,%s,%s)
+                       ON DUPLICATE KEY UPDATE
+                         part_group = VALUES(part_group), scheme = VALUES(scheme)""",
+                    (part, group or scheme, scheme,
                      period_date, company_id, datetime.utcnow()))
                 inserted += 1
             except Exception as e:
                 errors.append({'row': row_num, 'key': part, 'reason': str(e)})
 
-    warnings = []
+    warnings = [f'Replaced the "{scheme}" mapping for {label}; other schemes in this '
+                f'period were left untouched.']
+    if moved:
+        warnings.append(f'{moved} part(s) were already mapped to another scheme this '
+                        f'period and have been moved into "{scheme}".')
     if superseded:
         listed = '; '.join(f'row {r} ({p})' for r, p in superseded[:10])
         if len(superseded) > 10:
@@ -1141,6 +1176,35 @@ class MonthlyStatus(Resource):
             return {'success': False, 'msg': str(e)}, 400
 
 
+@rest_api.route('/api/admin/monthly/schemes')
+class MonthlySchemes(Resource):
+    """Scheme names already in use, for the Part Group Mapping dropdown.
+
+    There is no scheme master table — a scheme exists because part_groups rows name it.
+    So this lists what is actually in use and the UI also allows a new name to be typed,
+    which is the only way a new basket can ever be introduced.
+    """
+
+    @token_required
+    @active_required
+    @_admin_required
+    def get(self, current_user):
+        try:
+            rows = mysql_manager.execute_query(
+                """SELECT scheme, COUNT(DISTINCT part_number) AS parts,
+                          COUNT(DISTINCT time_period) AS periods
+                   FROM part_groups
+                   WHERE company_id = %s AND scheme IS NOT NULL AND scheme <> ''
+                   GROUP BY scheme ORDER BY scheme""",
+                (_company(current_user, request.args.get('company_id', type=int)),)) or []
+            return {'success': True, 'schemes': [
+                {'name': r['scheme'], 'parts': r['parts'], 'periods': r['periods']}
+                for r in rows]}, 200
+        except Exception as e:
+            logger.exception('Error listing schemes')
+            return {'success': False, 'msg': str(e)}, 400
+
+
 @rest_api.route('/api/admin/monthly/<string:feed>')
 class MonthlyUpload(Resource):
     """Replace one period's data for a monthly feed. Form: file, year, month."""
@@ -1228,7 +1292,8 @@ class MonthlyUpload(Resource):
         try:
             if feed == 'part-groups':
                 replaced, inserted, skipped, errors, warnings = _load_part_groups(
-                    df, period_date, year, month, label, company_id)
+                    df, period_date, year, month, label, company_id,
+                    request.form.get('scheme'))
             elif feed == 'qty-targets':
                 replaced, inserted, skipped, errors, warnings = _load_qty_targets(
                     df, period_date, year, month, label, company_id)

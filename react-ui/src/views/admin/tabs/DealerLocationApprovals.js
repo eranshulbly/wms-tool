@@ -108,7 +108,7 @@ function SubmissionPhoto({ submissionId, className, onOpen }) {
   return <img src={url} alt="Dealer shopfront" className={className} onClick={() => onOpen(url)} />;
 }
 
-export default function DealerLocationApprovals() {
+export default function DealerLocationApprovals({ onChanged }) {
   const classes = useStyles();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -150,6 +150,9 @@ export default function DealerLocationApprovals() {
       );
       // Drop the row locally; it is no longer pending.
       setRows((prev) => prev.filter((r) => r.submission_id !== row.submission_id));
+      // Approving here also activates a rep-proposed dealer, so the Dealer approvals
+      // list next door is now stale.
+      if (onChanged) onChanged();
     } catch (e) {
       setError(e?.response?.data?.msg || e.message || 'Action failed');
     } finally {

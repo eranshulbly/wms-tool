@@ -35,7 +35,7 @@ class UserRepository(BaseRepository):
         """Return a Users instance by username, or None."""
         from api.models import Users
         rows = self._db.execute_query(
-            "SELECT * FROM users WHERE username = %s", (username,)
+            "SELECT * FROM users WHERE name = %s", (username,)
         )
         return Users(**rows[0]) if rows else None
 
