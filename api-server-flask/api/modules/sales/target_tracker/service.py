@@ -1,11 +1,11 @@
 # -*- encoding: utf-8 -*-
 """Target Tracker computation — every number on the Target Tracker screen.
 
-Reads only real data: busy_sales_data (billed lines), dealer_part_group_target
-(quantity targets), dealer_money_target (value targets), part_groups (monthly scheme
-and part-group mapping), dealer/product/categories masters, dealer_visits.
+Reads only real data: busy_sales_data (billed lines), dealer_target (EVERY
+target — category, scheme and part-group level, in rupees or units), part_groups (monthly
+scheme and part-group mapping), dealer/product/categories masters, dealer_visits.
 
-Three rules govern everything here and are implemented in one place each, so they
+Four rules govern everything here and are implemented in one place each, so they
 cannot drift between screens:
 
   Pro-rating (§3.1) — a finished month contributes its whole target; the running month
@@ -14,12 +14,17 @@ cannot drift between screens:
   month separately, so an unfinished month can never inflate the total.
 
   What carries a target (§3.2) — decided by the DATA, never by a hard-coded category
-  list (§10.8): a category or scheme is "targeted" when quantity-target rows exist for
-  it in scope. Everything else is sales-only and must render as "no target" / "—",
-  never as a red 0% (§3.3).
+  list (§10.8): a category or scheme is "targeted" when target rows exist for it in
+  scope. Everything else is sales-only and must render as "no target" / "—", never as a
+  red 0% (§3.3).
 
-  Value targets — a dealer's rupee target is its money target for the Parts category
-  (the user's decision); an executive's is the sum across their dealers.
+  Levels are never added together — `_target_at` is the only place that chooses which
+  level a figure comes from. A scheme target is a breakdown inside its category's target,
+  not an addition to it.
+
+  A target names its own unit — target_type says rupees or units, target_uom says whether
+  those units are pieces or litres, and the sold side is counted to match. Nothing infers
+  the unit from which screen it is being shown on.
 """
 
 import calendar
@@ -61,12 +66,9 @@ def available_months(company_id):
                  FROM busy_sales_data WHERE company_id = %s
                UNION
                SELECT DISTINCT DATE_FORMAT(target_period, '%%Y-%%m')
-                 FROM dealer_money_target WHERE company_id = %s
-               UNION
-               SELECT DISTINCT DATE_FORMAT(target_period, '%%Y-%%m')
-                 FROM dealer_part_group_target WHERE company_id = %s
+                 FROM dealer_target WHERE company_id = %s
            ) x WHERE m IS NOT NULL ORDER BY m DESC""",
-        (company_id, company_id, company_id)) or []
+        (company_id, company_id)) or []
     today = date.today()
     out = []
     for r in rows:
@@ -164,72 +166,122 @@ class Scope:
 
 # ---------------------------------------------------------------------------
 # Targets
+#
+# Every target now lives in one table and says what it means: target_level names the
+# grain it is set at, target_type whether it is rupees or units, target_uom whether those
+# units are the ones Busy bills or litres. Nothing below may infer any of those from a
+# blank column — see schema.py for why that inference stopped being safe.
+#
+# THE RULE: levels are never added together. A dealer's Parts rupee target and its
+# Basket 1 rupee target are both value rows on the Parts category, but the basket is a
+# breakdown INSIDE the category target, not an addition to it. Summing the table would
+# report a Parts target of ₹32,500 where the business set ₹25,000 — and every achievement
+# percentage on the screen would be quietly wrong by the ratio between them.
 # ---------------------------------------------------------------------------
+
+# Deepest last. `_target_at` walks this from a grain's own level downwards, taking the
+# first level that has any target at all, and stops — so a mixed set never gets summed.
+_LEVEL_ORDER = ('category', 'scheme', 'part_group', 'product')
+
+# What each reporting grain is keyed by, and the level a target has to be set at to be
+# that grain's OWN target rather than a component of it.
+_GRAIN = {
+    'category':  ('c.name',        'category'),
+    'scheme':    ('t.scheme',      'scheme'),
+    'group':     ('t.part_group',  'part_group'),
+}
+
+
+def _target_at(scope, grain, target_type, by=None):
+    """Target to date for one grain, in one unit. {key: {'target', 'uom'}}.
+
+    grain: 'category' | 'scheme' | 'group'. target_type: 'value' | 'qty'.
+    by: None, or 'dealer'/'exec' to key the result by that entity first.
+
+    Resolution, and the whole reason this function exists rather than a SUM at each call
+    site: a thing's target is the one set AT ITS OWN LEVEL if there is one, and otherwise
+    the roll-up of the shallowest level beneath it that carries any. It is never the sum
+    of two different levels. Parts has a category-level rupee target and three schemes
+    inside it with their own; the category's target is the first, full stop.
+
+    Falling back to only ONE deeper level, rather than everything below, is the
+    conservative half of the same rule. A category holding both scheme targets and
+    part-group targets has no level that covers all of it, so there is no honest total —
+    adding them risks counting a part group twice, once on its own and once inside the
+    scheme that contains it. Reporting the shallower level alone can understate the
+    target; adding them can overstate the achievement, and only one of those makes a
+    dealer look better than they are.
+
+    Each month is pro-rated on its own before summing (§3.1).
+    """
+    key_col, own_level = _GRAIN[grain]
+    amount_col = 'target_value' if target_type == 'value' else 'target_qty'
+    dwhere, dparams = scope.dealer_where()
+    ekey = {'dealer': 'd.dealer_id', 'exec': 'd.sales_executive_id'}.get(by)
+    esel = f"{ekey} AS e, " if ekey else ""
+    egrp = f"{ekey}, " if ekey else ""
+
+    # A part-group filter narrows which targets are in view — you asked about those
+    # groups. It cannot narrow a category- or scheme-level target, which has no
+    # part-group grain to be narrowed by, so it applies to part-group rows only.
+    gcond, gparams = "", []
+    if scope.groups:
+        gcond = (f" AND (t.target_level <> 'part_group' "
+                 f"     OR t.part_group IN ({_in(scope.groups)}))")
+        gparams = scope.groups
+
+    # {entity: {level: {key: [amount, uom]}}} — kept split by level until the choice below.
+    by_level = {}
+    for _, period, frac in scope.month_rows:
+        if frac <= 0:
+            continue
+        rows = mysql_manager.execute_query(
+            f"""SELECT {esel}t.target_level AS lvl, {key_col} AS k,
+                       MAX(t.target_uom) AS uom,
+                       COALESCE(SUM(t.{amount_col}), 0) AS amt
+                FROM dealer_target t
+                JOIN dealer d ON d.dealer_id = t.dealer_id
+                LEFT JOIN categories c ON c.category_id = t.category_id
+                WHERE {dwhere} AND t.target_period = %s AND t.target_type = %s{gcond}
+                GROUP BY {egrp}t.target_level, {key_col}""",
+            tuple(dparams + [period, target_type] + gparams)) or []
+        for r in rows:
+            if not r['k']:
+                continue          # a deeper row has no value for this grain's key column
+            slot = by_level.setdefault(r['e'] if ekey else None, {}) \
+                           .setdefault(r['lvl'], {})
+            cell = slot.setdefault(r['k'], {'target': 0.0, 'uom': r['uom'] or ''})
+            cell['target'] += float(r['amt']) * frac
+
+    def _resolve(levels):
+        """First level at or below `own_level` that has any target — never a mix."""
+        out = {}
+        for name in _LEVEL_ORDER[_LEVEL_ORDER.index(own_level):]:
+            for k, cell in (levels.get(name) or {}).items():
+                if k not in out and cell['target']:
+                    out[k] = cell
+        return out
+
+    if not ekey:
+        return _resolve(by_level.get(None, {}))
+    return {e: _resolve(levels) for e, levels in by_level.items()}
+
 
 def value_target(scope, by=None):
     """Rupee target to date. by=None total, 'dealer' or 'exec' for a breakdown.
 
-    Each month is pro-rated on its own before summing (§3.1).
+    A dealer's rupee target is its CATEGORY-level target for Parts — the figure the
+    business actually sets — not that plus the baskets inside it.
+
+    Nothing in this module calls this; it is the answer to "what is this dealer's rupee
+    target", kept because that question is asked from outside and answering it wrongly
+    (by summing the table) is the easiest mistake to make against this schema.
     """
-    dwhere, dparams = scope.dealer_where()
-    key = {'dealer': 'd.dealer_id', 'exec': 'd.sales_executive_id'}.get(by)
-    sel = f"{key} AS k, " if key else ""
-    grp = f"GROUP BY {key}" if key else ""
-    out = {} if key else 0.0
-    for _, period, frac in scope.month_rows:
-        if frac <= 0:
-            continue
-        rows = mysql_manager.execute_query(
-            f"""SELECT {sel}COALESCE(SUM(mt.value_target), 0) AS t
-                FROM dealer d
-                JOIN dealer_money_target mt ON mt.dealer_id = d.dealer_id
-                JOIN categories c ON c.category_id = mt.category_id
-                WHERE {dwhere} AND mt.target_period = %s AND c.name = %s
-                {grp}""",
-            tuple(dparams + [period, VALUE_TARGET_CATEGORY])) or []
-        for r in rows:
-            if key:
-                out[r['k']] = out.get(r['k'], 0.0) + float(r['t']) * frac
-            else:
-                out += float(r['t']) * frac
-    return out
-
-
-def qty_target(scope, by=None):
-    """Quantity target to date. by: None | 'category' | 'scheme' | 'group' | 'dealer'.
-
-    Quantity targets are set per dealer × category × scheme × part_group. A part-group
-    or part filter narrows which targets are in view (you asked about those groups), but
-    an executive/dealer filter narrows whose targets they are.
-    """
-    dwhere, dparams = scope.dealer_where()
-    key = {'category': 'c.name', 'scheme': 't.scheme', 'group': 't.part_group',
-           'dealer': 'd.dealer_id'}.get(by)
-    sel = f"{key} AS k, " if key else ""
-    grp = f"GROUP BY {key}" if key else ""
-    gcond, gparams = "", []
-    if scope.groups:
-        gcond = f" AND t.part_group IN ({_in(scope.groups)})"
-        gparams = scope.groups
-    out = {} if key else 0.0
-    for _, period, frac in scope.month_rows:
-        if frac <= 0:
-            continue
-        rows = mysql_manager.execute_query(
-            f"""SELECT {sel}COALESCE(SUM(t.target_qty), 0) AS t
-                FROM dealer_part_group_target t
-                JOIN dealer d ON d.dealer_id = t.dealer_id
-                LEFT JOIN categories c ON c.category_id = t.category_id
-                WHERE {dwhere} AND t.target_period = %s{gcond}
-                {grp}""",
-            tuple(dparams + [period] + gparams)) or []
-        for r in rows:
-            k = r['k'] if key else None
-            if key:
-                out[k] = out.get(k, 0.0) + float(r['t']) * frac
-            else:
-                out += float(r['t']) * frac
-    return out
+    cells = _target_at(scope, 'category', 'value', by=by)
+    if by:
+        return {e: c.get(VALUE_TARGET_CATEGORY, {}).get('target', 0.0)
+                for e, c in cells.items()}
+    return cells.get(VALUE_TARGET_CATEGORY, {}).get('target', 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -243,58 +295,22 @@ def qty_target(scope, by=None):
 
 UNCATEGORISED = '(Uncategorised)'
 
-# Which table holds each kind of target, and the column the target lives in.
-_TARGET_SOURCE = {
-    'value': ('dealer_money_target', 'value_target'),
-    'qty': ('dealer_part_group_target', 'target_qty'),
-}
-
-
-def _target_by_category(scope, kind, by=None):
-    """Target to date per category. kind: 'value' | 'qty'.
-
-    Returns {category: amount}, or {key: {category: amount}} when `by` is 'exec'/'dealer'.
-    Each month is pro-rated on its own before summing (§3.1).
-    """
-    table, col = _TARGET_SOURCE[kind]
-    dwhere, dparams = scope.dealer_where()
-    key = {'dealer': 'd.dealer_id', 'exec': 'd.sales_executive_id'}.get(by)
-    sel = f"{key} AS k, " if key else ""
-    grp = f"{key}, " if key else ""
-    # A part-group filter narrows which quantity targets are in view; rupee targets have
-    # no part-group grain to narrow by.
-    gcond, gparams = "", []
-    if kind == 'qty' and scope.groups:
-        gcond = f" AND t.part_group IN ({_in(scope.groups)})"
-        gparams = scope.groups
-
-    out = {}
-    for _, period, frac in scope.month_rows:
-        if frac <= 0:
-            continue
-        rows = mysql_manager.execute_query(
-            f"""SELECT {sel}c.name AS cat, COALESCE(SUM(t.{col}), 0) AS t
-                FROM dealer d
-                JOIN {table} t ON t.dealer_id = d.dealer_id
-                JOIN categories c ON c.category_id = t.category_id
-                WHERE {dwhere} AND t.target_period = %s{gcond}
-                GROUP BY {grp}c.name""",
-            tuple(dparams + [period] + gparams)) or []
-        for r in rows:
-            amount = float(r['t']) * frac
-            if key:
-                bucket = out.setdefault(r['k'], {})
-                bucket[r['cat']] = bucket.get(r['cat'], 0.0) + amount
-            else:
-                out[r['cat']] = out.get(r['cat'], 0.0) + amount
-    return out
+# Volume sold, for a target counted in litres. Busy bills oil in Pcs. and carries no
+# volume, so it comes from the product master's parsed pack size. A product with no pack
+# size on record contributes 0 — the upload reports how many those are, because the
+# alternative is a dealer quietly credited with less than they sold.
+_LITRES_SOLD = "COALESCE(SUM(b.quantity * COALESCE(p.litres_per_unit, 0)), 0)"
 
 
 def sales_by_category(scope, by=None):
-    """Billed sales per category: {category: {'sales', 'qty'}}.
+    """Billed sales per category: {category: {'sales', 'qty', 'litres'}}.
 
     With `by` = 'exec'/'dealer' the result is keyed by that id first. Sales with no
     product match fall into UNCATEGORISED rather than vanishing from the screen.
+
+    All three measures travel together because which one a category is judged on is a
+    property of its TARGET, not of its sales — Oil is measured in litres and Parts in
+    rupees, and the caller cannot know which until it has read the target.
     """
     key = {'dealer': 'd.dealer_id', 'exec': 'd.sales_executive_id'}.get(by)
     sel = f"{key} AS k, " if key else ""
@@ -302,11 +318,12 @@ def sales_by_category(scope, by=None):
     cat = f"COALESCE(c.name, '{UNCATEGORISED}')"
     q, p = scope.sql(
         f"{sel}{cat} AS cat, COALESCE(SUM(b.amount_with_gst),0) AS sales, "
-        "COALESCE(SUM(b.quantity),0) AS qty",
+        f"COALESCE(SUM(b.quantity),0) AS qty, {_LITRES_SOLD} AS litres",
         group_by=f"GROUP BY {grp}{cat}")
     out = {}
     for r in (mysql_manager.execute_query(q, p) or []):
-        cell = {'sales': float(r['sales'] or 0), 'qty': float(r['qty'] or 0)}
+        cell = {'sales': float(r['sales'] or 0), 'qty': float(r['qty'] or 0),
+                'litres': float(r['litres'] or 0)}
         if key:
             out.setdefault(r['k'], {})[r['cat']] = cell
         else:
@@ -314,21 +331,38 @@ def sales_by_category(scope, by=None):
     return out
 
 
-def _cell(sales, qty_sold, value_target_amt, qty_target_amt):
+def _sold_in(cell, uom):
+    """How much was sold, counted the way the target counts it."""
+    return cell.get('litres', 0.0) if uom == 'litres' else cell.get('qty', 0.0)
+
+
+def _cell(sold, value_cell, qty_cell):
     """One category's figures, measured against its single target scale.
 
-    The rupee target wins when a category has both, so the headline sales figure and the
-    percentage below it are always in the same unit. A category with no target of either
-    kind reports its sales and no percentage — never a 0% that reads as failure.
+    `sold` is the full {'sales', 'qty', 'litres'} triple; which member the percentage uses
+    is decided HERE, by the target, so the headline figure and the percentage below it are
+    always in the same unit.
+
+    The rupee target wins when a category has both. A category with no target of either
+    kind reports its sales and no percentage — never a 0% that reads as failure (§3.3).
     """
-    if value_target_amt:
-        kind, target, pct = 'value', value_target_amt, _pct(sales, value_target_amt)
-    elif qty_target_amt:
-        kind, target, pct = 'qty', qty_target_amt, _pct(qty_sold, qty_target_amt)
+    sales, qty_sold = sold.get('sales', 0.0), sold.get('qty', 0.0)
+    value_amt = (value_cell or {}).get('target') or 0
+    qty_amt = (qty_cell or {}).get('target') or 0
+    uom = (qty_cell or {}).get('uom') or ''
+    if value_amt:
+        kind, target, pct, unit = 'value', value_amt, _pct(sales, value_amt), ''
+    elif qty_amt:
+        counted = _sold_in(sold, uom)
+        kind, target, pct, unit = 'qty', qty_amt, _pct(counted, qty_amt), uom
     else:
-        kind, target, pct = None, None, None
+        kind, target, pct, unit = None, None, None, ''
     return {'sales': _n(sales), 'qty_sold': _n(qty_sold),
-            'target_kind': kind, 'target': _n(target) if target else None, 'pct': pct}
+            'litres_sold': _n(sold.get('litres', 0.0)),
+            'target_kind': kind, 'target': _n(target) if target else None,
+            # '' means the quantity is counted in whatever unit Busy bills; 'litres' means
+            # the UI must show litres, not pieces, or the two figures disagree on screen.
+            'target_uom': unit, 'pct': pct}
 
 
 def category_axis(scope):
@@ -339,8 +373,8 @@ def category_axis(scope):
     categories come first, then quantity-targeted, then untargeted — each block by sales.
     """
     sales = sales_by_category(scope)
-    vt = _target_by_category(scope, 'value')
-    qt = _target_by_category(scope, 'qty')
+    vt = _target_at(scope, 'category', 'value')
+    qt = _target_at(scope, 'category', 'qty')
     names = set(sales) | set(vt) | set(qt)
     out = []
     for name in sorted(names):
@@ -348,9 +382,7 @@ def category_axis(scope):
         out.append({
             'category': name,
             'target_kind': kind,
-            **_cell(sales.get(name, {}).get('sales', 0.0),
-                    sales.get(name, {}).get('qty', 0.0),
-                    vt.get(name), qt.get(name)),
+            **_cell(sales.get(name, {}), vt.get(name), qt.get(name)),
         })
     out.sort(key=lambda c: ({'value': 0, 'qty': 1}.get(c['target_kind'], 2), -(c['sales'] or 0)))
     return out
@@ -370,10 +402,11 @@ def collapse(cells):
     Other carries no target, for the same reason its tile doesn't: its categories sit on
     different scales, so a summed target would be a denominator that means nothing.
     """
-    parts = cells.get(VALUE_TARGET_CATEGORY) or _cell(0, 0, None, None)
+    parts = cells.get(VALUE_TARGET_CATEGORY) or _cell({}, None, None)
     rest = [c for k, c in cells.items() if k != VALUE_TARGET_CATEGORY]
-    other = _cell(sum(c.get('sales') or 0 for c in rest),
-                  sum(c.get('qty_sold') or 0 for c in rest), None, None)
+    other = _cell({'sales': sum(c.get('sales') or 0 for c in rest),
+                   'qty': sum(c.get('qty_sold') or 0 for c in rest),
+                   'litres': sum(c.get('litres_sold') or 0 for c in rest)}, None, None)
     return {VALUE_TARGET_CATEGORY: parts, OTHER_LABEL: other}
 
 
@@ -391,14 +424,13 @@ def table_axis(scope, axis=None):
 def _cells_for(scope, entity_ids, by, axis):
     """{entity_id: {Parts|Other: cell}} — computed per category, then collapsed."""
     sales = sales_by_category(scope, by=by)
-    vt = _target_by_category(scope, 'value', by=by)
-    qt = _target_by_category(scope, 'qty', by=by)
+    vt = _target_at(scope, 'category', 'value', by=by)
+    qt = _target_at(scope, 'category', 'qty', by=by)
     out = {}
     for eid in entity_ids:
         s, v, q = sales.get(eid, {}), vt.get(eid, {}), qt.get(eid, {})
         full = {
-            c['category']: _cell(s.get(c['category'], {}).get('sales', 0.0),
-                                 s.get(c['category'], {}).get('qty', 0.0),
+            c['category']: _cell(s.get(c['category'], {}),
                                  v.get(c['category']), q.get(c['category']))
             for c in axis
         }
@@ -590,17 +622,24 @@ def _rank(items):
 
 def by_category(scope, mode='category'):
     """Sales by category or by scheme (§6.2). Targeted rows carry a target and a %;
-    sales-only rows carry neither and are tagged as such (§3.3)."""
+    sales-only rows carry neither and are tagged as such (§3.3).
+
+    A scheme row can carry EITHER kind of target — Basket 1 and Basket 2 are set in
+    rupees while the PG groups under their own scheme are set in units — so every row
+    says which it is measured on rather than the table assuming one for the column.
+    """
     key = 'c.name' if mode == 'category' else 'pg.scheme'
+    grain = 'category' if mode == 'category' else 'scheme'
     q, p = scope.sql(
         f"COALESCE({key}, '(Unmapped)') AS k, COALESCE(SUM(b.quantity),0) AS sold, "
-        f"COALESCE(SUM(b.amount_with_gst),0) AS sales, "
+        f"COALESCE(SUM(b.amount_with_gst),0) AS sales, {_LITRES_SOLD} AS litres, "
         # `groups` is reserved in MySQL 8 — quoted, not renamed, so the key the UI
         # reads stays the obvious one.
         f"COUNT(DISTINCT b.item_code) AS skus, COUNT(DISTINCT pg.part_group) AS `groups`",
         group_by=f"GROUP BY COALESCE({key}, '(Unmapped)')")
     rows = mysql_manager.execute_query(q, p) or []
-    targets = qty_target(scope, by='category' if mode == 'category' else 'scheme')
+    vt = _target_at(scope, grain, 'value')
+    qt = _target_at(scope, grain, 'qty')
 
     # §10.3 — a product that is in no scheme this month is simply absent from every
     # scheme view. (It still appears under its category, which is why this only applies
@@ -608,23 +647,32 @@ def by_category(scope, mode='category'):
     if mode == 'scheme':
         rows = [r for r in rows if r['k'] != '(Unmapped)']
 
+    def _row(k, sold_qty, litres, sales, skus, groups):
+        cell = _cell({'sales': sales, 'qty': sold_qty, 'litres': litres},
+                     vt.get(k), qt.get(k))
+        return {
+            'key': k, 'name': k,
+            'target_kind': cell['target_kind'], 'target': cell['target'],
+            'target_uom': cell['target_uom'],
+            # The figure the percentage is actually computed from, so the table never
+            # shows units beside a rupee achievement.
+            'sold': _n(sales if cell['target_kind'] == 'value'
+                       else _sold_in({'qty': sold_qty, 'litres': litres},
+                                     cell['target_uom'])),
+            'sold_qty': _n(sold_qty), 'pct': cell['pct'], 'value': _n(sales),
+            'skus': skus, 'groups': groups,
+        }
+
     seen = {r['k'] for r in rows}
-    out = []
-    for r in rows:
-        t = targets.get(r['k'], 0.0)
-        out.append({
-            'key': r['k'], 'name': r['k'], 'target_qty': _n(t), 'sold': _n(r['sold']),
-            'pct': _pct(r['sold'], t), 'value': _n(r['sales']),
-            'skus': r['skus'], 'groups': r['groups'],
-        })
+    out = [_row(r['k'], float(r['sold'] or 0), float(r['litres'] or 0),
+                float(r['sales'] or 0), r['skus'], r['groups']) for r in rows]
     # A target with no sales at all still has to appear — otherwise a category at 0%
     # silently vanishes instead of showing as the worst performer.
-    for k, t in targets.items():
-        if k and k not in seen and t:
-            out.append({'key': k, 'name': k, 'target_qty': _n(t), 'sold': 0,
-                        'pct': 0.0, 'value': 0, 'skus': 0, 'groups': 0})
-    targeted = sorted([o for o in out if o['target_qty']], key=lambda o: o['pct'] or 0)
-    rest = sorted([o for o in out if not o['target_qty']], key=lambda o: -o['value'])
+    for k in (set(vt) | set(qt)) - seen:
+        if k:
+            out.append(_row(k, 0.0, 0.0, 0.0, 0, 0))
+    targeted = sorted([o for o in out if o['target']], key=lambda o: o['pct'] or 0)
+    rest = sorted([o for o in out if not o['target']], key=lambda o: -o['value'])
     return targeted + rest
 
 
@@ -641,45 +689,98 @@ def detail(scope, key, mode):
         "b.item_code AS item_code, MAX(p.name) AS name, "
         "COALESCE(MAX(pg.part_group), '(Unmapped)') AS part_group, "
         "MAX(c.name) AS category, MAX(pg.scheme) AS scheme, "
-        "COALESCE(SUM(b.quantity),0) AS sold, COALESCE(SUM(b.amount_with_gst),0) AS value",
+        "COALESCE(SUM(b.quantity),0) AS sold, COALESCE(SUM(b.amount_with_gst),0) AS value, "
+        f"{_LITRES_SOLD} AS litres",
         extra=extra, group_by="GROUP BY b.item_code")
     rows = mysql_manager.execute_query(q, tuple(list(p) + [key])) or []
 
-    # Targets for the groups this view covers, so the group rows can show one.
-    gt = qty_target(scope, by='group')
+    # Targets for the groups this view covers, so the group rows can show one. A group
+    # target may be set in rupees as readily as in units, so both are read and each group
+    # is measured on whichever it has.
+    gv = _target_at(scope, 'group', 'value')
+    gq = _target_at(scope, 'group', 'qty')
     group_of = {r['part_group'] for r in rows}
-    targeted = any(gt.get(g) for g in group_of)
+    targeted = any((gv.get(g) or gq.get(g)) for g in group_of)
 
     products = [{
         'item_code': r['item_code'], 'name': r['name'] or r['item_code'],
         'part_group': r['part_group'], 'category': r['category'], 'scheme': r['scheme'],
-        'sold': _n(r['sold']), 'value': _n(r['value']),
+        'sold': _n(r['sold']), 'litres': _n(r['litres']), 'value': _n(r['value']),
     } for r in rows]
 
     groups = []
     if targeted:
         for g in sorted(group_of):
             mine = [x for x in products if x['part_group'] == g]
-            sold = sum(x['sold'] for x in mine)
-            t = gt.get(g, 0.0)
+            totals = {'sales': sum(x['value'] for x in mine),
+                      'qty': sum(x['sold'] for x in mine),
+                      'litres': sum(x['litres'] for x in mine)}
+            cell = _cell(totals, gv.get(g), gq.get(g))
+            # Whichever measure this group is judged on is also the one its products'
+            # shares are expressed in — a rupee-targeted group whose products showed
+            # unit shares would not add up on screen.
+            measure = (lambda x: x['value']) if cell['target_kind'] == 'value' else (
+                (lambda x: x['litres']) if cell['target_uom'] == 'litres'
+                else (lambda x: x['sold']))
+            denom = sum(measure(x) for x in mine)
             groups.append({
                 'part_group': g, 'category': (mine[0]['category'] if mine else None),
-                'target_qty': _n(t), 'sold': sold, 'pct': _pct(sold, t),
-                'value': _n(sum(x['value'] for x in mine)),
+                'target_kind': cell['target_kind'], 'target': cell['target'],
+                'target_uom': cell['target_uom'],
+                'sold': _n(denom), 'sold_qty': _n(totals['qty']), 'pct': cell['pct'],
+                'value': _n(totals['sales']),
                 # "N% of group" — a product's share of what its group sold, never its
                 # own achievement, because a product has no target of its own.
-                'products': sorted([{**x, 'share': round(x['sold'] / sold * 100, 1) if sold else 0}
-                                    for x in mine], key=lambda x: -x['value']),
+                'products': sorted(
+                    [{**x, 'share': round(measure(x) / denom * 100, 1) if denom else 0}
+                     for x in mine], key=lambda x: -x['value']),
             })
-        tg = sorted([g for g in groups if g['target_qty']], key=lambda g: g['pct'] or 0)
-        groups = tg + sorted([g for g in groups if not g['target_qty']], key=lambda g: -g['value'])
+        tg = sorted([g for g in groups if g['target']], key=lambda g: g['pct'] or 0)
+        groups = tg + sorted([g for g in groups if not g['target']], key=lambda g: -g['value'])
 
-    sold_total = sum(x['sold'] for x in products)
-    target_total = sum(gt.get(g, 0.0) for g in group_of) if targeted else 0
+    # The popup's own header line.
+    #
+    # First choice is the target set on the THING THAT WAS CLICKED — Basket 1 carries a
+    # rupee target of its own at scheme level, and that is the number a rep opening it
+    # expects to see. Without this the popup fell back to the part groups beneath, found
+    # none carrying a target of their own, and reported a targeted basket as "sales only".
+    #
+    # Otherwise it is the roll-up of the group targets on show, and only of those sharing
+    # ONE kind: a rupee target and a unit target have no sum. Mixed groups leave the
+    # header without a total rather than inventing one; the per-group rows still carry
+    # theirs.
+    own_v = _target_at(scope, 'category' if mode == 'category' else 'scheme', 'value').get(key)
+    own_q = _target_at(scope, 'category' if mode == 'category' else 'scheme', 'qty').get(key)
+    own = _cell({'sales': sum(x['value'] for x in products),
+                 'qty': sum(x['sold'] for x in products),
+                 'litres': sum(x['litres'] for x in products)}, own_v, own_q)
+
+    kinds = {g['target_kind'] for g in groups if g['target_kind']}
+    uoms = {g['target_uom'] for g in groups if g['target_kind'] == 'qty'}
+    single = len(kinds) == 1 and len(uoms) <= 1
+    head_kind = next(iter(kinds), None) if single else None
+    target_total = sum(g['target'] or 0 for g in groups) if head_kind else 0
+    sold_total = (sum(g['sold'] or 0 for g in groups) if head_kind
+                  else sum(x['sold'] for x in products))
+    head_uom = next(iter(uoms), '') if single else ''
+
+    if own['target_kind']:
+        head_kind, head_uom = own['target_kind'], own['target_uom']
+        target_total, sold_total = own['target'], (
+            own['sales'] if head_kind == 'value' else
+            _sold_in({'qty': own['qty_sold'], 'litres': own['litres_sold']}, head_uom))
+        targeted = True
+
     return {
         'key': key, 'mode': mode, 'targeted': targeted,
-        'target_qty': _n(target_total), 'sold': sold_total,
-        'pct': _pct(sold_total, target_total),
+        'target_kind': head_kind, 'target_uom': head_uom,
+        # `target`, not `target_qty` — it holds rupees for a value-targeted popup and
+        # litres for Oil. Naming it after one of the three would be the same overloading
+        # the separate target_qty / target_value columns exist to avoid.
+        'target': _n(target_total), 'sold': _n(sold_total),
+        'sold_qty': _n(sum(x['sold'] for x in products)),
+        'pct': _pct(sold_total, target_total) if head_kind else None,
+        'mixed_targets': bool(kinds) and not single,
         'value': _n(sum(x['value'] for x in products)),
         'product_count': len(products), 'group_count': len(groups),
         'groups': groups,

@@ -9,7 +9,7 @@ Attribution: a Busy sale (busy_sales_data) → dealer by name string-match
 dealer.sales_executive_id. Part → group/target via part_groups.
 
 "This month" = the current calendar month. Sales targets come from
-dealer.value_target and reflect only executive/dealer scoping — a part or
+dealer_target and reflect only executive/dealer scoping — a part or
 part-group filter narrows sales but NOT the target, so % legitimately drops when
 you slice by part.
 """
@@ -27,6 +27,23 @@ DEFAULT_COMPANY = 1
 # once here so no query can quietly go back to reporting net — targets are set in gross
 # rupees, so measuring net against them would understate achievement by ~15%.
 _SALES = "b.amount_with_gst"
+
+# Every target — rupee or unit, category, scheme or part-group level — now lives in
+# dealer_target and says which it is (see modules/sales/schema.py).
+#
+# A dealer's rupee target is the CATEGORY-level value rows only, and this filter is not
+# optional. Scheme-level rupee targets (Basket 1, Basket 2) sit in the same table against
+# the same category and are a BREAKDOWN of the category target, not an addition to it. A
+# SUM without the filter reports a dealer's Parts target as the category plus every basket
+# inside it — inflating the denominator and pushing every achievement % on the mobile app
+# down by the ratio between them.
+_VALUE_TARGET_ROW = "mt.target_level = 'category' AND mt.target_type = 'value'"
+
+# Where a target is counted in litres (Oil), the sold side is
+# `b.quantity * COALESCE(<product>.litres_per_unit, 0)`. Busy bills oil in Pcs. and
+# carries no volume, so it comes from the pack size the product upload parsed out of the
+# product name; a product with no pack size on record contributes 0. Spelled out at each
+# use rather than shared, because the product alias differs between these queries.
 
 _MONTH = "YEAR(b.sale_date) = YEAR(CURDATE()) AND MONTH(b.sale_date) = MONTH(CURDATE())"
 
@@ -162,6 +179,42 @@ def _pct(sales, target):
     return round(float(sales) / float(target) * 100, 1)
 
 
+def _target_row(r):
+    """One target-tracker row, measured in the unit its own target is set in.
+
+    The client cannot pick the unit for itself — a Basket 1 row and a PG Spark Plug row
+    sit side by side in the same list, one in rupees and one in pieces. `unit` says which,
+    and `target`/`sold` are already in it, so a caller that renders them together can
+    never put a ₹ in front of a count of spark plugs.
+
+    `target_qty` and the unit-less `sold` are kept alongside for the app builds that
+    predate this and only ever read quantities; on a value row they are the raw quantity,
+    which is exactly what those builds were showing before.
+    """
+    kind = r['target_type'] or 'qty'
+    uom = r['target_uom'] or ''
+    if kind == 'value':
+        target, sold, unit = r['target_value'], r['sold_value'], 'rs'
+    elif uom == 'litres':
+        target, sold, unit = r['target_qty'], r['sold_litres'], 'litres'
+    else:
+        target, sold, unit = r['target_qty'], r['sold_qty'], 'qty'
+    return {
+        'dealer_id': r['dealer_id'], 'dealer': r['dealer'],
+        'part_group': r['part_group'], 'scheme': r['scheme'],
+        'category_id': r['category_id'], 'category': r['category'],
+        # 'part_group' | 'scheme' | 'category' — what this target is set at, so the
+        # UI can label it instead of showing a blank part-group column.
+        'level': r['level'],
+        # The thing the target is actually on, whatever its level.
+        'target_of': (r['part_group'] or r['scheme'] or r['category'] or '—'),
+        'target_kind': kind, 'unit': unit,
+        'target': _num(target), 'sold': _num(sold), 'pct': _pct(sold, target),
+        'target_qty': _num(r['target_qty']), 'sold_qty': _num(r['sold_qty']),
+        'sold_value': _num(r['sold_value']),
+    }
+
+
 def _where(sales_where, executive_id=None, dealer_id=None, part_group=None, part=None):
     """Build the WHERE (period window + any of the 4 optional filters) and its params."""
     where, params = [sales_where], []
@@ -236,10 +289,16 @@ def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None
             {_base(company_id)} WHERE {where}
             GROUP BY b.item_code ORDER BY qty DESC""", params) or []
 
-    # Part-group quantity targets are per dealer (dealer_part_group_target). For the
-    # current scope they sum over the dealers in view (executive/dealer filters) — like
-    # the rupee targets, a part / part-group filter narrows sold qty, not the target.
-    gwhere = [f"d.company_id = {int(company_id)}", f"dpg.target_period = {target_period}"]
+    # Part-group quantity targets are per dealer. For the current scope they sum over the
+    # dealers in view (executive/dealer filters) — like the rupee targets, a part /
+    # part-group filter narrows sold qty, not the target.
+    #
+    # The by_part_group table below shows units sold, so it can only be measured against a
+    # part-group-level QUANTITY target. Rupee targets on the same part group, and the
+    # scheme and category targets above it, are deliberately excluded — putting any of them
+    # in this denominator would compare units against something that is not units.
+    gwhere = [f"d.company_id = {int(company_id)}", f"dpg.target_period = {target_period}",
+              "dpg.target_level = 'part_group'", "dpg.target_type = 'qty'"]
     gparams = []
     if executive_id:
         gwhere.append("d.sales_executive_id = %s"); gparams.append(executive_id)
@@ -247,20 +306,22 @@ def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None
         gwhere.append("d.dealer_id = %s"); gparams.append(dealer_id)
     group_target = {r['part_group']: r['t'] for r in (mysql_manager.execute_query(
         f"""SELECT dpg.part_group, COALESCE(SUM(dpg.target_qty),0) AS t
-            FROM dealer_part_group_target dpg
+            FROM dealer_target dpg
             JOIN dealer d ON d.dealer_id = dpg.dealer_id
             WHERE {' AND '.join(gwhere)}
             GROUP BY dpg.part_group""", tuple(gparams)) or [])}
 
-    # Rupee targets come from dealer_money_target for THIS period. They honour only the
-    # dealer-scoping filters (executive / dealer), never part / part-group.
+    # Rupee targets for THIS period. They honour only the dealer-scoping filters
+    # (executive / dealer), never part / part-group.
     #
-    # Targets are held PER CATEGORY (dealer_money_target rows naming a category).
-    # A dealer's own target is the sum of its categories, and an executive's is the
-    # sum across their dealers — there is no separate whole-dealer row to read, and
-    # summing indiscriminately would double-count if one were reintroduced.
+    # Targets are held PER CATEGORY. A dealer's own target is the sum of its categories,
+    # and an executive's is the sum across their dealers — there is no separate
+    # whole-dealer row to read, and summing indiscriminately would double-count if one
+    # were reintroduced. _VALUE_TARGET_ROW keeps the schemes inside those categories out
+    # of the sum for the same reason.
     dwhere = [f"d.company_id = {int(company_id)}", "d.sales_executive_id IS NOT NULL",
-              f"mt.target_period = {target_period}", "mt.category_id IS NOT NULL"]
+              f"mt.target_period = {target_period}", "mt.category_id IS NOT NULL",
+              _VALUE_TARGET_ROW]
     dparams = []
     if executive_id:
         dwhere.append("d.sales_executive_id = %s"); dparams.append(executive_id)
@@ -268,29 +329,32 @@ def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None
         dwhere.append("d.dealer_id = %s"); dparams.append(dealer_id)
     dclause = " AND ".join(dwhere)
     dealer_target = {r['dealer_id']: r['t'] for r in (mysql_manager.execute_query(
-        f"""SELECT d.dealer_id, COALESCE(SUM(mt.value_target),0) AS t
-            FROM dealer d JOIN dealer_money_target mt ON mt.dealer_id = d.dealer_id
+        f"""SELECT d.dealer_id, COALESCE(SUM(mt.target_value),0) AS t
+            FROM dealer d JOIN dealer_target mt ON mt.dealer_id = d.dealer_id
             WHERE {dclause} GROUP BY d.dealer_id""", tuple(dparams)) or [])}
     exec_target = {r['sales_executive_id']: r['t'] for r in (mysql_manager.execute_query(
-        f"""SELECT d.sales_executive_id, COALESCE(SUM(mt.value_target),0) AS t
-            FROM dealer d JOIN dealer_money_target mt ON mt.dealer_id = d.dealer_id
+        f"""SELECT d.sales_executive_id, COALESCE(SUM(mt.target_value),0) AS t
+            FROM dealer d JOIN dealer_target mt ON mt.dealer_id = d.dealer_id
             WHERE {dclause} GROUP BY d.sales_executive_id""", tuple(dparams)) or [])}
 
-    # Target tracker: every quantity target for this period vs the qty sold AGAINST IT.
+    # Target tracker: every target for this period vs what was sold AGAINST IT.
     #
-    # A target is set at one of three levels and the row says which by what it leaves
-    # blank (mirroring how the mobile app groups suggestions — see the web's
-    # suggestionGrouping.js):
+    # A target names its own level — 'category' (all of Oil), 'scheme' (Basket 1/2,
+    # Chainsets) or 'part_group' (the PG groups) — and each has to be measured against the
+    # sales that roll up to IT. Matching only on part_group would leave every scheme- and
+    # category-level target sitting at zero sold, which reads as "sold nothing" rather
+    # than "measured at a different level". The sales CTE therefore carries all three keys
+    # and the join picks the one the target is defined by.
     #
-    #   part_group <> ''                  -> part-group level  (scheme is usually 'PG')
-    #   part_group  = '', scheme <> ''    -> scheme level      (Basket 1/2, Chainsets, …)
-    #   part_group  = '', scheme  = ''    -> category level    (e.g. all of Oil)
+    # The level used to be inferred from which of scheme/part_group the row left blank.
+    # It is read from target_level now, and the difference is not cosmetic: a basket that
+    # was never broken into groups has part_group = scheme (see _load_part_groups), so the
+    # old CASE called every one of those a part-group target and matched it against the
+    # wrong side of the sales CTE.
     #
-    # Each level has to be measured against the sales that roll up to IT: matching only
-    # on part_group would leave every scheme- and category-level target sitting at zero
-    # sold, which reads as "sold nothing" rather than "measured at a different level".
-    # The sales CTE therefore carries all three keys and the join picks the one the
-    # target is defined by.
+    # The CTE also carries rupees and litres, because a target says which unit it is in:
+    # Basket 1 is in rupees, the PG groups in pieces, Oil in litres. Summing one and
+    # showing it against another is the exact failure this column set exists to prevent.
     dgwhere = [f"d.company_id = {int(company_id)}", f"dpg.target_period = {target_period}"]
     dgparams = []
     if executive_id:
@@ -305,7 +369,9 @@ def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None
                        COALESCE(pg.part_group, '(Unmapped)') AS part_group,
                        COALESCE(pg.scheme, '') AS scheme,
                        p.category_id AS category_id,
-                       b.quantity AS quantity
+                       b.quantity AS quantity,
+                       b.amount_with_gst AS amount,
+                       b.quantity * COALESCE(p.litres_per_unit, 0) AS litres
                 FROM busy_sales_data b
                 JOIN dealer d2 ON d2.name = b.particulars AND d2.company_id = {int(company_id)}
                 LEFT JOIN part_groups pg ON pg.part_number = b.item_code
@@ -315,23 +381,25 @@ def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None
                 WHERE {sales_where}
             )
             SELECT dpg.id, dpg.dealer_id, d.name AS dealer, dpg.part_group, dpg.scheme,
-                   dpg.category_id, c.name AS category, dpg.target_qty,
-                   CASE WHEN dpg.part_group <> '' THEN 'part_group'
-                        WHEN dpg.scheme <> ''     THEN 'scheme'
-                        ELSE 'category' END AS level,
-                   COALESCE(SUM(s.quantity), 0) AS sold
-            FROM dealer_part_group_target dpg
+                   dpg.category_id, c.name AS category,
+                   dpg.target_level AS level, dpg.target_type, dpg.target_uom,
+                   dpg.target_qty, dpg.target_value,
+                   COALESCE(SUM(s.quantity), 0) AS sold_qty,
+                   COALESCE(SUM(s.amount), 0)   AS sold_value,
+                   COALESCE(SUM(s.litres), 0)   AS sold_litres
+            FROM dealer_target dpg
             JOIN dealer d ON d.dealer_id = dpg.dealer_id
             LEFT JOIN categories c ON c.category_id = dpg.category_id
             LEFT JOIN sales s ON s.dealer_id = dpg.dealer_id AND (
-                    (dpg.part_group <> '' AND s.part_group = dpg.part_group)
-                 OR (dpg.part_group  = '' AND dpg.scheme <> '' AND s.scheme = dpg.scheme)
-                 OR (dpg.part_group  = '' AND dpg.scheme  = ''
-                     AND s.category_id = dpg.category_id))
+                    (dpg.target_level = 'part_group' AND s.part_group  = dpg.part_group)
+                 OR (dpg.target_level = 'scheme'     AND s.scheme      = dpg.scheme)
+                 OR (dpg.target_level = 'category'   AND s.category_id = dpg.category_id))
             WHERE {' AND '.join(dgwhere)}
             GROUP BY dpg.id, dpg.dealer_id, d.name, dpg.part_group, dpg.scheme,
-                     dpg.category_id, c.name, dpg.target_qty
-            ORDER BY d.name, level, dpg.scheme, dpg.part_group""", tuple(dgparams)) or []
+                     dpg.category_id, c.name, dpg.target_level, dpg.target_type,
+                     dpg.target_uom, dpg.target_qty, dpg.target_value
+            ORDER BY d.name, dpg.target_level, dpg.scheme, dpg.part_group""",
+        tuple(dgparams)) or []
 
     # Average time reps spent at dealers this period (dealer_visits check-in/out).
     visit_exec, visit_dealer, visit_total = _visit_stats(
@@ -353,18 +421,7 @@ def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None
             'visits': visit_total['visits'],
             'avg_visit_minutes': visit_total['avg_min'],
         },
-        'by_dealer_group': [{
-            'dealer_id': r['dealer_id'], 'dealer': r['dealer'],
-            'part_group': r['part_group'], 'scheme': r['scheme'],
-            'category_id': r['category_id'], 'category': r['category'],
-            # 'part_group' | 'scheme' | 'category' — what this target is set at, so the
-            # UI can label it instead of showing a blank part-group column.
-            'level': r['level'],
-            # The thing the target is actually on, whatever its level.
-            'target_of': (r['part_group'] or r['scheme'] or r['category'] or '—'),
-            'target_qty': _num(r['target_qty']), 'sold': _num(r['sold']),
-            'pct': _pct(r['sold'], r['target_qty']),
-        } for r in by_dealer_group],
+        'by_dealer_group': [_target_row(r) for r in by_dealer_group],
         'by_executive': [{
             'user_id': r['user_id'], 'username': r['username'],
             'sales': _num(r['sales']),
@@ -397,8 +454,8 @@ def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None
 def exec_summary(executive_id, company_id=DEFAULT_COMPANY):
     """The one executive's this-month sales / target / % — for the check-in home.
 
-    The target is the sum of the exec's dealers' value_target and exists even with
-    zero sales, so it's read straight from the dealer master, not the sales join.
+    The target is the sum of the exec's dealers' category-level rupee targets and exists
+    even with zero sales, so it's read straight from the target table, not the sales join.
     """
     data = sales_explorer(executive_id=executive_id)
     row = next((e for e in data['by_executive'] if e['user_id'] == executive_id), None)
@@ -416,11 +473,11 @@ def exec_summary(executive_id, company_id=DEFAULT_COMPANY):
 
 def _exec_target_only(executive_id, company_id=DEFAULT_COMPANY):
     rows = mysql_manager.execute_query(
-        f"""SELECT COALESCE(SUM(mt.value_target),0) AS t
-            FROM dealer d JOIN dealer_money_target mt ON mt.dealer_id = d.dealer_id
+        f"""SELECT COALESCE(SUM(mt.target_value),0) AS t
+            FROM dealer d JOIN dealer_target mt ON mt.dealer_id = d.dealer_id
             WHERE d.company_id = {int(company_id)} AND d.sales_executive_id = %s
               AND mt.target_period = {_PERIOD}
-              AND mt.category_id IS NOT NULL""", (executive_id,))
+              AND mt.category_id IS NOT NULL AND {_VALUE_TARGET_ROW}""", (executive_id,))
     return _num(rows[0]['t']) if rows else 0
 
 
@@ -432,9 +489,9 @@ def dealer_summary(dealer_id, company_id=DEFAULT_COMPANY):
         return {'sales': row['sales'], 'target': row['target'], 'pct': row['pct']}
     # No sales this month — still surface the dealer's target for this period.
     t = mysql_manager.execute_query(
-        f"""SELECT COALESCE(SUM(mt.value_target),0) AS t FROM dealer_money_target mt
+        f"""SELECT COALESCE(SUM(mt.target_value),0) AS t FROM dealer_target mt
             WHERE mt.dealer_id = %s AND mt.target_period = {_PERIOD}
-              AND mt.category_id IS NOT NULL""",
+              AND mt.category_id IS NOT NULL AND {_VALUE_TARGET_ROW}""",
         (dealer_id,))
     target = _num(t[0]['t']) if t else 0
     return {'sales': 0, 'target': target, 'pct': _pct(0, target)}
@@ -446,19 +503,19 @@ def dealer_summary(dealer_id, company_id=DEFAULT_COMPANY):
 # collapsed by default, so the full list costs no screen space.
 
 
-# Half-width of the peer band around a dealer's money target: 0.20 => ±20%.
+# Half-width of the peer band around a dealer's rupee target: 0.20 => ±20%.
 PEER_BAND = 0.20
 
 
 def _peer_dealer_ids(dealer_id, company_id=DEFAULT_COMPANY):
     """Dealers comparable in size to `dealer_id` — money target within ±PEER_BAND,
     company-wide, excluding the dealer itself. Empty when the dealer has no
-    money target for the period (no band can be derived).
+    rupee target for the period (no band can be derived).
     """
     row = mysql_manager.execute_query(
-        f"""SELECT COALESCE(SUM(value_target),0) AS t FROM dealer_money_target
-            WHERE dealer_id = %s AND target_period = {_PERIOD}
-              AND category_id IS NOT NULL""", (dealer_id,))
+        f"""SELECT COALESCE(SUM(mt.target_value),0) AS t FROM dealer_target mt
+            WHERE mt.dealer_id = %s AND mt.target_period = {_PERIOD}
+              AND mt.category_id IS NOT NULL AND {_VALUE_TARGET_ROW}""", (dealer_id,))
     if not row or row[0]['t'] is None:
         return []
     mine = float(row[0]['t'])
@@ -466,13 +523,14 @@ def _peer_dealer_ids(dealer_id, company_id=DEFAULT_COMPANY):
         return []
     return [r['dealer_id'] for r in (mysql_manager.execute_query(
         f"""SELECT mt.dealer_id
-            FROM dealer_money_target mt
+            FROM dealer_target mt
             JOIN dealer d ON d.dealer_id = mt.dealer_id AND d.company_id = {int(company_id)}
             WHERE mt.target_period = {_PERIOD}
               AND mt.category_id IS NOT NULL
+              AND {_VALUE_TARGET_ROW}
               AND mt.dealer_id <> %s
             GROUP BY mt.dealer_id
-            HAVING SUM(mt.value_target) BETWEEN %s AND %s""",
+            HAVING SUM(mt.target_value) BETWEEN %s AND %s""",
         (dealer_id, mine * (1 - PEER_BAND), mine * (1 + PEER_BAND))) or [])]
 
 
@@ -562,12 +620,16 @@ def _peer_product_opportunities(dealer_id, peer_ids, company_id=DEFAULT_COMPANY,
 def dealer_suggestions(dealer_id, company_id=DEFAULT_COMPANY, category_ids=None):
     """What to sell at this dealer, in two independent lists.
 
-    grow[] — THE FULL TARGET SHEET, at the level each scheme is tracked
-    (dealer_part_group_target):
+    grow[] — THE FULL TARGET SHEET, at the level each target declares
+    (dealer_target.target_level):
 
-      * scheme 'PG' is targeted per PART GROUP — each part group is one unit;
-      * every other scheme (Basket 1, Basket 2, …) is targeted at SCHEME level —
-        the whole scheme is one unit, its target the sum of its part groups'.
+      * 'part_group' — each part group is one unit (the PG groups);
+      * 'scheme'     — the whole scheme is one unit (Basket 1, Basket 2, …);
+      * 'category'   — the whole category is one unit (all of Oil).
+
+    Each row also carries `unit` — 'rs', 'qty' or 'litres' — because the sheet mixes
+    them: the baskets are targeted in rupees, the part groups in pieces, Oil in litres.
+    A client that assumes one unit for the whole list will mislabel two thirds of it.
 
     Every unit the dealer carries a target for appears, hit or not: a target that
     has been reached is still a target, and a rep reading the sheet should see the
@@ -614,19 +676,22 @@ def dealer_suggestions(dealer_id, company_id=DEFAULT_COMPANY, category_ids=None)
     # everyone, which would silently compare it against the whole company.
     peer_ids = _peer_dealer_ids(dealer_id, company_id=company_id)
 
-    # ── Targeted UNITS, at the level each scheme is tracked ──────────────────
-    # Targets live per (part_group, scheme) in dealer_part_group_target, but the
-    # level a target is MEASURED at depends on the scheme:
-    #   * scheme 'PG'  — targeted per PART GROUP; each part group is its own unit.
-    #   * every other scheme (Basket 1, Basket 2, …) — targeted at SCHEME level;
-    #     the unit is the whole scheme and its target is the SUM of its part
-    #     groups' targets.
+    # ── Targeted UNITS, at the level each target is set at ───────────────────
+    # A unit is one thing the dealer is measured on, and target_level says which:
+    #   * 'part_group' — each part group is its own unit (the PG groups);
+    #   * 'scheme'     — the whole scheme is one unit (Basket 1, Basket 2, …);
+    #   * 'category'   — the whole category is one unit (all of Oil).
     # Suggestions are defined at this UNIT level, never per individual product.
-    # Quantity targets carry their OWN category_id, so the category filter is a
-    # plain column test. It used to be inferred by joining part_groups -> product,
-    # which could only ever match a scheme'd unit — a target set on a whole
-    # category (blank part group and scheme, e.g. all of Oil) matched nothing and
-    # was silently dropped from the sheet.
+    #
+    # The level used to be inferred — scheme == 'PG' meant part-group level, anything
+    # else meant scheme level. That was a rule about one scheme's name masquerading as a
+    # rule about grain, and it broke as soon as a second scheme was tracked per group.
+    #
+    # Both units are read, not just quantities. Basket 1 and Basket 2 are targeted in
+    # RUPEES; filtering on target_qty > 0 (as this did) dropped them from the sheet
+    # entirely, so a rep saw no basket rows at all.
+    #
+    # Targets carry their OWN category_id, so the category filter is a plain column test.
     tcat_cond, tcat_params = "", ()
     if category_ids is not None:
         if category_ids:
@@ -637,108 +702,148 @@ def dealer_suggestions(dealer_id, company_id=DEFAULT_COMPANY, category_ids=None)
             tcat_cond = "AND 1 = 0 "
     trows = mysql_manager.execute_query(
         f"""SELECT dpg.part_group, COALESCE(dpg.scheme, '') AS scheme,
-                   COALESCE(dpg.target_qty, 0) AS t, dpg.category_id,
-                   c.name AS category
-            FROM dealer_part_group_target dpg
+                   dpg.target_level, dpg.target_type, dpg.target_uom,
+                   COALESCE(dpg.target_qty, 0) AS tq, COALESCE(dpg.target_value, 0) AS tv,
+                   dpg.category_id, c.name AS category
+            FROM dealer_target dpg
             LEFT JOIN categories c ON c.category_id = dpg.category_id
             WHERE dpg.dealer_id = %s AND dpg.target_period = {_PERIOD}
-              AND dpg.target_qty > 0 {tcat_cond}""",
+              AND (dpg.target_qty > 0 OR dpg.target_value > 0) {tcat_cond}""",
         (dealer_id, *tcat_params)) or []
-    units = {}  # unit_key -> {name, scheme, is_pg, target}
+
+    units = {}  # unit_key -> {name, scheme, level, unit, target, category_id}
     for r in trows:
-        is_pg = (r['scheme'] or '').upper() == 'PG'
-        # A target with neither scheme nor part group is set on the CATEGORY as a whole
-        # (e.g. all of Oil). Naming it after its category keeps the row renderable —
-        # falling through to the blank scheme would put an unlabelled row on the sheet.
-        if not is_pg and not (r['scheme'] or '').strip() and not (r['part_group'] or '').strip():
-            key = f"cat:{r['category'] or ''}"
-            name = r['category'] or 'Other parts'
-        elif is_pg:
-            key, name = f"pg:{r['part_group']}", r['part_group']
-        else:
+        level = r['target_level'] or 'part_group'
+        kind, uom = (r['target_type'] or 'qty'), (r['target_uom'] or '')
+        unit = 'rs' if kind == 'value' else ('litres' if uom == 'litres' else 'qty')
+        if level == 'category':
+            key, name = f"cat:{r['category'] or ''}", (r['category'] or 'Other parts')
+        elif level == 'scheme':
             key, name = f"sc:{r['scheme']}", r['scheme']
+        else:
+            key, name = f"pg:{r['part_group']}", r['part_group']
+        # A unit measured in two units is a data error, not two units — the key carries
+        # the measure so the two never merge into one nonsensical total.
+        key = f"{key}|{unit}"
         u = units.setdefault(key, {
-            'name': name, 'scheme': 'PG' if is_pg else r['scheme'],
-            'is_pg': is_pg, 'target': 0.0,
+            'name': name, 'scheme': r['scheme'] or '', 'level': level, 'unit': unit,
+            'target': 0.0,
             # A category-level unit is measured against the category's own sales,
             # not against any part-group mapping.
-            'category_id': r['category_id'] if key.startswith('cat:') else None})
-        u['target'] += float(r['t'])
+            'category_id': r['category_id'] if level == 'category' else None})
+        u['target'] += float(r['tv'] if kind == 'value' else r['tq'])
 
-    # Per-UNIT sales: this dealer's this-month qty (progress) and the prior-6-months
-    # baseline. A part maps to its unit by the same PG-vs-scheme rule as the targets,
-    # using this month's mapping; unscheme'd parts have no unit. The category filter
-    # (Parts / Pro Parts) applies. Skipped entirely when the dealer carries no
-    # targets in this category — the opportunities below don't depend on it.
+    # Per-UNIT sales: this dealer's this-month progress and the prior-6-months baseline,
+    # in all three measures so each unit can be read in its own. A part maps to its unit
+    # through this month's mapping; unscheme'd parts have no unit. The category filter
+    # (Parts / Pro Parts) applies. Skipped entirely when the dealer carries no targets in
+    # this category — the opportunities below don't depend on it.
     sales = {}
     if units:
-        unit_expr = ("CASE WHEN pg.scheme = 'PG' THEN CONCAT('pg:', pg.part_group) "
-                     "ELSE CONCAT('sc:', pg.scheme) END")
         srows = mysql_manager.execute_query(
-            f"""SELECT {unit_expr} AS unit_key,
+            f"""SELECT pg.part_group, pg.scheme,
                        SUM(CASE WHEN d.dealer_id = %s AND {_MONTH}
-                                THEN b.quantity ELSE 0 END) AS dealer_qty,
+                                THEN b.quantity ELSE 0 END) AS qty,
+                       SUM(CASE WHEN d.dealer_id = %s AND {_MONTH}
+                                THEN {_SALES} ELSE 0 END) AS amount,
+                       SUM(CASE WHEN d.dealer_id = %s AND {_MONTH}
+                                THEN b.quantity * COALESCE(pr.litres_per_unit, 0)
+                                ELSE 0 END) AS litres,
                        SUM(CASE WHEN d.dealer_id = %s AND b.sale_date < {_PERIOD}
-                                THEN b.quantity ELSE 0 END) AS dealer_last6m
+                                THEN b.quantity ELSE 0 END) AS last6m_qty,
+                       SUM(CASE WHEN d.dealer_id = %s AND b.sale_date < {_PERIOD}
+                                THEN {_SALES} ELSE 0 END) AS last6m_amount,
+                       SUM(CASE WHEN d.dealer_id = %s AND b.sale_date < {_PERIOD}
+                                THEN b.quantity * COALESCE(pr.litres_per_unit, 0)
+                                ELSE 0 END) AS last6m_litres
                 FROM busy_sales_data b
                 JOIN dealer d ON d.name = b.particulars AND d.company_id = {int(company_id)}
                 {cat_join}
+                LEFT JOIN product pr ON pr.product_string = b.item_code
+                                    AND pr.company_id = {int(company_id)}
                 JOIN part_groups pg ON pg.part_number = b.item_code AND pg.time_period = {_PERIOD}
                 WHERE b.sale_date >= DATE_SUB({_PERIOD}, INTERVAL 6 MONTH)
                   AND pg.scheme IS NOT NULL {cat_cond}
-                GROUP BY unit_key""",
-            # two dealer_id (this-month, prior-6m), then the category ids.
-            (dealer_id, dealer_id, *cat_params)) or []
-        sales = {r['unit_key']: r for r in srows}
+                GROUP BY pg.part_group, pg.scheme""",
+            # six dealer_id (three this-month measures, three prior-6m), then categories.
+            (*([dealer_id] * 6), *cat_params)) or []
 
-        # A category-level unit (blank part group and scheme) has no part-group
-        # mapping to sum through, so its progress is the dealer's sales in that
-        # whole category — the same grain the target was set at.
-        cat_units = {k: u for k, u in units.items() if u.get('category_id')}
-        if cat_units:
-            ids = sorted({u['category_id'] for u in cat_units.values()})
-            ph = ",".join(["%s"] * len(ids))
+        # One mapping row feeds both its part group's unit and its scheme's, so the two
+        # levels are accumulated separately rather than one being derived from the other.
+        for r in srows:
+            for key in (f"pg:{r['part_group']}", f"sc:{r['scheme']}"):
+                acc = sales.setdefault(key, {'qty': 0.0, 'amount': 0.0, 'litres': 0.0,
+                                             'last6m_qty': 0.0, 'last6m_amount': 0.0,
+                                             'last6m_litres': 0.0})
+                for f in acc:
+                    acc[f] += float(r[f] or 0)
+
+        # A category-level unit has no part-group mapping to sum through, so its progress
+        # is the dealer's sales in that whole category — the grain the target was set at.
+        cat_ids = sorted({u['category_id'] for u in units.values() if u['category_id']})
+        if cat_ids:
+            ph = ",".join(["%s"] * len(cat_ids))
             crows = mysql_manager.execute_query(
-                f"""SELECT p.category_id,
-                           SUM(CASE WHEN {_MONTH} THEN b.quantity ELSE 0 END) AS dealer_qty,
+                f"""SELECT p.category_id, c.name AS category,
+                           SUM(CASE WHEN {_MONTH} THEN b.quantity ELSE 0 END) AS qty,
+                           SUM(CASE WHEN {_MONTH} THEN {_SALES} ELSE 0 END) AS amount,
+                           SUM(CASE WHEN {_MONTH}
+                                    THEN b.quantity * COALESCE(p.litres_per_unit, 0)
+                                    ELSE 0 END) AS litres,
                            SUM(CASE WHEN b.sale_date < {_PERIOD}
-                                    THEN b.quantity ELSE 0 END) AS dealer_last6m
+                                    THEN b.quantity ELSE 0 END) AS last6m_qty,
+                           SUM(CASE WHEN b.sale_date < {_PERIOD}
+                                    THEN {_SALES} ELSE 0 END) AS last6m_amount,
+                           SUM(CASE WHEN b.sale_date < {_PERIOD}
+                                    THEN b.quantity * COALESCE(p.litres_per_unit, 0)
+                                    ELSE 0 END) AS last6m_litres
                     FROM busy_sales_data b
                     JOIN dealer d ON d.name = b.particulars
                                  AND d.company_id = {int(company_id)}
                     JOIN product p ON p.product_string = b.item_code
+                    LEFT JOIN categories c ON c.category_id = p.category_id
                     WHERE d.dealer_id = %s
                       AND b.sale_date >= DATE_SUB({_PERIOD}, INTERVAL 6 MONTH)
                       AND p.category_id IN ({ph})
-                    GROUP BY p.category_id""",
-                (dealer_id, *ids)) or []
-            by_cat = {r['category_id']: r for r in crows}
-            for key, u in cat_units.items():
-                row = by_cat.get(u['category_id'])
-                if row:
-                    sales[key] = row
+                    GROUP BY p.category_id, c.name""",
+                (dealer_id, *cat_ids)) or []
+            for r in crows:
+                sales[f"cat:{r['category'] or ''}"] = {
+                    f: float(r[f] or 0) for f in
+                    ('qty', 'amount', 'litres', 'last6m_qty', 'last6m_amount', 'last6m_litres')}
 
     # EVERY targeted unit, hit or not. On day one nothing has sold, so the rep sees
     # the whole sheet at "0 / N"; later in the month the hit ones simply read 100%+.
     # Widest gap first, so what still needs selling leads and the finished units
     # settle at the bottom.
+    _FIELD = {'rs': ('amount', 'last6m_amount'), 'litres': ('litres', 'last6m_litres'),
+              'qty': ('qty', 'last6m_qty')}
     grow = []
     for key, u in units.items():
-        s = sales.get(key)
-        sold = float(s['dealer_qty']) if s else 0.0
-        last6m = _num(s['dealer_last6m']) if s else 0
+        s = sales.get(key.rsplit('|', 1)[0]) or {}
+        now_f, prior_f = _FIELD[u['unit']]
+        sold = float(s.get(now_f, 0.0))
+        last6m = _num(s.get(prior_f, 0.0))
         grow.append({
             'item_code': '', 'description': u['name'], 'part_group': u['name'],
-            # 'PG' keeps a part-group unit carding by part group in the app; a
-            # scheme unit carries its scheme name and cards by scheme. Either is one
-            # row — the target is the unit, not the products beneath it.
-            'scheme': u['scheme'],
+            # The scheme a part-group unit belongs to keeps it carding by part group in
+            # the app; a scheme unit carries its own name and cards by scheme. Either is
+            # one row — the target is the unit, not the products beneath it.
+            'scheme': u['scheme'], 'level': u['level'],
+            # 'rs' | 'litres' | 'qty'. Rupee and unit rows sit in ONE list, so the client
+            # cannot infer the unit from the list it is rendering.
+            'unit': u['unit'],
             'group_sold': _num(sold), 'group_target': _num(u['target']),
             'group_gap': _num(u['target'] - sold), 'group_pct': _pct(sold, u['target']),
             'group_last6m': last6m,
             'dealer_qty': _num(sold), 'dealer_last6m': last6m,
         })
-    grow.sort(key=lambda x: x['group_gap'], reverse=True)
+    # Gaps in rupees and gaps in units are not comparable, so the sheet is ordered within
+    # each measure — by how far short it is as a SHARE of its own target — rather than by
+    # a raw number that would float every rupee row to the top on scale alone.
+    grow.sort(key=lambda x: (x['group_target'] and
+                             (x['group_target'] - x['group_sold']) / x['group_target']),
+              reverse=True)
 
     return {
         'success': True,
@@ -753,17 +858,17 @@ def dealer_suggestions(dealer_id, company_id=DEFAULT_COMPANY, category_ids=None)
 # ── Category-split analytics (mobile dealer session) ─────────────────────────────
 #
 # The Busy feed carries sales across every product category (Parts, Pro Parts, Oil,
-# Battery, …), but money targets are set for only three of them, and it is those
+# Battery, …), but rupee targets are set for only three of them, and it is those
 # three the app works against: each gets its own sales, its own target, its target
 # sheet and its peer-spend opportunities. Every other category is reported as plain
 # month / last-6-months sales — no target, no detail. Category comes from
 # product.category_id, joined to the Busy row by
 # product.product_string = busy_sales_data.item_code.
 
-# The categories that carry money targets and therefore detail, in display order.
-# Keep this in step with what dealer_money_target actually holds: a category listed
-# here with no target rows costs a few pointless queries per dealer view, and one
-# omitted silently loses its target sheet and opportunities in the app.
+# The categories that carry rupee targets and therefore detail, in display order.
+# Keep this in step with the category-level value rows dealer_target actually
+# holds: a category listed here with no target rows costs a few pointless queries per
+# dealer view, and one omitted silently loses its target sheet and opportunities.
 TARGETED_CATEGORY_NAMES = ('Parts', 'Pro Parts', 'Oil')
 
 # Kept for callers that still name it; the two parts categories are a subset.
@@ -825,34 +930,38 @@ def dealer_other_stats(dealer_id, exclude_names=PARTS_CATEGORY_NAMES,
 
 
 def _dealer_category_targets(dealer_id):
-    """{category_id -> money target} for this dealer and period.
+    """{category_id -> rupee target} for this dealer and period.
 
-    dealer_money_target carries the dealer's own target on the row with no
-    category, and the split across categories on rows that name one. Only the
-    split is returned here; the whole-dealer figure comes from dealer_summary.
-    A category with no row simply has no target, which is not the same as zero —
-    callers report it as "no target set" rather than 0% achieved.
+    CATEGORY-level value rows only. The same table also holds this dealer's scheme-level
+    rupee targets (Basket 1, Basket 2) against the same category_id, and those are a
+    breakdown INSIDE the category figure — dropping the level filter would report a Parts
+    target of the category plus every basket in it.
+
+    A category with no row simply has no target, which is not the same as zero — callers
+    report it as "no target set" rather than 0% achieved.
     """
-    return {r['category_id']: _num(r['value_target']) for r in (
+    return {r['category_id']: _num(r['t']) for r in (
         mysql_manager.execute_query(
-            f"""SELECT category_id, value_target FROM dealer_money_target
-                WHERE dealer_id = %s AND target_period = {_PERIOD}
-                  AND category_id IS NOT NULL""", (dealer_id,)) or [])}
+            f"""SELECT mt.category_id, SUM(mt.target_value) AS t
+                FROM dealer_target mt
+                WHERE mt.dealer_id = %s AND mt.target_period = {_PERIOD}
+                  AND mt.category_id IS NOT NULL AND {_VALUE_TARGET_ROW}
+                GROUP BY mt.category_id""", (dealer_id,)) or [])}
 
 
 def dealer_category_analytics(dealer_id, company_id=DEFAULT_COMPANY):
     """The mobile dealer session's full analytics payload:
 
-      * `target`     — the dealer's own money target for the period;
+      * `target`     — the dealer's own rupee target for the period;
       * `categories` — one block per parts category (Parts, Pro Parts): its own rupee
-                       sales, its OWN money target where one is set, and the target
+                       sales, its OWN rupee target where one is set, and the target
                        sheet / peer-spend opportunities drawn from that category;
       * `category_sales` — every category's month + last-6-months sales, each with
-                       its own target where dealer_money_target names that category.
+                       its own target where a category-level value row names it.
 
-    Category targets are real, from dealer_money_target rows that carry a
-    category_id. A category with no such row reports target 0 / pct None, which
-    the app shows as "no target set" rather than inventing a denominator.
+    Category targets are real, from category-level value rows carrying a category_id.
+    A category with no such row reports target 0 / pct None, which the app shows as
+    "no target set" rather than inventing a denominator.
 
     Returns None when the dealer doesn't exist (mirrors dealer_suggestions)."""
     head = mysql_manager.execute_query(

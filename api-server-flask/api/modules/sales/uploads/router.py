@@ -10,9 +10,13 @@ and each upload *replaces* that period's existing rows (never appends duplicates
 Feeds:
   sales         -> busy_sales_data          (Hero sales actuals from Busy)
   part-groups   -> part_groups              (part -> part-group + scheme mapping)
-  qty-targets   -> dealer_part_group_target (dealer x part-group quantity targets)
-  money-targets -> dealer_money_target      (dealer rupee targets)
+  targets       -> dealer_target (EVERY dealer target, any level, any unit)
   products      -> product                  (the product master itself)
+
+`targets` is a single wide sheet carrying a dealer's category, scheme and part-group
+targets together, in rupees or units, which is how they are actually decided. It replaced
+two narrow per-shape feeds (`qty-targets`, `money-targets`), which have been removed —
+rows they wrote are still readable, since all three always wrote this one table.
 
 Every feed is scoped to the uploading admin's company; dealers are matched by name
 within that company.
@@ -25,6 +29,7 @@ Two feeds are NOT month-scoped and ignore the period selector:
 
 import calendar
 import difflib
+import re
 from datetime import datetime
 from io import BytesIO
 
@@ -39,7 +44,8 @@ from api.core.logging import get_logger
 # _normalize_header is private-by-convention, but header DETECTION must normalise
 # exactly as column RESOLUTION does — a second copy would drift and reintroduce the
 # "Qty." vs "Qty" class of mismatch.
-from api.shared.upload_utils import resolve_required_columns, _normalize_header
+from api.shared.upload_utils import (resolve_required_columns, _normalize_header,
+                                     parse_litres)
 
 logger = get_logger(__name__)
 
@@ -77,10 +83,14 @@ def _requested_company():
     return request.form.get('company_id', type=int) or request.args.get('company_id', type=int)
 
 # feed -> the table it (re)loads, keyed for the status endpoint
-_FEEDS = ('sales', 'part-groups', 'qty-targets', 'money-targets', 'products')
+_FEEDS = ('sales', 'part-groups', 'targets', 'products')
 
 # Feeds that ignore the year/month selector (see module docstring).
 _PERIODLESS_FEEDS = ('sales', 'products')
+
+# The unified target feed has a two-row header and is read positionally, so the
+# header-hint machinery below does not apply to it.
+_RAW_HEADER_FEEDS = ('targets',)
 
 
 # ---------------------------------------------------------------------------
@@ -121,8 +131,6 @@ def _period(year, month):
 _FEED_HEADER_HINTS = {
     'sales':         ('Date', 'Particulars', 'Item Details', 'Qty.', 'Amount'),
     'part-groups':   ('Part number', 'Part Group'),
-    'qty-targets':   ('Dealer', 'Category', 'Part Group', 'Target Qty'),
-    'money-targets': ('Dealer', 'Category', 'Money Target'),
     'products':      ('Part Number', 'Part No', 'Product String', 'Category'),
 }
 
@@ -147,12 +155,17 @@ def _looks_like_header(cells, hints):
     return len(hit) >= min(2, len(hints))
 
 
-def _read_df(uploaded_file, feed=None):
+def _read_df(uploaded_file, feed=None, raw_rows=False):
     """Parse the uploaded CSV/Excel into a str DataFrame with trimmed headers.
 
     When the first row isn't the header — a title block above it — the header row is
     located by `feed`'s hints and the file re-read from there. Without a feed (or with no
     hints matching) the first row is used, exactly as before.
+
+    raw_rows returns the sheet with NO header row taken at all, positionally indexed. The
+    unified target feed needs it: its header is TWO rows (level band, then names), and
+    pandas taking either one as the columns loses the other — it de-duplicates the band's
+    repeated "Scheme" into "Scheme.1", which throws away which column it belonged to.
     """
     filename = uploaded_file.filename or ''
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
@@ -164,6 +177,10 @@ def _read_df(uploaded_file, feed=None):
         if ext == 'csv':
             return pd.read_csv(BytesIO(raw), dtype=str, header=header)
         return pd.read_excel(BytesIO(raw), dtype=str, header=header)
+
+    if raw_rows:
+        sheet = _read(None)
+        return sheet.where(pd.notna(sheet), None)
 
     df = _read(0)
     df.columns = [str(c).strip() for c in df.columns]
@@ -622,158 +639,405 @@ def _load_part_groups(df, period_date, year, month, label, company_id, scheme):
     return replaced, inserted, skipped, errors, warnings
 
 
-def _load_qty_targets(df, period_date, year, month, label, company_id):
-    """Quantity targets live at (category, scheme, part_group, dealer, period).
+# ---------------------------------------------------------------------------
+# The unified target feed
+#
+# One wide sheet carrying every target a dealer has, at every level, in either unit. Two
+# header rows, because a column needs to declare two things a name alone cannot:
+#
+#   row 1  the LEVEL, and for a part-group column the scheme it belongs to
+#          "Category" | "Scheme" | "Part Group : PG"
+#   row 2  the NAME, and the unit in brackets
+#          "Parts (Rs)" | "Basket 1 (Rs)" | "Break Shoe (Qty)" | "Oil (Litres)"
+#
+# The level band is not decoration. "Basket 2" is both a scheme AND a part group in the
+# mapping — _load_part_groups writes `part_group = group or scheme` for a basket nobody
+# broke into groups, so the two are the same string — and no amount of looking the name up
+# can say which was meant. The band says. Likewise the scheme after the colon: the part
+# group is "Brake Shoe", the scheme is "PG", and gluing them into one header ("PG Brake
+# Shoe") would put the loader back to stripping prefixes and guessing where one ends.
+# ---------------------------------------------------------------------------
 
-    Scheme stays derived from that period's part-group mapping rather than being asked
-    for in the file — it is a property of the group, not of the target. Replacement is
-    per category, so loading one category's targets leaves the others' alone.
+# Level word (normalised) -> the target_level stored. The sheet is written by hand, so
+# both the singular and the run-together spellings are accepted.
+_LEVEL_WORDS = {
+    'category': 'category',
+    'categories': 'category',
+    'scheme': 'scheme',
+    'schemes': 'scheme',
+    'partgroup': 'part_group',
+    'partgroups': 'part_group',
+    'group': 'part_group',
+}
+
+# Unit in brackets -> (target_type, target_uom). 'Rs' measures against GST-inclusive
+# rupees billed; 'Qty' against units billed; 'Litres' against units billed scaled by
+# product.litres_per_unit. Every one of these is spelled several ways in practice.
+_UNIT_WORDS = {
+    'rs': ('value', ''), 'rs.': ('value', ''), '₹': ('value', ''), 'inr': ('value', ''),
+    'rupees': ('value', ''), 'value': ('value', ''), 'amount': ('value', ''),
+    'qty': ('qty', ''), 'qty.': ('qty', ''), 'quantity': ('qty', ''), 'nos': ('qty', ''),
+    'nos.': ('qty', ''), 'units': ('qty', ''), 'pcs': ('qty', ''), 'pcs.': ('qty', ''),
+    'litres': ('qty', 'litres'), 'liters': ('qty', 'litres'), 'litre': ('qty', 'litres'),
+    'liter': ('qty', 'litres'), 'ltr': ('qty', 'litres'), 'ltrs': ('qty', 'litres'),
+    'l': ('qty', 'litres'),
+}
+
+
+def _parse_level_band(text):
+    """"Part Group : PG" -> ('part_group', 'PG'). Returns (level, scheme) or (None, None).
+
+    The scheme after the colon is only meaningful for a part-group column; anywhere else
+    it is ignored rather than rejected, so an operator who labels a scheme column
+    "Scheme : Basket 1" gets what they meant instead of an error.
     """
-    required = ['Dealer', 'Category', 'Part Group', 'Target Qty']
-    df, err = resolve_required_columns(df, required)
-    if err:
-        raise ValueError(err)
+    raw = _txt(text)
+    if not raw:
+        return None, None
+    head, _, tail = raw.partition(':')
+    level = _LEVEL_WORDS.get(_normalize_header(head))
+    return level, tail.strip()
+
+
+def _parse_target_header(text):
+    """"Break Shoe (Qty)" -> ('Break Shoe', 'qty', ''). Raises ValueError if unreadable.
+
+    The unit is REQUIRED. A column with no bracket cannot be loaded on a guess: the same
+    number under "Basket 1" means ₹3,750 or 3,750 units depending on nothing the sheet
+    says, and picking one silently is how a rupee target ends up in a quantity total.
+    """
+    raw = _txt(text)
+    if not raw:
+        raise ValueError('blank column header')
+    m = re.match(r'^(.*?)\s*\(([^)]*)\)\s*$', raw)
+    if not m:
+        raise ValueError(f'"{raw}" has no unit — expected a name followed by (Rs), '
+                         f'(Qty) or (Litres)')
+    name, unit = m.group(1).strip(), m.group(2).strip().lower()
+    if not name:
+        raise ValueError(f'"{raw}" has a unit but no name')
+    if unit not in _UNIT_WORDS:
+        raise ValueError(f'"{raw}" — unknown unit "{m.group(2).strip()}". '
+                         f'Use (Rs), (Qty) or (Litres)')
+    target_type, uom = _UNIT_WORDS[unit]
+    return name, target_type, uom
+
+
+def _period_target_masters(period_date, company_id):
+    """What the period's part-group mapping says a target may be set on.
+
+    Returns (schemes, groups, scheme_categories, group_categories) where the two category
+    maps give the set of category_ids each scheme / (scheme, part_group) covers. A target
+    row carries exactly one category_id, so a name covering more than one category cannot
+    be loaded — the caller reports that rather than picking one.
+    """
+    rows = mysql_manager.execute_query(
+        """SELECT pg.scheme, pg.part_group, p.category_id
+             FROM part_groups pg
+             LEFT JOIN product p ON p.product_string = pg.part_number
+                                AND p.company_id = %s
+            WHERE pg.time_period = %s AND pg.company_id = %s""",
+        (company_id, period_date, company_id)) or []
+
+    schemes, groups = {}, {}
+    scheme_cats, group_cats = {}, {}
+    for r in rows:
+        scheme = (r['scheme'] or '').strip()
+        group = (r['part_group'] or '').strip()
+        if scheme:
+            schemes[scheme.lower()] = scheme
+            if r['category_id']:
+                scheme_cats.setdefault(scheme.lower(), set()).add(r['category_id'])
+        if group:
+            groups[(scheme.lower(), group.lower())] = (scheme, group)
+            if r['category_id']:
+                group_cats.setdefault((scheme.lower(), group.lower()), set()).add(r['category_id'])
+    return schemes, groups, scheme_cats, group_cats
+
+
+def _suggest(name, candidates):
+    """' Did you mean "Brake Shoe"?' for a near-miss, or '' when nothing is close.
+
+    A misspelled column is the expensive failure here: it would create a target that
+    matches no sales at all and show every dealer at 0% against it. Naming the closest
+    real value turns a silent wrong number into a one-word fix.
+    """
+    close = difflib.get_close_matches(name.lower(), [c.lower() for c in candidates], 1, 0.7)
+    if not close:
+        return ''
+    actual = next((c for c in candidates if c.lower() == close[0]), close[0])
+    return f' Did you mean "{actual}"?'
+
+
+def _resolve_target_columns(band_row, name_row, period_date, company_id):
+    """Header pair -> one resolved spec per target column. Returns (columns, errors).
+
+    Each spec is a dict the row loop can write straight out. Resolution is strict: a name
+    must match the period's own masters exactly once, or the column is rejected and no
+    target is written for it. Nothing here creates a category, scheme or part group —
+    inventing one would produce a target that no sale can ever roll up to.
+    """
+    cmap = _category_id_map()
+    schemes, groups, scheme_cats, group_cats = _period_target_masters(period_date, company_id)
+    columns, errors = [], []
+
+    for idx in range(1, len(name_row)):
+        band, name_cell = band_row[idx] if idx < len(band_row) else '', name_row[idx]
+        if not _txt(name_cell) and not _txt(band):
+            continue  # trailing empty column — Excel adds them freely
+
+        col_label = f'column {idx + 1}'
+        level, band_scheme = _parse_level_band(band)
+        if not level:
+            errors.append({'row': 1, 'key': col_label,
+                           'reason': f'"{_txt(band)}" is not a level — row 1 must say '
+                                     f'Category, Scheme or "Part Group : <scheme>"'})
+            continue
+        try:
+            name, target_type, uom = _parse_target_header(name_cell)
+        except ValueError as e:
+            errors.append({'row': 2, 'key': col_label, 'reason': str(e)})
+            continue
+
+        spec = {'index': idx, 'level': level, 'type': target_type, 'uom': uom,
+                'label': f'{name} ({"Rs" if target_type == "value" else uom or "Qty"})'}
+
+        if level == 'category':
+            category_id = cmap.get(name.lower())
+            if not category_id:
+                errors.append({'row': 2, 'key': name,
+                               'reason': 'Unknown category.' + _suggest(name, cmap.keys())})
+                continue
+            spec.update(category_id=category_id, scheme='', part_group='')
+
+        elif level == 'scheme':
+            key = name.lower()
+            if key not in schemes:
+                errors.append({'row': 2, 'key': name,
+                               'reason': f'No scheme "{name}" in the part-group mapping for '
+                                         f'this period.' + _suggest(name, schemes.values())})
+                continue
+            cats = scheme_cats.get(key, set())
+            if len(cats) != 1:
+                errors.append({'row': 2, 'key': name, 'reason': _multi_category_reason(
+                    f'Scheme "{schemes[key]}"', cats)})
+                continue
+            spec.update(category_id=next(iter(cats)), scheme=schemes[key], part_group='')
+
+        else:  # part_group
+            if not band_scheme:
+                errors.append({'row': 1, 'key': name,
+                               'reason': 'A part-group column must name its scheme — '
+                                         'write "Part Group : PG" in row 1.'})
+                continue
+            key = (band_scheme.lower(), name.lower())
+            if key not in groups:
+                in_scheme = [g for (s, _), (_, g) in groups.items() if s == band_scheme.lower()]
+                if not in_scheme:
+                    reason = (f'No scheme "{band_scheme}" in the part-group mapping for this '
+                              f'period.' + _suggest(band_scheme, schemes.values()))
+                else:
+                    reason = (f'No part group "{name}" under scheme "{band_scheme}" this '
+                              f'period.' + _suggest(name, in_scheme))
+                errors.append({'row': 2, 'key': name, 'reason': reason})
+                continue
+            cats = group_cats.get(key, set())
+            if len(cats) != 1:
+                errors.append({'row': 2, 'key': name, 'reason': _multi_category_reason(
+                    f'Part group "{groups[key][1]}"', cats)})
+                continue
+            scheme, group = groups[key]
+            spec.update(category_id=next(iter(cats)), scheme=scheme, part_group=group)
+
+        columns.append(spec)
+
+    return columns, errors
+
+
+def _multi_category_reason(what, cats):
+    """Why a scheme / part group can't carry a target: its parts span categories, or none."""
+    if not cats:
+        return (f'{what} has no categorised products this period, so its target has no '
+                f'category to sit under. Load the product master first.')
+    names = mysql_manager.execute_query(
+        f"SELECT name FROM categories WHERE category_id IN ({_in_list(cats)})",
+        tuple(cats)) or []
+    listed = ', '.join(sorted(r['name'] for r in names))
+    return (f'{what} spans several categories ({listed}), so a single target on it is '
+            f'ambiguous. Split the column, or map its parts to one category.')
+
+
+def _in_list(values):
+    return ','.join(['%s'] * len(values))
+
+
+def _load_targets(raw, period_date, year, month, label, company_id):
+    """Load the wide target sheet: every level, every unit, one file.
+
+    Replacement is per SLOT, not per period or per category. The slots are exactly the
+    columns the file declares — (level, scheme, part group, category, type) — so a sheet
+    covering Parts and the baskets leaves an Oil target from a different file alone, and
+    re-uploading a corrected sheet replaces precisely what it covers.
+    """
+    band_idx = _find_band_row(raw)
+    if band_idx is None:
+        raise ValueError(
+            'Could not find the level row. Row 1 must label each target column with '
+            'Category, Scheme or "Part Group : <scheme>", and row 2 must carry the names.')
+    if band_idx + 1 >= len(raw):
+        raise ValueError('The level row has no header row beneath it.')
+
+    band_row = [_txt(v) for v in raw.iloc[band_idx].tolist()]
+    name_row = [_txt(v) for v in raw.iloc[band_idx + 1].tolist()]
+    body = raw.iloc[band_idx + 2:]
+
+    columns, errors = _resolve_target_columns(band_row, name_row, period_date, company_id)
+    if not columns:
+        raise ValueError(
+            'No target column could be resolved. '
+            + (errors[0]['reason'] if errors else 'The sheet has no target columns.'))
 
     dmap = _dealer_map(company_id)
-    cmap = _category_id_map()
-    # part_group -> scheme, taken from this period's mapping
-    scheme_rows = mysql_manager.execute_query(
-        "SELECT part_group, MAX(scheme) AS scheme FROM part_groups "
-        "WHERE time_period=%s AND company_id=%s GROUP BY part_group",
-        (period_date, company_id)) or []
-    # '' rather than NULL: scheme is part of the replacement key, and MySQL treats every
-    # NULL in a UNIQUE index as distinct, so a NULL scheme would defeat the replacement.
-    scheme_of = {(r['part_group'] or '').strip(): (r['scheme'] or '') for r in scheme_rows}
-
-    inserted, skipped, errors = 0, 0, []
+    inserted, skipped = 0, 0
     rows = []  # parsed + validated, awaiting the write
 
-    for idx, row in df.iterrows():
-        row_num = idx + 2
-        dealer = (row.get('Dealer') or '').strip()
-        category = (row.get('Category') or '').strip()
-        group = (row.get('Part Group') or '').strip()
-        if not dealer and not group and not category:
+    for offset, (_, row) in enumerate(body.iterrows()):
+        row_num = band_idx + 3 + offset          # 1-based sheet row, for the error report
+        cells = row.tolist()
+        dealer = _txt(cells[0]) if cells else ''
+        if not dealer:
             skipped += 1
             continue
         dealer_id = dmap.get(_norm_dealer(dealer))
         if not dealer_id:
             errors.append({'row': row_num, 'key': dealer, 'reason': 'Unknown dealer'})
             continue
-        category_id = cmap.get(category.lower())
-        if not category_id:
-            errors.append({'row': row_num, 'key': f'{dealer} / {category}',
-                           'reason': 'Unknown category' if category else 'Missing category'})
-            continue
-        if not group:
-            errors.append({'row': row_num, 'key': dealer, 'reason': 'Missing part group'})
-            continue
-        qty = _num(row.get('Target Qty'))
-        if qty is None:
-            errors.append({'row': row_num, 'key': f'{dealer} / {group}',
-                           'reason': 'Target Qty is not a number'})
-            continue
-        rows.append((row_num, dealer_id, category_id, group, scheme_of.get(group, ''), qty,
-                     f'{dealer} / {category} / {group}'))
 
-    replaced = 0
-    with mysql_manager.get_cursor() as cur:
-        covered = sorted({r[2] for r in rows})
-        if covered:
-            placeholders = ','.join(['%s'] * len(covered))
-            cur.execute(
-                f"DELETE FROM dealer_part_group_target "
-                f"WHERE target_period=%s AND company_id=%s AND category_id IN ({placeholders})",
-                (period_date, company_id, *covered))
-            replaced = cur.rowcount
-        for row_num, dealer_id, category_id, group, scheme, qty, key in rows:
-            try:
-                cur.execute(
-                    """INSERT INTO dealer_part_group_target
-                       (dealer_id, category_id, part_group, scheme, target_qty, month,
-                        target_period, company_id, created_at, updated_at)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                    (dealer_id, category_id, group, scheme, qty, label, period_date,
-                     company_id, datetime.utcnow(), datetime.utcnow()))
-                inserted += 1
-            except Exception as e:
-                errors.append({'row': row_num, 'key': key, 'reason': str(e)})
-
-    warnings = []
-    if covered:
-        warnings.append(f'Replaced {len(covered)} categor{"y" if len(covered) == 1 else "ies"} '
-                        f'for {label}; other categories were left untouched.')
-    return replaced, inserted, skipped, errors, warnings
-
-
-def _load_money_targets(df, period_date, year, month, label, company_id):
-    """Money targets live at (category, dealer, period).
-
-    Replacement is per category, not per period: a file covering one category must not
-    wipe the others' targets for the same month. Only the categories present in the
-    file are cleared, then reloaded.
-    """
-    required = ['Dealer', 'Category', 'Money Target']
-    df, err = resolve_required_columns(df, required)
-    if err:
-        raise ValueError(err)
-
-    dmap = _dealer_map(company_id)
-    cmap = _category_id_map()
-    inserted, skipped, errors = 0, 0, []
-    rows = []  # parsed + validated, awaiting the write
-
-    for idx, row in df.iterrows():
-        row_num = idx + 2
-        dealer = (row.get('Dealer') or '').strip()
-        category = (row.get('Category') or '').strip()
-        if not dealer and not category:
+        wrote = False
+        for spec in columns:
+            value = _num(cells[spec['index']]) if spec['index'] < len(cells) else None
+            if value is None:
+                # A blank cell is "no target for this dealer here", which is different
+                # from zero and must not be written as one — a stored 0 would show the
+                # dealer failing a target nobody set (§3.3).
+                continue
+            if value < 0:
+                errors.append({'row': row_num, 'key': f'{dealer} / {spec["label"]}',
+                               'reason': 'Target cannot be negative'})
+                continue
+            rows.append((row_num, dealer_id, spec, value,
+                         f'{dealer} / {spec["label"]}'))
+            wrote = True
+        if not wrote:
             skipped += 1
-            continue
-        dealer_id = dmap.get(_norm_dealer(dealer))
-        if not dealer_id:
-            errors.append({'row': row_num, 'key': dealer, 'reason': 'Unknown dealer'})
-            continue
-        category_id = cmap.get(category.lower())
-        if not category_id:
-            errors.append({'row': row_num, 'key': f'{dealer} / {category}',
-                           'reason': 'Unknown category' if category else 'Missing category'})
-            continue
-        val = _num(row.get('Money Target'))
-        if val is None:
-            errors.append({'row': row_num, 'key': f'{dealer} / {category}',
-                           'reason': 'Money Target is not a number'})
-            continue
-        rows.append((row_num, dealer_id, category_id, val, f'{dealer} / {category}'))
+
+    # The slots this file speaks for. A dealer with every cell blank does not clear
+    # anyone else's target, but a column present in the file DOES replace that slot for
+    # every dealer — that is what makes a corrected re-upload idempotent.
+    slots = sorted({(c['level'], c['scheme'], c['part_group'], c['category_id'], c['type'])
+                    for c in columns})
 
     replaced = 0
     with mysql_manager.get_cursor() as cur:
-        covered = sorted({r[2] for r in rows})
-        if covered:
-            placeholders = ','.join(['%s'] * len(covered))
+        if slots:
+            tuples = ','.join(['(%s,%s,%s,%s,%s)'] * len(slots))
+            flat = [v for slot in slots for v in slot]
             cur.execute(
-                f"DELETE FROM dealer_money_target "
-                f"WHERE target_period=%s AND company_id=%s AND category_id IN ({placeholders})",
-                (period_date, company_id, *covered))
+                f"""DELETE FROM dealer_target
+                     WHERE target_period=%s AND company_id=%s
+                       AND (target_level, scheme, part_group, category_id, target_type)
+                           IN ({tuples})""",
+                (period_date, company_id, *flat))
             replaced = cur.rowcount
-        for row_num, dealer_id, category_id, val, key in rows:
+
+        for row_num, dealer_id, spec, value, key in rows:
+            qty = value if spec['type'] == 'qty' else 0
+            val = value if spec['type'] == 'value' else 0
             try:
                 cur.execute(
-                    """INSERT INTO dealer_money_target
-                       (dealer_id, category_id, target_period, value_target, company_id,
-                        created_at, updated_at)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s)""",
-                    (dealer_id, category_id, period_date, val, company_id,
-                     datetime.utcnow(), datetime.utcnow()))
+                    """INSERT INTO dealer_target
+                       (dealer_id, category_id, product_id, part_group, scheme,
+                        target_level, target_type, target_uom, target_qty, target_value,
+                        month, target_period, company_id, created_at, updated_at)
+                       VALUES (%s,%s,0,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (dealer_id, spec['category_id'], spec['part_group'], spec['scheme'],
+                     spec['level'], spec['type'], spec['uom'], qty, val,
+                     label, period_date, company_id, datetime.utcnow(), datetime.utcnow()))
                 inserted += 1
             except Exception as e:
                 errors.append({'row': row_num, 'key': key, 'reason': str(e)})
 
-    warnings = []
-    if covered:
-        warnings.append(f'Replaced {len(covered)} categor{"y" if len(covered) == 1 else "ies"} '
-                        f'for {label}; other categories were left untouched.')
+    warnings = _target_load_warnings(columns, slots, label, period_date, company_id)
     return replaced, inserted, skipped, errors, warnings
+
+
+def _find_band_row(raw):
+    """Index of the level row, or None. Tolerates a title block above the header pair."""
+    for i in range(min(len(raw), _HEADER_SCAN_ROWS)):
+        cells = [_txt(v) for v in raw.iloc[i].tolist()]
+        hits = sum(1 for c in cells if _LEVEL_WORDS.get(_normalize_header(c.partition(':')[0])))
+        if hits >= 2:
+            return i
+    return None
+
+
+def _target_load_warnings(columns, slots, label, period_date, company_id):
+    """What the operator needs to know about a load that otherwise looks clean.
+
+    Two of these report a number that is RIGHT but smaller than it looks, which is the
+    class of problem nobody notices on their own.
+    """
+    warnings = []
+    by_level = {}
+    for c in columns:
+        by_level.setdefault(c['level'], []).append(c['label'])
+    parts = [f'{len(v)} {k.replace("_", "-")}' for k, v in sorted(by_level.items())]
+    warnings.append(f'Replaced {len(slots)} target slot(s) for {label} '
+                    f'({", ".join(parts)}); anything this file does not name was left '
+                    f'untouched.')
+
+    # A litres target counts volume, and volume is parsed out of the product name at
+    # product-upload time. Products it could not be read from contribute nothing, so the
+    # dealer looks worse than they are — say so, with the number, before that happens.
+    if any(c['uom'] == 'litres' for c in columns):
+        cats = {c['category_id'] for c in columns if c['uom'] == 'litres'}
+        gap = mysql_manager.execute_query(
+            f"""SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN litres_per_unit IS NULL THEN 1 ELSE 0 END) AS unknown
+                  FROM product
+                 WHERE company_id = %s AND category_id IN ({_in_list(cats)})""",
+            (company_id, *cats)) or [{}]
+        unknown = gap[0].get('unknown') or 0
+        if unknown:
+            warnings.append(
+                f'{unknown} of {gap[0].get("total") or 0} product(s) in the litres-targeted '
+                f'categor{"y" if len(cats) == 1 else "ies"} have no pack size on record, so '
+                f'their sales count as 0 litres. Re-upload the product master to refresh it, '
+                f'and set the rest by hand if the size is not in the product name.')
+
+    # Levels are never added together, so a scheme target inside a category target is a
+    # breakdown, not an addition — but only if it is actually smaller. A basket bigger
+    # than the category that contains it is a data-entry slip worth catching at load.
+    over = mysql_manager.execute_query(
+        """SELECT COUNT(*) AS n FROM (
+               SELECT s.dealer_id
+                 FROM dealer_target s
+                 JOIN dealer_target c
+                      ON c.dealer_id = s.dealer_id AND c.category_id = s.category_id
+                     AND c.target_period = s.target_period AND c.company_id = s.company_id
+                     AND c.target_level = 'category' AND c.target_type = 'value'
+                WHERE s.company_id = %s AND s.target_period = %s
+                  AND s.target_level = 'scheme' AND s.target_type = 'value'
+                GROUP BY s.dealer_id, s.category_id, c.target_value
+               HAVING SUM(s.target_value) > MAX(c.target_value)
+           ) x""", (company_id, period_date)) or [{}]
+    if over[0].get('n'):
+        warnings.append(
+            f'{over[0]["n"]} dealer/category combination(s) have scheme targets adding up to '
+            f'more than the category target above them. Schemes are a breakdown of the '
+            f'category, so the analytics will not add them together — but one of the two '
+            f'numbers is probably wrong.')
+    return warnings
 
 
 def _txt(val):
@@ -979,6 +1243,9 @@ def _load_products(df, company_id):
     inserts, updates, errors = {}, {}, []
     skipped, recategorised = 0, 0
     unknown_categories, fuzzy_categories = set(), {}
+    # Pack-size coverage, reported at the end: a product with no volume contributes 0 to
+    # a litres target, so the gap has to be visible rather than just smaller numbers.
+    litres_found, litres_missing = 0, set()
 
     for idx, row in df.iterrows():
         row_num = idx + 2  # 1-based + header row
@@ -1023,6 +1290,23 @@ def _load_products(df, company_id):
                 if matched != category_name:
                     fuzzy_categories[category_name] = matched
                 values['category_id'] = category_id
+
+        # Volume of one selling unit, so an Oil target set in litres has something to
+        # measure against — Busy bills every oil in Pcs. and the master carries no volume
+        # of its own, so it is read out of the product name here and stored.
+        #
+        # Only when this file actually supplies a name or description: a file carrying
+        # just Part Number and Category has nothing new to say about pack size. And only
+        # when the parse SUCCEEDS — a failed parse leaves the stored value alone rather
+        # than nulling it, so a volume corrected by hand survives the next upload of a
+        # master whose name still doesn't carry one.
+        if 'name' in values or 'description' in values:
+            litres = parse_litres(values.get('name'), values.get('description'))
+            if litres is not None:
+                values['litres_per_unit'] = litres
+                litres_found += 1
+            else:
+                litres_missing.add(product_string)
 
         # Two rows for the same part — including two that differ only in case — are one
         # product, so they merge into a single write rather than colliding on the index.
@@ -1085,6 +1369,15 @@ def _load_products(df, company_id):
             + '. Valid categories: ' + ', '.join(sorted(cmap)) + '.')
     if recategorised:
         warnings.append(f'{recategorised} product(s) moved to a different category.')
+    if litres_missing:
+        listed = ', '.join(sorted(litres_missing)[:10])
+        if len(litres_missing) > 10:
+            listed += f'; and {len(litres_missing) - 10} more'
+        warnings.append(
+            f'Pack size was read from the product name for {litres_found} product(s) but '
+            f'not for {len(litres_missing)}. Those count as 0 towards any target set in '
+            f'litres. Most are items with no volume (wax, cloths, brushes) and can be '
+            f'ignored; a real oil in this list needs its size added to its name: {listed}.')
 
     # Only parts that actually had a column to write count as updated — a row carrying
     # nothing but a Part Number touches nothing and shouldn't inflate the total.
@@ -1160,12 +1453,11 @@ class MonthlyStatus(Resource):
                     'part-groups': periods(
                         "SELECT DATE_FORMAT(time_period,'%%Y-%%m-01') p, COUNT(*) c "
                         "FROM part_groups WHERE company_id=%s GROUP BY p"),
-                    'qty-targets': periods(
+                    # Counts the whole table, including rows written by the two narrow
+                    # feeds this replaced — they wrote here too, so they stay counted.
+                    'targets': periods(
                         "SELECT DATE_FORMAT(target_period,'%%Y-%%m-01') p, COUNT(*) c "
-                        "FROM dealer_part_group_target WHERE company_id=%s GROUP BY p"),
-                    'money-targets': periods(
-                        "SELECT DATE_FORMAT(target_period,'%%Y-%%m-01') p, COUNT(*) c "
-                        "FROM dealer_money_target WHERE company_id=%s GROUP BY p"),
+                        "FROM dealer_target WHERE company_id=%s GROUP BY p"),
                     # Not period-scoped — coverage is reported separately below.
                     'products': {},
                 },
@@ -1231,7 +1523,7 @@ class MonthlyUpload(Resource):
         if not uploaded_file:
             return {'success': False, 'msg': 'No file uploaded'}, 400
         try:
-            df = _read_df(uploaded_file, feed)
+            df = _read_df(uploaded_file, feed, raw_rows=(feed in _RAW_HEADER_FEEDS))
         except ValueError as e:
             return {'success': False, 'msg': str(e)}, 400
 
@@ -1294,11 +1586,8 @@ class MonthlyUpload(Resource):
                 replaced, inserted, skipped, errors, warnings = _load_part_groups(
                     df, period_date, year, month, label, company_id,
                     request.form.get('scheme'))
-            elif feed == 'qty-targets':
-                replaced, inserted, skipped, errors, warnings = _load_qty_targets(
-                    df, period_date, year, month, label, company_id)
-            else:  # money-targets
-                replaced, inserted, skipped, errors, warnings = _load_money_targets(
+            else:  # targets
+                replaced, inserted, skipped, errors, warnings = _load_targets(
                     df, period_date, year, month, label, company_id)
         except ValueError as e:
             return {'success': False, 'msg': str(e)}, 400

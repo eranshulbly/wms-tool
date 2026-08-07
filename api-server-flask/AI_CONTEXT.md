@@ -46,7 +46,7 @@ api/
       assignment/    SCAFFOLD: jobs, job_status_history, worker_availability,
                      allocation_policies; events.py + handlers.py (log-only, from v2)
     sales/                      sales rep performance & field activity
-      analytics/     busy_sales_data, part_groups, dealer_money_target, dealer_part_group_target;
+      analytics/     busy_sales_data, part_groups, dealer_target (all targets);
                      service.py = shared computation for web + mobile (/api/v1/analytics/*);
                      router_uploads.py = admin Monthly Data Upload (/api/admin/monthly/*):
                      period-scoped, replace-not-append reload of the 4 monthly feeds

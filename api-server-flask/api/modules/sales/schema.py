@@ -10,8 +10,13 @@ docs/ANALYTICS_CALCULATIONS.md for the calculations these support.
 
   busy_sales_data          one row per sales line exported from Busy
   part_groups              part -> part-group mapping, per period
-  dealer_money_target      rupee target, per dealer per period
-  dealer_part_group_target quantity target, per dealer x part-group per period
+  dealer_target            EVERY dealer target — category / scheme / part-group level,
+                           in rupees or units, per period. Was dealer_part_group_target.
+  dealer_money_target      GONE. Rupee targets used to live here, at category grain only.
+                           _migrate_target_type() copies them into dealer_target as
+                           target_level='category', target_type='value'. No longer
+                           registered, so it is never recreated; see the note where its
+                           DDL used to be.
 
 Plus the field-sales visit log:
 
@@ -92,53 +97,98 @@ CREATE TABLE IF NOT EXISTS part_groups (
 """, order=61)
 
 
-# The rupee target: one row per category x dealer per period. The unique key IS the
-# grain — the upload replaces by (period, category), so a second row for the same
-# (dealer, category, period) would double the target rather than update it.
-register_table("dealer_money_target", """
-CREATE TABLE IF NOT EXISTS dealer_money_target (
-    id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-    dealer_id     INT NOT NULL,
-    category_id   INT NOT NULL,
-    target_period DATE NOT NULL,
-    value_target  DECIMAL(16,4) NOT NULL DEFAULT 0,
-    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    UNIQUE KEY uq_dmt_grain (dealer_id, category_id, target_period),
-    KEY idx_target_period (target_period),
-    KEY idx_dmt_category (category_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-""", order=62)
+# dealer_money_target (order=62) USED TO BE REGISTERED HERE. It held the rupee target at
+# (dealer, category, period) — a grain with nowhere to put a scheme, which is what forced
+# the discriminator columns onto dealer_target and made this table redundant.
+#
+# It is deliberately NOT registered any more, because the registry only issues CREATE
+# TABLE IF NOT EXISTS: leaving it here would recreate an empty copy on every boot of every
+# database it has been dropped from, and an empty table that nothing reads is an invitation
+# to start writing to it again.
+#
+# Deleting the registration does NOT delete the table. A database that still has it keeps
+# it, and _migrate_target_type() still copies its rows into dealer_target on the boot that
+# introduces target_level — that import is guarded on the table existing, so it is a no-op
+# once the table is gone and a full migration where it is not. Dropping it is a manual
+# step, taken after confirming the import ran; there is no automatic DROP, because a
+# migration that destroys the only copy of a table it just read is one bug away from
+# destroying the data too.
 
 
-# The quantity target: one row per category x scheme x part-group x dealer per period.
-# Analytics SUMs target_qty over the dealers in scope, so a duplicate row here inflates
+# EVERY dealer target, at whatever level and in whatever unit it is set.
+#
+# One row per (dealer, category, level, scheme, part-group, product, type) per period.
+# Analytics SUMs the target over the dealers in scope, so a duplicate row here inflates
 # the target — hence the unique key on the full grain.
-register_table("dealer_part_group_target", """
-CREATE TABLE IF NOT EXISTS dealer_part_group_target (
+#
+# Renamed from dealer_part_group_target, which it outgrew: it began as part-group
+# quantity targets and now carries category- and scheme-level targets in rupees as well as
+# units. _migrate_dealer_target_rename() moves an existing table over, and runs before
+# every other target migration so they all see the new name.
+#
+# Two columns say what a row MEANS, and nothing about a target may be inferred without
+# reading them:
+#
+#   target_level  which grain the target is set at, and therefore which sales roll up to
+#                 it. Stored, never derived from which of scheme/part_group is blank:
+#                 _load_part_groups writes `part_group = group or scheme` for a basket
+#                 that isn't broken into groups, so a scheme-level and a part-group-level
+#                 row can carry identical text in both columns and still mean different
+#                 things.
+#   target_type   'value' -> the number lives in target_value and is measured against
+#                 GST-inclusive rupees sold; 'qty' -> it lives in target_qty and is
+#                 measured against units sold.
+#
+# The value and the quantity live in SEPARATE columns rather than one overloaded amount.
+# The unused one stays 0, so any query that sums the wrong column reads 0 for those rows
+# instead of adding rupees into a unit total — a caller that forgets to filter on
+# target_type under-reports visibly rather than over-reporting invisibly.
+#
+# target_uom refines 'qty': '' means the target counts units exactly as the Busy feed
+# bills them, 'litres' means it counts volume and the sold side must be scaled by
+# product.litres_per_unit. Without it an Oil target of 100 litres would be compared
+# against bottles sold.
+#
+# THE RULE THAT IS NOT IN THE SCHEMA: levels are never added together. A dealer's Parts
+# rupee target and its Basket 1 rupee target are both 'value' rows on the same category,
+# but the basket is a breakdown INSIDE the category target, not an addition to it. See
+# target_tracker/service.py::_target_at, which is the only place allowed to choose.
+register_table("dealer_target", """
+CREATE TABLE IF NOT EXISTS dealer_target (
     id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     dealer_id     INT NOT NULL,
     category_id   INT NOT NULL,
     -- A target set against one specific product rather than a part group. Nothing writes
     -- it yet, so every current target carries the 0 sentinel meaning "no single product".
     -- NOT NULL DEFAULT 0 for the same reason `scheme` is NOT NULL DEFAULT '': it is part
-    -- of uq_dpgt_grain, and MySQL treats every NULL in a UNIQUE index as distinct, so a
+    -- of uq_dt_grain, and MySQL treats every NULL in a UNIQUE index as distinct, so a
     -- nullable product_id would let the key wave through duplicates it exists to block.
     product_id    INT NOT NULL DEFAULT 0,
     part_group    VARCHAR(150) NOT NULL,
     scheme        VARCHAR(150) NOT NULL DEFAULT '',
+    -- 'category' | 'scheme' | 'part_group' | 'product'. Same NOT NULL DEFAULT reasoning
+    -- as product_id above — it sits in uq_dt_grain.
+    target_level  VARCHAR(20) NOT NULL DEFAULT 'part_group',
+    -- 'qty' | 'value'. In the key too: a dealer may carry both a unit and a rupee target
+    -- on the same scheme, and without this the second would be rejected as a duplicate.
+    target_type   VARCHAR(10) NOT NULL DEFAULT 'qty',
+    -- '' | 'litres'. NOT in the key: it qualifies how target_qty is counted, it does not
+    -- make a second target. Two rows differing only by uom are a data error, not a pair.
+    target_uom    VARCHAR(20) NOT NULL DEFAULT '',
     target_qty    DECIMAL(14,4) NOT NULL DEFAULT 0,
+    target_value  DECIMAL(16,4) NOT NULL DEFAULT 0,
     month         VARCHAR(30) DEFAULT NULL,
     target_period DATE NOT NULL,
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    UNIQUE KEY uq_dpgt_grain (dealer_id, category_id, product_id, scheme, part_group, target_period),
+    UNIQUE KEY uq_dt_grain (dealer_id, category_id, target_level, product_id, scheme,
+                            part_group, target_type, target_period),
     KEY idx_target_period (target_period),
     KEY idx_part_group (part_group),
-    KEY idx_dpgt_category (category_id),
-    KEY idx_dpgt_product (product_id)
+    KEY idx_dt_category (category_id),
+    KEY idx_dt_product (product_id),
+    KEY idx_dt_level (target_level)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """, order=63)
 

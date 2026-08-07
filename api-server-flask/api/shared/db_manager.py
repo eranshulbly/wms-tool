@@ -754,6 +754,16 @@ def create_all_tables():
     import api.modules.platform.user_auth.schema       # noqa: F401
     import api.modules.logistics.supply_sheet.schema   # noqa: F401
     from api.shared import schema_registry
+
+    # RENAMES RUN BEFORE THE DDL, NOT WITH THE OTHER MIGRATIONS.
+    #
+    # The registry only issues CREATE TABLE IF NOT EXISTS. A rename registered under the
+    # NEW name therefore creates an empty table on the next boot, and a rename migration
+    # running afterwards finds both names present, has no safe way to tell which holds the
+    # truth, and leaves the data stranded in the old one while the app writes to the new.
+    # Renaming first means the DDL below finds the table already there and does nothing.
+    _migrate_dealer_target_rename()
+
     for _t in schema_registry.registered_tables():
         mysql_manager.execute_query(_t.ddl, fetch=False)
 
@@ -779,11 +789,19 @@ def create_all_tables():
     _migrate_dealer_columns()
     _migrate_product_columns()
     _migrate_invoice_columns()
+    # _migrate_dealer_target_rename() is NOT called here — it runs before the registry
+    # DDL above, because CREATE TABLE IF NOT EXISTS would otherwise create the new name
+    # first and strand the old table's rows. Every target migration below locates the
+    # table as `dealer_target` and depends on that having already happened.
     _migrate_company_id()
     _migrate_target_grain()
     # After _migrate_target_grain: that one creates the table's category-level shape on an
     # old database, and product_id is added relative to category_id.
-    _migrate_dpgt_product_id()
+    _migrate_dt_product_id()
+    # After _migrate_dt_product_id: both rebuild uq_dt_grain, and this one must have
+    # the last word on it — it widens the key onto target_level and target_type, which
+    # product_id's version of the key knows nothing about.
+    _migrate_target_type()
     _migrate_dealer_visits_columns()
     _migrate_busy_sales_gst()
     _migrate_part_groups_period()
@@ -933,16 +951,26 @@ def _migrate_dealer_columns():
 def _migrate_product_columns():
     """Add the product columns the admin uploads write (idempotent).
 
-      category_id  set by the Product Category upload (Order Uploads -> Product Categories)
-      nickname     set by the Product Nickname admin tab; printed on supply sheet PDFs
+      category_id     set by the Product Category upload (Order Uploads -> Product Categories)
+      nickname        set by the Product Nickname admin tab; printed on supply sheet PDFs
+      litres_per_unit volume of one selling unit, for targets set in litres
 
-    Both are declared in migration_v2_api.sql, which cannot be applied wholesale to a
-    freshly-created schema (it carries ALTERs written against production's older lineage).
-    Without them the corresponding admin upload fails with 'Unknown column'.
+    The first two are declared in migration_v2_api.sql, which cannot be applied wholesale
+    to a freshly-created schema (it carries ALTERs written against production's older
+    lineage). Without them the corresponding admin upload fails with 'Unknown column'.
+
+    litres_per_unit exists because Oil targets are set in LITRES while Busy bills oil in
+    Pcs. — every row of the feed carries unit 'Pcs.', and the product master has no volume
+    of its own. The product upload parses it out of the product name ("… 900 ML", "… ML900")
+    and stores it here, so the analytics join is a multiplication rather than a regex over
+    every sales row. NULL means "not known" and a litres target simply cannot count that
+    product; 0 means "known to have no volume" (wax, sponges, cloths sitting in the Oil
+    category). Those are different facts and the column keeps them apart.
     """
     wanted = [
-        ('category_id', 'INT NULL',          'idx_product_category'),
-        ('nickname',    'VARCHAR(200) NULL', None),
+        ('category_id',     'INT NULL',            'idx_product_category'),
+        ('nickname',        'VARCHAR(200) NULL',   None),
+        ('litres_per_unit', 'DECIMAL(10,4) NULL',  None),
     ]
     for column, ddl, index_name in wanted:
         try:
@@ -1007,21 +1035,96 @@ _COMPANY_ID_TABLES = [
     ('dealer_visits',                   'dealer_id',          'idx_dv_company'),
     ('upload_batches',                  'warehouse_id',       'idx_ub_company'),
     ('part_groups',                     'part_number',        'idx_pg_company'),
+    # dealer_money_target is no longer registered and is dropped on migrated databases.
+    # Its entry stays because every migration here is guarded on the table existing (a
+    # no-op once it is gone) and because _migrate_target_type's import SELECTs
+    # mt.company_id — on a legacy database this is what guarantees the column is there
+    # to read.
     ('dealer_money_target',             'dealer_id',          'idx_dmt_company'),
-    ('dealer_part_group_target',        'dealer_id',          'idx_dpgt_company'),
+    ('dealer_target',                   'dealer_id',          'idx_dt_company'),
     ('dealer_location_submissions',     'dealer_id',          'idx_dls_company'),
 ]
 
 
-def _migrate_dpgt_product_id():
-    """Add dealer_part_group_target.product_id and widen uq_dpgt_grain onto it (idempotent).
+def _migrate_dealer_target_rename():
+    """dealer_part_group_target -> dealer_target, with its indexes (idempotent).
+
+    The old name described the table's first job — part-group quantity targets — and
+    stopped being true once it also carried category- and scheme-level targets in rupees.
+
+    This has to run BEFORE every other migration that touches the table. All of them
+    locate it by name in information_schema and return early when it is absent, so a
+    database renamed after they ran would look fully migrated to them while a database
+    renamed before they ran gets migrated normally. Ordering it first is what makes the
+    two cases the same case.
+
+    Renaming the INDEXES too is not cosmetic: _migrate_dt_product_id and
+    _migrate_target_type both find, drop and re-add the unique key BY NAME. If the table
+    arrived carrying uq_dpgt_grain while they looked for uq_dt_grain, they would not find
+    it, would not drop it, and would add a SECOND unique key over almost the same columns
+    — leaving the table with two keys and no obvious sign of which one rejected a row.
+
+    A database that already has dealer_target (fresh install — the registry DDL creates it
+    directly) does nothing here.
+    """
+    try:
+        has_new = mysql_manager.execute_query(
+            """SELECT 1 FROM information_schema.TABLES
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'dealer_target'""")
+        has_old = mysql_manager.execute_query(
+            """SELECT 1 FROM information_schema.TABLES
+               WHERE TABLE_SCHEMA = DATABASE()
+                 AND TABLE_NAME = 'dealer_part_group_target'""")
+        if has_old and not has_new:
+            mysql_manager.execute_query(
+                "RENAME TABLE dealer_part_group_target TO dealer_target", fetch=False)
+            logger.info("renamed dealer_part_group_target -> dealer_target")
+        elif has_old and has_new:
+            # Both present: the rename already happened and something re-created the old
+            # name, or a half-finished manual migration. Refuse to guess which holds the
+            # truth — merging them wrongly would double or drop targets.
+            logger.error(
+                "both dealer_target and dealer_part_group_target exist. dealer_target is "
+                "the live table; the old one is being ignored. Drop it once you have "
+                "confirmed it holds nothing you need.")
+
+        if not (has_old or has_new):
+            return
+
+        for old, new in (('uq_dpgt_grain', 'uq_dt_grain'),
+                         ('idx_dpgt_category', 'idx_dt_category'),
+                         ('idx_dpgt_product', 'idx_dt_product'),
+                         ('idx_dpgt_level', 'idx_dt_level'),
+                         ('idx_dpgt_company', 'idx_dt_company')):
+            present = mysql_manager.execute_query(
+                """SELECT INDEX_NAME FROM information_schema.STATISTICS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'dealer_target'
+                     AND INDEX_NAME IN (%s, %s)""", (old, new))
+            names = {r['INDEX_NAME'] for r in (present or [])}
+            if old in names and new not in names:
+                mysql_manager.execute_query(
+                    f"ALTER TABLE dealer_target RENAME INDEX `{old}` TO `{new}`",
+                    fetch=False)
+                logger.info("dealer_target: renamed index %s -> %s", old, new)
+            elif old in names and new in names:
+                # Both exist — the duplicate-key case the docstring warns about, from a
+                # database migrated by an earlier build. The old one is redundant.
+                mysql_manager.execute_query(
+                    f"ALTER TABLE dealer_target DROP INDEX `{old}`", fetch=False)
+                logger.info("dealer_target: dropped superseded index %s", old)
+    except Exception:
+        logger.exception("dealer_target: rename migration failed")
+
+
+def _migrate_dt_product_id():
+    """Add dealer_target.product_id and widen uq_dt_grain onto it (idempotent).
 
     product_id is a target set against ONE product instead of a part group. Nothing writes
     it yet, so every existing target carries the 0 sentinel meaning "no single product".
 
     It is NOT NULL DEFAULT 0 rather than nullable, for exactly the reason _migrate_target_grain
     made `scheme` NOT NULL DEFAULT '': the column is part of the unique key, and MySQL treats
-    every NULL in a UNIQUE index as distinct. A nullable product_id sitting in uq_dpgt_grain
+    every NULL in a UNIQUE index as distinct. A nullable product_id sitting in uq_dt_grain
     would make every row unique on sight and quietly retire the key — which exists to stop a
     malformed file double-loading a period and inflating every target it feeds.
 
@@ -1029,7 +1132,7 @@ def _migrate_dpgt_product_id():
     them for the same dealer and category would share a blank part_group and scheme, so the
     old key would reject the second as a duplicate of the first.
     """
-    table = 'dealer_part_group_target'
+    table = 'dealer_target'
     try:
         if not mysql_manager.execute_query(
                 """SELECT 1 FROM information_schema.TABLES
@@ -1045,7 +1148,7 @@ def _migrate_dpgt_product_id():
                 f"ALTER TABLE {table} "
                 "ADD COLUMN product_id INT NOT NULL DEFAULT 0 AFTER category_id", fetch=False)
             mysql_manager.execute_query(
-                f"ALTER TABLE {table} ADD INDEX idx_dpgt_product (product_id)", fetch=False)
+                f"ALTER TABLE {table} ADD INDEX idx_dt_product (product_id)", fetch=False)
             logger.info("%s: added column product_id", table)
         elif col[0]['IS_NULLABLE'] == 'YES':
             # Carried the nullable first cut of this column — settle the NULLs on the
@@ -1063,21 +1166,169 @@ def _migrate_dpgt_product_id():
         keyed = mysql_manager.execute_query(
             """SELECT 1 FROM information_schema.STATISTICS
                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                 AND INDEX_NAME = 'uq_dpgt_grain' AND COLUMN_NAME = 'product_id'""", (table,))
+                 AND INDEX_NAME = 'uq_dt_grain' AND COLUMN_NAME = 'product_id'""", (table,))
         if not keyed:
             if mysql_manager.execute_query(
                     """SELECT 1 FROM information_schema.STATISTICS
                        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                         AND INDEX_NAME = 'uq_dpgt_grain'""", (table,)):
+                         AND INDEX_NAME = 'uq_dt_grain'""", (table,)):
                 mysql_manager.execute_query(
-                    f"ALTER TABLE {table} DROP INDEX uq_dpgt_grain", fetch=False)
+                    f"ALTER TABLE {table} DROP INDEX uq_dt_grain", fetch=False)
             mysql_manager.execute_query(
-                f"ALTER TABLE {table} ADD UNIQUE KEY uq_dpgt_grain "
+                f"ALTER TABLE {table} ADD UNIQUE KEY uq_dt_grain "
                 "(dealer_id, category_id, product_id, scheme, part_group, target_period)",
                 fetch=False)
-            logger.info("%s: widened uq_dpgt_grain onto product_id", table)
+            logger.info("%s: widened uq_dt_grain onto product_id", table)
     except Exception:
         logger.exception("%s: migration failed for product_id", table)
+
+
+def _migrate_target_type():
+    """Unify every dealer target into dealer_target (idempotent).
+
+    Before this, a target's meaning came from WHICH TABLE it sat in: rupees in
+    dealer_money_target, units in dealer_target. That worked only while rupee
+    targets existed at category grain alone. Scheme targets (Basket 1, Basket 2) are set
+    in rupees, and dealer_money_target has no scheme column to put them in — so the
+    discriminator has to move out of the table name and into the row.
+
+    Three things happen here, once, on an existing database:
+
+      1. target_level / target_type / target_uom / target_value are added.
+
+      2. target_level is BACKFILLED from what the old rows leave blank — part_group set
+         means part-group level, scheme-only means scheme level, neither means category.
+         That inference is correct for the historical rows because the only loader that
+         ever wrote them filled exactly one of those columns. It is not correct in
+         general, which is why the column is stored from here on rather than re-derived:
+         _load_part_groups writes `part_group = group or scheme`, so a basket that is not
+         broken into groups produces rows whose scheme and part_group are the same text.
+
+      3. dealer_money_target is COPIED IN as category-level value targets. Its grain
+         (dealer, category, period) is a strict subset of this table's, so nothing is
+         lost. The copy is guarded on target_level having been absent — i.e. it runs on
+         the single boot that introduces the column — and is INSERT IGNORE besides, so a
+         partially-completed run cannot double the rupee targets on the next one.
+
+    dealer_money_target itself is never dropped here. Doing so would make this migration
+    one-way, and would mean a migration destroying the only copy of a table it had just
+    finished reading — one bug in the import above and the data is gone with it. It is no
+    longer registered in sales/schema.py, so it is not recreated where it has already been
+    dropped; where it still exists it simply stops being read, and an operator drops it by
+    hand once the import has been confirmed.
+
+    target_type joins uq_dt_grain because a dealer may legitimately carry both a unit
+    and a rupee target on the same scheme. target_level joins it because a category-level
+    and a scheme-level row can otherwise collide: an unbroken basket's scheme-level target
+    and a part-group target on the group of the same name agree on every other key column.
+    """
+    table = 'dealer_target'
+
+    def _has_column(col):
+        return bool(mysql_manager.execute_query(
+            """SELECT 1 FROM information_schema.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                 AND COLUMN_NAME = %s""", (table, col)))
+
+    try:
+        if not mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.TABLES
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s""", (table,)):
+            return  # fresh install — the registry DDL already has the new shape
+
+        # Whether THIS boot is the one introducing the level column decides whether the
+        # backfill and the money-target import run. Read before anything is added.
+        first_run = not _has_column('target_level')
+
+        for column, ddl, after in (
+                ('target_level', "VARCHAR(20) NOT NULL DEFAULT 'part_group'", 'scheme'),
+                ('target_type',  "VARCHAR(10) NOT NULL DEFAULT 'qty'",        'target_level'),
+                ('target_uom',   "VARCHAR(20) NOT NULL DEFAULT ''",           'target_type'),
+                ('target_value', "DECIMAL(16,4) NOT NULL DEFAULT 0",          'target_qty')):
+            if not _has_column(column):
+                anchor = f" AFTER `{after}`" if _has_column(after) else ""
+                mysql_manager.execute_query(
+                    f"ALTER TABLE `{table}` ADD COLUMN `{column}` {ddl}{anchor}", fetch=False)
+                logger.info("%s: added column %s", table, column)
+
+        if not mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.STATISTICS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                     AND INDEX_NAME = 'idx_dt_level'""", (table,)):
+            mysql_manager.execute_query(
+                f"ALTER TABLE `{table}` ADD INDEX idx_dt_level (target_level)", fetch=False)
+
+        if first_run:
+            # Every pre-existing row is a quantity target; only its level is in doubt.
+            mysql_manager.execute_query(
+                f"""UPDATE `{table}`
+                       SET target_level = CASE
+                               WHEN COALESCE(part_group, '') <> '' THEN 'part_group'
+                               WHEN COALESCE(scheme, '')     <> '' THEN 'scheme'
+                               ELSE 'category' END,
+                           target_type  = 'qty'""", fetch=False)
+            logger.info("%s: backfilled target_level for existing quantity targets", table)
+
+        # Rebuild the unique key onto the two new discriminators. Safe in either order:
+        # every existing row now carries a level derived from columns the old key already
+        # covered and the single type 'qty', so the widened key is no looser on the data
+        # that exists than the one it replaces.
+        #
+        # This MUST happen before the money-target import below. A category-level quantity
+        # target has a blank scheme and a blank part_group — exactly the sentinels a
+        # category-level rupee target carries — so under the OLD key the two are the same
+        # row. The INSERT IGNORE would skip the rupee target as a duplicate and it would
+        # vanish, silently, with the count reporting success.
+        keyed = mysql_manager.execute_query(
+            """SELECT 1 FROM information_schema.STATISTICS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                 AND INDEX_NAME = 'uq_dt_grain' AND COLUMN_NAME = 'target_type'""", (table,))
+        if not keyed:
+            if mysql_manager.execute_query(
+                    """SELECT 1 FROM information_schema.STATISTICS
+                       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                         AND INDEX_NAME = 'uq_dt_grain'""", (table,)):
+                mysql_manager.execute_query(
+                    f"ALTER TABLE `{table}` DROP INDEX uq_dt_grain", fetch=False)
+            mysql_manager.execute_query(
+                f"ALTER TABLE `{table}` ADD UNIQUE KEY uq_dt_grain "
+                "(dealer_id, category_id, target_level, product_id, scheme, part_group, "
+                " target_type, target_period)", fetch=False)
+            logger.info("%s: widened uq_dt_grain onto target_level + target_type", table)
+
+        if first_run and mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.TABLES
+                   WHERE TABLE_SCHEMA = DATABASE()
+                     AND TABLE_NAME = 'dealer_money_target'"""):
+            before = (mysql_manager.execute_query(
+                f"SELECT COUNT(*) AS n FROM `{table}`") or [{'n': 0}])[0]['n']
+            mysql_manager.execute_query(
+                f"""INSERT IGNORE INTO `{table}`
+                      (dealer_id, category_id, product_id, part_group, scheme,
+                       target_level, target_type, target_uom, target_qty, target_value,
+                       target_period, company_id, created_at, updated_at)
+                    SELECT mt.dealer_id, mt.category_id, 0, '', '',
+                           'category', 'value', '', 0, mt.value_target,
+                           mt.target_period, mt.company_id, NOW(), NOW()
+                      FROM dealer_money_target mt
+                     WHERE mt.category_id IS NOT NULL""", fetch=False)
+            after = (mysql_manager.execute_query(
+                f"SELECT COUNT(*) AS n FROM `{table}`") or [{'n': 0}])[0]['n']
+            source = (mysql_manager.execute_query(
+                "SELECT COUNT(*) AS n FROM dealer_money_target "
+                "WHERE category_id IS NOT NULL") or [{'n': 0}])[0]['n']
+            logger.info("%s: imported %s of %s rupee target(s) from dealer_money_target",
+                        table, after - before, source)
+            if after - before != source:
+                # IGNORE swallowed something. The old table is still there and still
+                # holds the truth, so this is recoverable — but only if someone knows.
+                logger.error(
+                    "%s: %s rupee target(s) from dealer_money_target were NOT imported "
+                    "(duplicate key or bad dealer/category). dealer_money_target is "
+                    "unchanged; reconcile it before relying on rupee targets.",
+                    table, source - (after - before))
+    except Exception:
+        logger.exception("%s: migration failed for target level/type", table)
 
 
 def _migrate_invoice_columns():
@@ -1261,11 +1512,22 @@ _CONVERGE_COLUMNS = [
      ('datetime', 'YES', 'CURRENT_TIMESTAMP'), 'DATETIME NULL DEFAULT CURRENT_TIMESTAMP'),
     ('potential_order_product', 'item_status',
      ('varchar(30)', 'NO', 'pending'), "VARCHAR(30) NOT NULL DEFAULT 'pending'"),
-    # These two matter most: category_id is part of uq_dmt_grain / uq_dpgt_grain, and
+    # These two matter most: category_id is part of uq_dmt_grain / uq_dt_grain, and
     # MySQL counts every NULL in a unique index as distinct. Left nullable, the key stops
     # blocking the duplicate loads it exists to block — on one database but not the other.
+    # dealer_money_target stays listed for the legacy case only: its import filters on
+    # `category_id IS NOT NULL`, so the column has to exist before the copy can run.
     ('dealer_money_target', 'category_id', ('int', 'NO', None), 'INT NOT NULL'),
-    ('dealer_part_group_target', 'category_id', ('int', 'NO', None), 'INT NOT NULL'),
+    ('dealer_target', 'category_id', ('int', 'NO', None), 'INT NOT NULL'),
+]
+
+
+# Indexes whose NAME diverged rather than whose definition did: an older lineage created
+# one name, the CREATE TABLE another, over identical columns. Renaming keeps a migrated
+# database byte-identical to a fresh one without rebuilding the index.
+#   (table, legacy name, canonical name)
+_CONVERGE_INDEXES = [
+    ('users', 'idx_users_username', 'idx_users_name'),
 ]
 
 
@@ -1306,6 +1568,30 @@ def _migrate_schema_convergence():
             logger.info("%s.%s: pinned to %s", table, column, ddl)
         except Exception:
             logger.exception("%s.%s: convergence migration failed", table, column)
+
+    for table, legacy, canonical in _CONVERGE_INDEXES:
+        try:
+            def _has(name):
+                return mysql_manager.execute_query(
+                    """SELECT 1 FROM information_schema.STATISTICS
+                       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                         AND INDEX_NAME = %s""", (table, name))
+
+            if not _has(legacy):
+                continue                      # already canonical, or table absent
+            if _has(canonical):
+                # Both present: the canonical one covers it, so the legacy name is a
+                # duplicate index costing writes for nothing.
+                mysql_manager.execute_query(
+                    f"ALTER TABLE `{table}` DROP INDEX `{legacy}`", fetch=False)
+                logger.info("%s: dropped duplicate index %s", table, legacy)
+            else:
+                mysql_manager.execute_query(
+                    f"ALTER TABLE `{table}` RENAME INDEX `{legacy}` TO `{canonical}`",
+                    fetch=False)
+                logger.info("%s: renamed index %s -> %s", table, legacy, canonical)
+        except Exception:
+            logger.exception("%s.%s: index convergence failed", table, legacy)
 
 
 def _migrate_part_groups_period():
@@ -1430,15 +1716,20 @@ def _migrate_target_grain():
     MySQL treats every NULL in a UNIQUE index as distinct — a NULL scheme would slip
     past the key on every upload.
     """
+    # dealer_money_target appears here only for a database old enough to still have it —
+    # the entry is a no-op everywhere else, and _migrate_target_type reads the table once
+    # before it is dropped by hand.
     tables = {
         'dealer_money_target': {
             'drop_keys': ['uq_dealer_period'],
             'unique': ('uq_dmt_grain', '(dealer_id, category_id, target_period)'),
+            'cat_index': 'idx_dmt_category',
         },
-        'dealer_part_group_target': {
+        'dealer_target': {
             'drop_keys': ['uq_dealer_group_period'],
-            'unique': ('uq_dpgt_grain',
+            'unique': ('uq_dt_grain',
                        '(dealer_id, category_id, scheme, part_group, target_period)'),
+            'cat_index': 'idx_dt_category',
         },
     }
     for table, spec in tables.items():
@@ -1456,16 +1747,16 @@ def _migrate_target_grain():
                     f"ALTER TABLE `{table}` ADD COLUMN category_id INT NULL AFTER dealer_id",
                     fetch=False)
                 mysql_manager.execute_query(
-                    f"ALTER TABLE `{table}` ADD INDEX idx_{table[:12]}_category (category_id)",
+                    f"ALTER TABLE `{table}` ADD INDEX {spec['cat_index']} (category_id)",
                     fetch=False)
                 logger.info("%s: added column category_id", table)
 
-            if table == 'dealer_part_group_target':
+            if table == 'dealer_target':
                 mysql_manager.execute_query(
-                    "UPDATE dealer_part_group_target SET scheme = '' WHERE scheme IS NULL",
+                    "UPDATE dealer_target SET scheme = '' WHERE scheme IS NULL",
                     fetch=False)
                 mysql_manager.execute_query(
-                    "ALTER TABLE dealer_part_group_target "
+                    "ALTER TABLE dealer_target "
                     "MODIFY scheme VARCHAR(150) NOT NULL DEFAULT ''", fetch=False)
 
             for old in spec['drop_keys']:

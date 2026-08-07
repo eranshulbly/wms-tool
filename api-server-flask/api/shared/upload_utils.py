@@ -12,6 +12,7 @@ import base64
 import csv
 import logging
 import os
+import re
 import uuid
 from io import BytesIO
 
@@ -89,6 +90,52 @@ def _read_csv(temp_path, encoding):
 def _normalize_header(name):
     """Lower-case and drop the punctuation exports vary on ('Qty.' vs 'Qty', 'Bill #')."""
     return name.lower().replace(' ', '').replace('#', '').replace('.', '')
+
+
+# Volume written into a product name, in the two shapes Hero's master uses:
+#   "HERO 4T PLUS 10W30 SL MA2(900 ML)"   number then unit
+#   "HERO 4T PLUS 10W30 SL MA2 ML900"     unit then number (the …EES variants)
+# ML is listed before L in both so "800 ML" is read as millilitres, never as "800 <junk>".
+_VOL_SUFFIX = re.compile(r'(\d+(?:\.\d+)?)\s*(ML|LITRES?|LITERS?|LTRS?|L)\b', re.IGNORECASE)
+_VOL_PREFIX = re.compile(r'\b(ML|LITRES?|LITERS?|LTRS?|L)\s*(\d+(?:\.\d+)?)\b', re.IGNORECASE)
+
+
+def parse_litres(*texts):
+    """Volume of one selling unit, in litres, read out of a product name. None if absent.
+
+    Oil targets are set in litres, but Busy bills oil in Pcs. and neither the Busy feed
+    nor the product master carries a volume — the pack size exists only inside the product
+    name. This is the one place that guesses it, so the guess is made once at upload time
+    and stored, rather than re-derived by every query that touches a litres target.
+
+    It is a heuristic and it fails in two ways that must stay distinguishable from each
+    other by the caller:
+
+      * items in the Oil category with no volume at all (wax, sponges, cloths) — nothing
+        to find, and a litres target should never count them;
+      * real oils whose pack size was never written into the name, or was truncated out of
+        it ("HERO GENUINE TRANSMISSION OIL 75W90 (125" — the master cuts the field off
+        mid-number).
+
+    Both return None here. The caller reports the count so the gap is visible, because a
+    missing volume silently shrinks the litres a dealer is credited with.
+    """
+    for text in texts:
+        if not text:
+            continue
+        for pattern, unit_group, num_group in ((_VOL_SUFFIX, 2, 1), (_VOL_PREFIX, 1, 2)):
+            m = pattern.search(str(text))
+            if not m:
+                continue
+            unit = m.group(unit_group).upper()
+            try:
+                value = float(m.group(num_group))
+            except ValueError:
+                continue
+            if value <= 0:
+                continue
+            return round(value / 1000, 4) if unit == 'ML' else round(value, 4)
+    return None
 
 
 def resolve_required_columns(df, required_columns):

@@ -472,11 +472,16 @@ class AdminDealerManage(Resource):
         # Which categories carry a target anywhere in the FILTERED BOOK, not just on this
         # page. Deriving the columns from the page would make them appear and disappear as
         # the admin pages through, and a target would look lost when it had only moved.
+        # Category-level rupee rows only. The same table now also holds this dealer's
+        # scheme-level rupee targets (Basket 1, Basket 2) against the same category, and
+        # they are a breakdown INSIDE the category figure — this editor sets the category
+        # number, so it must neither show nor sum the baskets underneath it.
         used_cats = [r['category_id'] for r in (mysql_manager.execute_query(
             f"""SELECT DISTINCT mt.category_id
                 FROM dealer d
-                JOIN dealer_money_target mt ON mt.dealer_id = d.dealer_id
-                {where + (' AND ' if where else 'WHERE ')} mt.target_period = %s""",
+                JOIN dealer_target mt ON mt.dealer_id = d.dealer_id
+                {where + (' AND ' if where else 'WHERE ')} mt.target_period = %s
+                  AND mt.target_level = 'category' AND mt.target_type = 'value'""",
             tuple(params + [period])) or [])]
 
         # Targets for the whole page in one query, then attached in Python — a per-dealer
@@ -486,10 +491,12 @@ class AdminDealerManage(Resource):
         if ids:
             ph = ",".join(["%s"] * len(ids))
             trows = mysql_manager.execute_query(
-                f"""SELECT mt.dealer_id, mt.category_id, c.name AS category, mt.value_target
-                    FROM dealer_money_target mt
+                f"""SELECT mt.dealer_id, mt.category_id, c.name AS category,
+                           mt.target_value AS value_target
+                    FROM dealer_target mt
                     JOIN categories c ON c.category_id = mt.category_id
-                    WHERE mt.target_period = %s AND mt.dealer_id IN ({ph})""",
+                    WHERE mt.target_period = %s AND mt.dealer_id IN ({ph})
+                      AND mt.target_level = 'category' AND mt.target_type = 'value'""",
                 (period, *ids)) or []
             for t in trows:
                 targets.setdefault(t['dealer_id'], {})[t['category_id']] = {
@@ -626,18 +633,26 @@ class AdminDealerTargets(Resource):
                 return {'success': False, 'msg': 'a target cannot be negative'}, 422
 
             if amount == 0:
+                # Only the category-level row. Clearing a dealer's Parts target must not
+                # take the baskets inside it with it — those are set by the target upload
+                # and this editor has no way to put them back.
                 mysql_manager.execute_query(
-                    "DELETE FROM dealer_money_target "
-                    "WHERE dealer_id = %s AND category_id = %s AND target_period = %s",
+                    "DELETE FROM dealer_target "
+                    "WHERE dealer_id = %s AND category_id = %s AND target_period = %s "
+                    "  AND target_level = 'category' AND target_type = 'value'",
                     (dealer_id, cid, period), fetch=False)
                 cleared += 1
             else:
-                # uq_dmt_grain (dealer_id, category_id, target_period) makes this an upsert.
+                # uq_dt_grain covers (dealer, category, level, product, scheme,
+                # part_group, type, period); the sentinels below pin every other member,
+                # so this addresses exactly one row and is an upsert.
                 mysql_manager.execute_query(
-                    """INSERT INTO dealer_money_target
-                         (dealer_id, category_id, company_id, target_period, value_target)
-                       VALUES (%s,%s,%s,%s,%s)
-                       ON DUPLICATE KEY UPDATE value_target = VALUES(value_target)""",
+                    """INSERT INTO dealer_target
+                         (dealer_id, category_id, company_id, target_period, product_id,
+                          part_group, scheme, target_level, target_type, target_uom,
+                          target_qty, target_value)
+                       VALUES (%s,%s,%s,%s,0,'','','category','value','',0,%s)
+                       ON DUPLICATE KEY UPDATE target_value = VALUES(target_value)""",
                     (dealer_id, cid, company_id, period, amount), fetch=False)
                 applied += 1
 

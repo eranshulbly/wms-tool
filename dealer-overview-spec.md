@@ -247,8 +247,8 @@ align. Section headings are 11px uppercase with ~0.13em tracking.
 ### 6.1 The dealer target is not the sum of category targets
 
 For dealer 4: dealer target ₹2,00,000, but Parts ₹2,75,111 + Pro Parts ₹44,111 +
-Oil ₹50,000 = ₹3,69,222. They come from different rows of `dealer_money_target`
-(`category_id IS NULL` vs rows naming a category) and are set independently. The
+Oil ₹50,000 = ₹3,69,222. They come from different rows of `dealer_target`
+(category-level value rows naming each category) and are set independently. The
 summary card's percentage therefore is **not** the weighted average of the
 category rows, and shouldn't be presented as if it were.
 

@@ -91,43 +91,31 @@ const FEEDS = [
     ],
   },
   {
-    id: 'qty-targets',
-    label: 'Quantity Targets',
-    table: 'dealer_part_group_target',
-    color: '#e65100',
+    id: 'targets',
+    label: 'Dealer Targets',
+    table: 'dealer_target',
+    color: '#ad1457',
+    twoRowHeader: true,
     blurb:
-      'One row per category × part-group × dealer. Scheme is auto-filled from that month\'s ' +
-      'mapping. Only the categories present in the file are replaced — other categories\' ' +
-      'targets for the month are left untouched.',
+      'Every target for the month in one wide sheet — one row per dealer, one column per '
+      + 'target. Row 1 says what level each column is set at, row 2 names it and gives the '
+      + 'unit. Only the columns the file carries are replaced; anything it does not name is '
+      + 'left untouched.',
     columns: [
-      { name: 'Dealer', required: true, note: 'Dealer name (must exist)' },
-      { name: 'Category', required: true, note: 'Must match a category name (Parts, Oil, Tyre, …)' },
-      { name: 'Part Group', required: true, note: 'Must exist in this month\'s mapping' },
-      { name: 'Target Qty', required: true, note: 'Target quantity for the month' },
+      { name: 'Row 1 — level band', required: true, note: 'Above each target column: Category, Scheme, or "Part Group : <scheme>". This is what tells the loader whether "Basket 2" means the scheme or the part group of the same name.' },
+      { name: 'Row 2 — name (unit)', required: true, note: 'The name exactly as it appears in the categories master or this month\'s part-group mapping, then the unit in brackets: (Rs), (Qty) or (Litres).' },
+      { name: 'Dealer Name', required: true, note: 'First column. Dealer must already exist.' },
+      { name: 'Each target cell', required: false, note: 'A number, or blank for "no target here". Blank is not zero — a stored 0 would show the dealer failing a target nobody set.' },
     ],
-    sample: [
-      ['Janta Auto Parts | AFM | Meerganj', 'Parts', 'Clutch', '55'],
-      ['Janta Auto Parts | AFM | Meerganj', 'Parts', 'Cam Chain', '3'],
+    // Two header rows, so this feed supplies its template verbatim rather than building
+    // one from `columns`.
+    templateRows: [
+      ['', 'Category', 'Scheme', 'Scheme', 'Part Group : PG', 'Part Group : PG', 'Category', 'Category'],
+      ['Dealer Name', 'Parts (Rs)', 'Basket 1 (Rs)', 'Basket 2 (Rs)', 'Brake Shoe (Qty)', 'Spark Plug (Qty)', 'Pro Parts (Rs)', 'Oil (Litres)'],
+      ['Janta Auto Parts | AFM | Meerganj', '200000', '30000', '30000', '140', '200', '5000', '800'],
+      ['Khandelwal Auto Parts', '25000', '3750', '3750', '20', '25', '625', '100'],
     ],
-  },
-  {
-    id: 'money-targets',
-    label: 'Rupee Targets',
-    table: 'dealer_money_target',
-    color: '#6a1b9a',
-    blurb:
-      'One row per category × dealer — the ₹ sales target for the month. Only the categories ' +
-      'present in the file are replaced — other categories\' targets for the month are left ' +
-      'untouched.',
-    columns: [
-      { name: 'Dealer', required: true, note: 'Dealer name (must exist)' },
-      { name: 'Category', required: true, note: 'Must match a category name (Parts, Oil, Tyre, …)' },
-      { name: 'Money Target', required: true, note: 'Rupee sales target for the month' },
-    ],
-    sample: [
-      ['Janta Auto Parts | AFM | Meerganj', 'Parts', '200000'],
-      ['Khandelwal Auto Parts', 'Oil', '150000'],
-    ],
+    sample: [],
   },
   {
     id: 'products',
@@ -173,8 +161,11 @@ const NOW_YEAR = 2026;
 const YEARS = [NOW_YEAR - 2, NOW_YEAR - 1, NOW_YEAR, NOW_YEAR + 1];
 
 const csvEscape = (v) => (/[",\n]/.test(v) ? `"${String(v).replace(/"/g, '""')}"` : v);
+// `templateRows` is the escape hatch for a feed whose header is not one row of column
+// names — the target sheet's is two, and the level band above the names is the part an
+// operator most needs an example of.
 const toCsv = (feed) =>
-  [feed.columns.map((c) => c.name), ...feed.sample]
+  (feed.templateRows || [feed.columns.map((c) => c.name), ...feed.sample])
     .map((r) => r.map(csvEscape).join(','))
     .join('\n');
 
@@ -560,21 +551,40 @@ function FeedCard({ feed, year, month, companyId, schemes, disabled, loadedRows,
 
           <Typography variant="subtitle2" style={{ marginTop: 16, marginBottom: 4 }}>Example</Typography>
           <TableContainer component={Paper} variant="outlined" style={{ overflowX: 'auto' }}>
+            {/* A two-row-header feed can't be shown as one header row over a body — the
+                level band IS the thing worth showing, so the sheet is rendered verbatim
+                with both header rows emphasised. */}
             <Table size="small">
-              <TableHead>
-                <TableRow>
-                  {feed.columns.map((c) => (
-                    <TableCell key={c.name} className={classes.codeCell}><strong>{c.name}</strong></TableCell>
+              {feed.templateRows ? (
+                <TableBody>
+                  {feed.templateRows.map((row, i) => (
+                    <TableRow key={i} style={i < 2 ? { backgroundColor: '#fafafa' } : undefined}>
+                      {row.map((v, j) => (
+                        <TableCell key={j} className={classes.codeCell}>
+                          {i < 2 ? <strong>{v}</strong> : v}
+                        </TableCell>
+                      ))}
+                    </TableRow>
                   ))}
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {feed.sample.map((row, i) => (
-                  <TableRow key={i}>
-                    {row.map((v, j) => <TableCell key={j} className={classes.codeCell}>{v}</TableCell>)}
-                  </TableRow>
-                ))}
-              </TableBody>
+                </TableBody>
+              ) : (
+                <>
+                  <TableHead>
+                    <TableRow>
+                      {feed.columns.map((c) => (
+                        <TableCell key={c.name} className={classes.codeCell}><strong>{c.name}</strong></TableCell>
+                      ))}
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {feed.sample.map((row, i) => (
+                      <TableRow key={i}>
+                        {row.map((v, j) => <TableCell key={j} className={classes.codeCell}>{v}</TableCell>)}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </>
+              )}
             </Table>
           </TableContainer>
 

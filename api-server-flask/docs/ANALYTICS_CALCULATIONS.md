@@ -10,19 +10,36 @@ Spec for the mobile app to reproduce (or consume) the web analytics. Everything 
 | Table | Columns used | Meaning |
 |-------|--------------|---------|
 | `busy_sales_data` | `sale_date`, `particulars`, `item_code`, `quantity`, `amount` | One row per sales line (from Busy). `particulars` = dealer name, `item_code` = part number. |
-| `dealer` | `dealer_id`, `name`, `company_id`, `sales_executive_id` | One dealer → one executive. (The rupee target moved to `dealer_money_target`.) |
+| `dealer` | `dealer_id`, `name`, `company_id`, `sales_executive_id` | One dealer → one executive. (The rupee target moved to `dealer_target`.) |
 | `users` | `id`, `username`, `role` | Sales executives have `role = 'sales_executive'`. |
 | `part_groups` | `part_number`, `part_group`, `month` | Part → part‑group mapping for the month. **No quantity target here.** |
-| `dealer_money_target` | `dealer_id`, `target_period`, `value_target` | The **rupee** target: per **dealer**, per period. |
-| `dealer_part_group_target` | `dealer_id`, `part_group`, `target_qty`, `target_period` | The **quantity** target: per **dealer × part group**, per period. |
+| `dealer_target` | `dealer_id`, `category_id`, `target_level`, `scheme`, `part_group`, `target_type`, `target_uom`, `target_qty`, `target_value`, `target_period` | **Every** target, at every level and in either unit. |
+| `product` | `litres_per_unit` | Volume of one selling unit, parsed from the product name at upload. Only used by targets set in litres. |
+| ~~`dealer_money_target`~~ | — | **Dropped.** Its rows were copied into `dealer_target` as `target_level='category'`, `target_type='value'`, and the table is no longer registered so it is never recreated. `_migrate_target_type()` still imports it on a database that predates the change. |
 
 > **`target_period` is a DATE = the first day of the target's month** (e.g. `2026-07-01`), the
 > definitive period key — it will not collide across years. Match it against the current
 > month with `target_period = DATE_FORMAT(CURDATE(), '%Y-%m-01')`.
 
-> **Two kinds of target:**
-> 1. **Rupee target** — per **dealer** (`dealer_money_target.value_target` for the period); an executive's rupee target = sum over their dealers.
-> 2. **Quantity target** — per **dealer × part group** (`dealer_part_group_target.target_qty` for the period). A part group's target for any view = **sum of `target_qty` over the dealers in scope**. Individual parts have **no** target.
+> **A target says what it means — never infer it.**
+>
+> - `target_level` — `category` | `scheme` | `part_group` | `product`. Which grain the target is set at, and therefore which sales roll up to it. Stored, **not** derived from which of `scheme`/`part_group` is blank: an unbroken basket has `part_group = scheme`, so blank-derivation misreads it.
+> - `target_type` — `value` (the number is in `target_value`, measured against GST-inclusive rupees) or `qty` (in `target_qty`, measured against units).
+> - `target_uom` — `''` or `litres`. Refines `qty`: a litres target is measured against `SUM(quantity * product.litres_per_unit)`, not against pieces.
+>
+> A target for any view = **sum over the dealers in scope** at ONE level. Individual parts have **no** target.
+>
+> ### The rule: levels are never added together
+>
+> A dealer's Parts rupee target and its Basket 1 rupee target are both `value` rows on the Parts category. The basket is a **breakdown inside** the category target, not an addition to it:
+>
+> ```
+> Parts (Rs)      25,000     <- target_level = 'category'   THIS is the Parts target
+>   Basket 1 (Rs)  3,750     <- target_level = 'scheme'     inside the 25,000
+>   Basket 2 (Rs)  3,750     <- target_level = 'scheme'     inside the 25,000
+> ```
+>
+> `SUM(target_value)` over that dealer reports 32,500 and drops every achievement percentage by 23%. Resolution is therefore in exactly one place — `target_tracker/service.py::_target_at` — which takes a thing's own level if it has one, else rolls up the **shallowest single level** beneath it, and never mixes two.
 
 **Attribution joins** (this is how a sale is tied to a dealer, an executive, and a part group):
 
@@ -57,7 +74,7 @@ pct(actual, target) = round(actual / target * 100, 1)   if target > 0
 **Definition:** an executive's month‑to‑date rupee sales ÷ their rupee target.
 
 - **Actual sales(exec)** = sum of `amount` over all this‑month sales lines whose dealer belongs to that executive.
-- **Target(exec)** = sum of `dealer_money_target.value_target` (for the current period) over the dealers assigned to that executive.
+- **Target(exec)** = sum of `dealer_target.target_value` **where `target_level='category' AND target_type='value'`** (current period) over the dealers assigned to that executive. Without the level filter the schemes inside those categories are added again.
 - **% achieved(exec)** = `pct(actual_sales, target)`.
 
 ```sql
@@ -72,7 +89,8 @@ GROUP BY u.id, u.username;
 -- Target (per executive) — from the dealer master, NOT the sales table
 SELECT d.sales_executive_id, SUM(COALESCE(mt.value_target,0)) AS target
 FROM dealer d
-JOIN dealer_money_target mt ON mt.dealer_id = d.dealer_id
+JOIN dealer_target mt ON mt.dealer_id = d.dealer_id
+  AND mt.target_level = 'category' AND mt.target_type = 'value'
 WHERE d.company_id = 1 AND d.sales_executive_id IS NOT NULL
       AND mt.target_period = DATE_FORMAT(CURDATE(), '%Y-%m-01')
 GROUP BY d.sales_executive_id;
@@ -91,7 +109,7 @@ GROUP BY d.sales_executive_id;
 Same idea, one level down.
 
 - **Actual sales(dealer)** = sum of `amount` for that dealer this month.
-- **Target(dealer)** = `dealer_money_target.value_target` for the current period.
+- **Target(dealer)** = `SUM(dealer_target.target_value)` where `target_level='category' AND target_type='value'`, for the current period.
 - **% achieved(dealer)** = `pct(actual_sales, target)`.
 
 ```sql
@@ -100,7 +118,8 @@ FROM busy_sales_data b
 JOIN dealer d ON d.name = b.particulars AND d.company_id = 1
 WHERE <this-month>
 GROUP BY d.dealer_id, d.name;
--- target(dealer) = dealer_money_target.value_target (current period) ; pct = sales / target * 100
+-- target(dealer) = Σ dealer_target.target_value (category level, value type, current period)
+-- pct = sales / target * 100
 ```
 
 **UI colour bands** (used on web): green `≥ 100%`, amber `≥ 50%`, red `< 50%`, `—` when target is missing.
@@ -109,17 +128,19 @@ GROUP BY d.dealer_id, d.name;
 
 ## 3b. Part‑group quantity % achieved
 
-Quantity targets are **per dealer × part group** (`dealer_part_group_target`). For any view:
+Quantity targets are **per dealer × part group** (`dealer_target`). For any view:
 
 - **Sold(group)** = `SUM(quantity)` of this‑month sales in that part group (honours all filters).
-- **Target(group)** = `SUM(dealer_part_group_target.target_qty)` over the **dealers in scope**
+- **Target(group)** = `SUM(dealer_target.target_qty)` over the **dealers in scope**, restricted to `target_level='part_group' AND target_type='qty'`
   (executive/dealer filters), for that group + month. *Not* reduced by a part/part‑group filter.
 - **% = Sold / Target × 100.**
 
 ```sql
 -- Target for each part group over the dealers in view
 SELECT dpg.part_group, SUM(dpg.target_qty) AS target
-FROM dealer_part_group_target dpg
+FROM dealer_target dpg
+-- part-group level, quantity type: the table also holds scheme and category targets,
+-- and rupee targets on this same part group.
 JOIN dealer d ON d.dealer_id = dpg.dealer_id
 WHERE d.company_id = 1 AND dpg.target_period = DATE_FORMAT(CURDATE(), '%Y-%m-01')
       [AND d.sales_executive_id = :EX] [AND d.dealer_id = :D]
@@ -138,7 +159,7 @@ used — it's driven by the **dealer's own part‑group quantity targets + sales
 ### Logic (all this month, company = Hero)
 For dealer `D` (executive `EX = dealer.sales_executive_id`):
 
-1. **Load D's part‑group targets** from `dealer_part_group_target` (`dealer_id = D`, `target_period = current month`, `target_qty > 0`).
+1. **Load D's targets** from `dealer_target` (`dealer_id = D`, `target_period = current month`, `target_qty > 0 OR target_value > 0` — the baskets are rupee targets and a `target_qty > 0` filter drops them entirely). Group into units by `target_level`.
 2. **Per part**, from this month's sales, compute: `dealer_qty` (qty at D), `peer_qty`
    (qty at EX's *other* dealers), `peer_dealers` (count of those peers), and the part's `part_group`.
 3. **Per targeted group**, `group_sold = Σ dealer_qty` over that group's parts. A group is
@@ -233,9 +254,8 @@ and `GET /api/v1/analytics/dealer/<dealer_id>` (returns the dealer's sales/targe
 ## 6. Edge cases & current data notes
 - **Division by zero / missing target** → `pct = null` (render `—`). Suggestions need the dealer to have a `target_qty > 0` for the group.
 - **Unmapped parts** (not in `part_groups`) → `part_group = "(Unmapped)"`, no group target, never suggested.
-- **Targets are currently dummy**: `dealer_money_target.value_target = 200000` (flat rupee, period 2026-07-01); `dealer_part_group_target.target_qty` is seeded per dealer×group at ~0.7–1.6× the dealer's actual qty (some groups read over/under 100%). Replace with real targets — no formula change.
+- **Targets** are loaded by the `targets` admin feed — one wide sheet per month, one row per dealer, one column per target, with a level band above the header row. See `modules/sales/uploads/router.py::_load_targets`.
 - **Not stored**: every number is recomputed per request from `busy_sales_data` + `part_groups` + `dealer` + the two target tables. No suggestion history / accept‑reject tracking yet.
 - **Attribution is a name string‑match** (`particulars = dealer.name`); keep dealer names in sync between Busy and the `dealer` table.
 - **Feeding targets** (per period; `target_period` = first day of the month, e.g. `2026-07-01`):
-  - rupee: `dealer_money_target (dealer_id, target_period, value_target)` — one row per dealer.
-  - quantity: `dealer_part_group_target (dealer_id, part_group, target_qty, target_period)` — one per dealer×part‑group.
+  - all of them: `dealer_target` — one row per dealer × category × level × scheme × part-group × type × period, each carrying `target_value` or `target_qty` and saying which.

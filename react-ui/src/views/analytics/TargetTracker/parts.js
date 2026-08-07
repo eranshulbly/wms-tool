@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import PropTypes from 'prop-types';
-import { compact, qty, band, pctText, mins } from './format';
+import { compact, band, pctText, mins, amount, unitOf, unitLabel } from './format';
 
 // Small shared pieces of the Target Tracker. Markup and class names follow the
 // prototype; the behaviour rules they enforce are noted where they matter.
@@ -63,9 +63,13 @@ Pct.propTypes = { pct: PropTypes.number };
 
 // §3.3 — a row with no target shows the words "no target" and an em-dash, never 0 and
 // never a red 0%.
-export const TargetCell = ({ value, money }) =>
-  value ? <>{money ? compact(value) : qty(value)}</> : <span className="dash">no target</span>;
-TargetCell.propTypes = { value: PropTypes.number, money: PropTypes.bool };
+//
+// `unit` is 'rs' | 'litres' | 'qty' and comes from the target itself, never from the
+// column it sits in — a scheme table now holds rupee-targeted baskets alongside
+// unit-targeted part groups.
+export const TargetCell = ({ value, unit }) =>
+  (value ? <>{amount(value, unit)}</> : <span className="dash">no target</span>);
+TargetCell.propTypes = { value: PropTypes.number, unit: PropTypes.string };
 
 export const Empty = ({ title, help }) => (
   <div className="empty">
@@ -100,23 +104,19 @@ Kpi.propTypes = {
 };
 
 // One category's sales + target for a row. A rupee-targeted category compares money to
-// money; a quantity-targeted one compares units to units — never a mix, and never a
-// figure that adds categories together.
+// money; a quantity-targeted one compares units to units, or litres to litres — never a
+// mix, and never a figure that adds categories together.
+//
+// The unit comes from the CELL first: the axis kind describes the column, but an
+// untargeted cell in a targeted column has no unit of its own and falls back to it.
 export const CatCells = ({ cell, kind }) => {
   const c = cell || {};
-  if (kind === 'qty') {
-    return (
-      <>
-        <td className="num">{qty(c.qty_sold)}</td>
-        <td className="num"><TargetCell value={c.target} /></td>
-        <td className="num">{c.target ? <Pct pct={c.pct} /> : <span className="dash">—</span>}</td>
-      </>
-    );
-  }
+  const unit = unitOf(c.target_kind || kind, c.target_uom);
+  const sold = unit === 'rs' ? c.sales : unit === 'litres' ? c.litres_sold : c.qty_sold;
   return (
     <>
-      <td className="num">{compact(c.sales)}</td>
-      <td className="num"><TargetCell value={c.target} money /></td>
+      <td className="num">{amount(sold, unit)}</td>
+      <td className="num"><TargetCell value={c.target} unit={unit} /></td>
       <td className="num">{c.target ? <Pct pct={c.pct} /> : <span className="dash">—</span>}</td>
     </>
   );
@@ -125,12 +125,14 @@ CatCells.propTypes = { cell: PropTypes.object, kind: PropTypes.string };
 
 // The header block a category contributes to any table: sales / target / % achieved,
 // grouped under the category name so the three are never read as scope-wide figures.
+// The first column is captioned with the unit it is actually measured in, so an Oil
+// column reads "Oil litres" rather than an ambiguous "Oil qty".
 export const CatHead = ({ axis }) => (
   <>
     {axis.map((a) => (
       <React.Fragment key={a.category}>
-        <th className="num">{a.category} {a.target_kind === 'qty' ? 'qty' : 'sales'}</th>
-        <th className="num">{a.target_kind ? 'Target' : 'Target'}</th>
+        <th className="num">{a.category} {unitLabel(unitOf(a.target_kind, a.target_uom))}</th>
+        <th className="num">Target</th>
         <th className="num">%</th>
       </React.Fragment>
     ))}
@@ -217,13 +219,18 @@ export const QtyTable = ({ mode, items, onOpen }) => {
   }
   return (
     <table>
+      {/* The Target and Sold columns hold MIXED units — Basket 1 is targeted in rupees
+          and the PG part groups in pieces, and both are schemes. The header is therefore
+          neutral and every cell carries its own unit; a column captioned "Target qty"
+          would be a lie on two rows out of three. Value stays a separate rupee column so
+          a unit-targeted row still shows what it was worth. */}
       <thead>
         <tr>
           <th>
             {mode === 'category' ? 'Category' : 'Scheme'}
             <ColSearch value={q} onChange={setQ} placeholder={`Search ${mode === 'category' ? 'categories' : 'schemes'}…`} />
           </th>
-          <th className="num">Target qty</th>
+          <th className="num">Target</th>
           <th className="num">Sold</th>
           <th className="num">% Achieved</th>
           <th className="num">Value</th>
@@ -233,25 +240,30 @@ export const QtyTable = ({ mode, items, onOpen }) => {
         {!rows.length && (
           <tr><td colSpan={5}><NoMatch q={q} what={mode === 'category' ? 'category' : 'scheme'} /></td></tr>
         )}
-        {rows.map((o) => (
-          <tr key={o.key} className="clickable" onClick={() => onOpen(o)} title="See products">
-            <td>
-              <span className="name">{o.name}</span>
-              {/* §3.3 — sales-only rows are tagged, so a blank target is never read as a miss. */}
-              {!o.target_qty && <span className="tag soft">sales only</span>}
-              <br />
-              <span className="dim" style={{ fontSize: 12 }}>
-                {mode === 'category'
-                  ? `${o.groups} part groups · ${o.skus} SKUs`
-                  : `${o.skus} SKUs in scheme this period`}
-              </span>
-            </td>
-            <td className="num"><TargetCell value={o.target_qty} /></td>
-            <td className="num">{qty(o.sold)}</td>
-            <td className="num">{o.target_qty ? <Pct pct={o.pct} /> : <span className="dash">—</span>}</td>
-            <td className="num">{compact(o.value)}</td>
-          </tr>
-        ))}
+        {rows.map((o) => {
+          const unit = unitOf(o.target_kind, o.target_uom);
+          return (
+            <tr key={o.key} className="clickable" onClick={() => onOpen(o)} title="See products">
+              <td>
+                <span className="name">{o.name}</span>
+                {/* §3.3 — sales-only rows are tagged, so a blank target is never read as a miss. */}
+                {!o.target && <span className="tag soft">sales only</span>}
+                <br />
+                <span className="dim" style={{ fontSize: 12 }}>
+                  {mode === 'category'
+                    ? `${o.groups} part groups · ${o.skus} SKUs`
+                    : `${o.skus} SKUs in scheme this period`}
+                </span>
+              </td>
+              <td className="num"><TargetCell value={o.target} unit={unit} /></td>
+              {/* Sold is shown in the unit the target is in, so the two read as a pair.
+                  With no target there is nothing to match, so it falls back to units. */}
+              <td className="num">{amount(o.sold, o.target ? unit : 'qty')}</td>
+              <td className="num">{o.target ? <Pct pct={o.pct} /> : <span className="dash">—</span>}</td>
+              <td className="num">{compact(o.value)}</td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );

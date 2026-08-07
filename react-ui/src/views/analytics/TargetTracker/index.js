@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { compact, qty, mins, monthsLabel, band, pctText } from './format';
+import { compact, qty, mins, monthsLabel, band, pctText, amount, unitOf, sold } from './format';
 import { Kpi, RankTable, QtyTable, Empty, Pct, ColSearch, NoMatch } from './parts';
 import FilterTrail from './FilterTrail';
 import DetailModal from './DetailModal';
@@ -221,12 +221,10 @@ const TargetTracker = () => {
               {kp.parts && (
                 <Kpi
                   label={`Total sales ${kp.parts.category}`}
-                  value={kp.parts.target_kind === 'qty' ? qty(kp.parts.qty_sold) : compact(kp.parts.sales)}
-                  foot={kp.parts.target_kind === 'value'
-                    ? `${pctText(kp.parts.pct)} of ${compact(kp.parts.target)} target to date`
-                    : kp.parts.target_kind === 'qty'
-                      ? `${pctText(kp.parts.pct)} of ${qty(kp.parts.target)} qty target to date`
-                      : null}
+                  value={sold(kp.parts)}
+                  foot={kp.parts.target_kind
+                    ? `${pctText(kp.parts.pct)} of ${amount(kp.parts.target, unitOf(kp.parts.target_kind, kp.parts.target_uom))} target to date`
+                    : null}
                 />
               )}
               {/* Every non-Parts category in one tile. It shows no target: its categories
@@ -267,12 +265,12 @@ const TargetTracker = () => {
                       {(m.categories || []).map((c) => (
                         <div className="mcat" key={c.category}>
                           <div className="mcatname">{c.category}</div>
-                          <div className="mv">{c.target_kind === 'qty' ? qty(c.qty_sold) : compact(c.sales)}</div>
+                          <div className="mv">{sold(c)}</div>
                           {c.target_kind ? (
                             <>
                               <Pct pct={c.pct} />
                               <div className="mf">
-                                target {c.target_kind === 'qty' ? qty(c.target) : compact(c.target)}
+                                target {amount(c.target, unitOf(c.target_kind, c.target_uom))}
                               </div>
                             </>
                           ) : (
@@ -343,7 +341,7 @@ const TargetTracker = () => {
                                   <td className="num" key={m}>
                                     <span className={`pct ${band(cell?.pct)}`}>{pctText(cell?.pct ?? null)}</span>
                                     <span className="mcell">
-                                      {primary?.target_kind === 'qty' ? qty(cell?.qty_sold || 0) : compact(cell?.sales || 0)}
+                                      {sold({ ...(cell || {}), target_kind: primary?.target_kind, target_uom: primary?.target_uom })}
                                     </span>
                                   </td>
                                 );

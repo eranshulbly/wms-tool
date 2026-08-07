@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import PropTypes from 'prop-types';
-import { compact, qty, band, pctText } from './format';
+import { compact, qty, band, pctText, amount, unitOf, unitLabel } from './format';
 import { ColSearch, NoMatch } from './parts';
 
 // The product popup (§8). Two layouts, chosen by whether the thing clicked carries a
@@ -46,12 +46,23 @@ const DetailModal = ({ detail, loading, scopeLabel, monthsLabel, onClose }) => {
     });
   }, [d, pq]);
 
+  // A single roll-up in the header is only honest when every group shares one measure;
+  // the API says so with target_kind (null when they don't).
+  const headTargeted = Boolean(d?.targeted && d?.target_kind);
+  const headUnit = unitOf(d?.target_kind, d?.target_uom);
+
+  // Two independent questions, which used to be one flag. A basket carries a target at
+  // SCHEME level while none of the part groups beneath it carries one of its own — so it
+  // has a header target and nothing to group by, and picking the grouped layout off the
+  // header's target left an empty table under a correct total.
+  const grouped = Number(d?.group_count) > 0;
+
   const sub = !d
     ? ''
     : `${scopeLabel} · ${monthsLabel} · ${
-        d.targeted
+        grouped
           ? `${d.group_count} part group${d.group_count === 1 ? '' : 's'} · ${d.product_count} products`
-          : `${d.product_count} products, sales only`
+          : `${d.product_count} products${headTargeted ? '' : ', sales only'}`
       }`;
 
   return (
@@ -77,18 +88,23 @@ const DetailModal = ({ detail, loading, scopeLabel, monthsLabel, onClose }) => {
             <div className="empty">Loading…</div>
           ) : (
             <>
+              {/* The header totals exist only when every group here is measured the same
+                  way. Groups targeted in rupees and groups targeted in units have no
+                  common total, so `mixed_targets` replaces the roll-up with a note and
+                  leaves each group row to carry its own — an invented total would be the
+                  one number on this screen with no defensible unit. */}
               <div className="msum">
-                {d.targeted && (
+                {headTargeted && (
                   <div>
-                    <span>Target qty to date</span>
-                    <b>{qty(d.target_qty)}</b>
+                    <span>Target to date</span>
+                    <b>{amount(d.target, headUnit)}</b>
                   </div>
                 )}
                 <div>
-                  <span>Qty sold</span>
-                  <b>{qty(d.sold)}</b>
+                  <span>{headTargeted ? `Sold (${unitLabel(headUnit)})` : 'Qty sold'}</span>
+                  <b>{amount(headTargeted ? d.sold : d.sold_qty, headTargeted ? headUnit : 'qty')}</b>
                 </div>
-                {d.targeted ? (
+                {headTargeted ? (
                   <div>
                     <span>Achieved</span>
                     <b className={`pct ${band(d.pct)}`}>{pctText(d.pct)}</b>
@@ -96,7 +112,9 @@ const DetailModal = ({ detail, loading, scopeLabel, monthsLabel, onClose }) => {
                 ) : (
                   <div>
                     <span>Target</span>
-                    <b className="dash">not set — sales only</b>
+                    <b className="dash">
+                      {d.mixed_targets ? 'set per group — see below' : 'not set — sales only'}
+                    </b>
                   </div>
                 )}
                 <div>
@@ -110,11 +128,13 @@ const DetailModal = ({ detail, loading, scopeLabel, monthsLabel, onClose }) => {
                   <b>No products in scheme</b>
                   Nothing is mapped to this scheme for the months you picked.
                 </div>
-              ) : d.targeted ? (
+              ) : grouped ? (
                 <>
                   <div className="callout">
                     Targets are set at part-group level. Each group shows its own target and
                     achievement; the products under it show what made up the sold quantity.
+                    {d.mixed_targets && ' These groups are not all measured the same way — '
+                      + 'each row shows the unit its own target is set in.'}
                   </div>
                   <table>
                     <thead>
@@ -123,8 +143,8 @@ const DetailModal = ({ detail, loading, scopeLabel, monthsLabel, onClose }) => {
                           Part group / product
                           <ColSearch value={gq} onChange={setGq} placeholder="Search part group…" />
                         </th>
-                        <th className="num">Target qty</th>
-                        <th className="num">Qty sold</th>
+                        <th className="num">Target</th>
+                        <th className="num">Sold</th>
                         <th className="num">% Achieved</th>
                         <th className="num">Value</th>
                       </tr>
@@ -133,48 +153,54 @@ const DetailModal = ({ detail, loading, scopeLabel, monthsLabel, onClose }) => {
                       {!groupRows.length && (
                         <tr><td colSpan={5}><NoMatch q={gq} what="part group" /></td></tr>
                       )}
-                      {groupRows.map((g) => (
-                        <React.Fragment key={g.part_group}>
-                          <tr className="grouprow">
-                            <td>
-                              <span className="name">{g.part_group}</span>
-                              {g.category && <span className="tag soft">{g.category}</span>}
-                              <br />
-                              <span className="dim" style={{ fontSize: 12 }}>
-                                {g.products.length} products
-                              </span>
-                            </td>
-                            <td className="num">
-                              {g.target_qty ? qty(g.target_qty) : <span className="dash">no target</span>}
-                            </td>
-                            <td className="num">{qty(g.sold)}</td>
-                            <td className="num">
-                              {g.target_qty ? (
-                                <>
-                                  <span className={`pct ${band(g.pct)}`}>{pctText(g.pct)}</span>
-                                  <div className="bar">
-                                    <i className={band(g.pct)} style={{ width: `${Math.min(100, g.pct || 0)}%` }} />
-                                  </div>
-                                </>
-                              ) : (
-                                <span className="dash">—</span>
-                              )}
-                            </td>
-                            <td className="num">{compact(g.value)}</td>
-                          </tr>
-                          {g.products.map((p) => (
-                            <tr className="subrow" key={p.item_code}>
-                              <td>{p.name}</td>
-                              {/* A product never carries a target or an achievement of its
-                                  own — only its share of what the group sold (§8.1). */}
-                              <td className="num"><span className="dash">—</span></td>
-                              <td className="num">{qty(p.sold)}</td>
-                              <td className="num"><span className="dim">{Math.round(p.share)}% of group</span></td>
-                              <td className="num">{compact(p.value)}</td>
+                      {groupRows.map((g) => {
+                        const u = unitOf(g.target_kind, g.target_uom);
+                        return (
+                          <React.Fragment key={g.part_group}>
+                            <tr className="grouprow">
+                              <td>
+                                <span className="name">{g.part_group}</span>
+                                {g.category && <span className="tag soft">{g.category}</span>}
+                                <br />
+                                <span className="dim" style={{ fontSize: 12 }}>
+                                  {g.products.length} products
+                                </span>
+                              </td>
+                              <td className="num">
+                                {g.target ? amount(g.target, u) : <span className="dash">no target</span>}
+                              </td>
+                              <td className="num">{amount(g.target ? g.sold : g.sold_qty, g.target ? u : 'qty')}</td>
+                              <td className="num">
+                                {g.target ? (
+                                  <>
+                                    <span className={`pct ${band(g.pct)}`}>{pctText(g.pct)}</span>
+                                    <div className="bar">
+                                      <i className={band(g.pct)} style={{ width: `${Math.min(100, g.pct || 0)}%` }} />
+                                    </div>
+                                  </>
+                                ) : (
+                                  <span className="dash">—</span>
+                                )}
+                              </td>
+                              <td className="num">{compact(g.value)}</td>
                             </tr>
-                          ))}
-                        </React.Fragment>
-                      ))}
+                            {g.products.map((p) => (
+                              <tr className="subrow" key={p.item_code}>
+                                <td>{p.name}</td>
+                                {/* A product never carries a target or an achievement of its
+                                    own — only its share of what the group sold (§8.1). The
+                                    share is already computed in the group's own measure. */}
+                                <td className="num"><span className="dash">—</span></td>
+                                <td className="num">
+                                  {amount(u === 'rs' ? p.value : u === 'litres' ? p.litres : p.sold, u)}
+                                </td>
+                                <td className="num"><span className="dim">{Math.round(p.share)}% of group</span></td>
+                                <td className="num">{compact(p.value)}</td>
+                              </tr>
+                            ))}
+                          </React.Fragment>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </>
