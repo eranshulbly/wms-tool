@@ -8,10 +8,11 @@ scheme and part-group mapping), dealer/product/categories masters, dealer_visits
 Four rules govern everything here and are implemented in one place each, so they
 cannot drift between screens:
 
-  Pro-rating (§3.1) — a finished month contributes its whole target; the running month
-  contributes only the elapsed share. `_month_rows()` computes the fraction once per
-  month and every target figure is multiplied by it. A multi-month total pro-rates each
-  month separately, so an unfinished month can never inflate the total.
+  Whole-month targets (§3.1) — every month that has started contributes its FULL
+  target, the running one included. Achievement for August seen on the 7th is
+  month-to-date sales over the entire August target, so it starts low and climbs as
+  the month is worked through. A month that has not started yet still contributes
+  nothing. `_target_weight()` is the only place this is decided.
 
   What carries a target (§3.2) — decided by the DATA, never by a hard-coded category
   list (§10.8): a category or scheme is "targeted" when target rows exist for it in
@@ -41,17 +42,34 @@ VALUE_TARGET_CATEGORY = 'Parts'
 # ---------------------------------------------------------------------------
 
 def _elapsed(year, month, today=None):
-    """Share of the month that has passed: 1.0 for a finished month.
+    """Share of the month that has passed: 1.0 for a finished month, 0.0 for a future one.
 
-    The current month is partial, so its target is only worth the elapsed part of it
-    (§3.1). Day-granular — on the 4th of a 31-day month this is 4/31.
+    Reported to the client as context for the running month. It deliberately does NOT
+    scale any target any more — `_target_weight` decides that. Day-granular, so on the
+    4th of a 31-day month this is 4/31.
     """
     today = today or date.today()
     if (year, month) < (today.year, today.month):
         return 1.0
     if (year, month) > (today.year, today.month):
-        return 0.0            # a future month has contributed nothing yet
+        return 0.0
     return today.day / calendar.monthrange(year, month)[1]
+
+
+def _target_weight(year, month, today=None):
+    """How much of a month's target counts towards the denominator (§3.1).
+
+    A month that has started counts in FULL — the running one included. The target is
+    the month's whole commitment, not the slice of it that happens to have elapsed, so
+    August viewed on the 7th is measured against the entire August target.
+
+    A future month is still 0.0: it has not started, and putting its full target against
+    zero sales would report every unstarted month as a 0% failure.
+    """
+    today = today or date.today()
+    if (year, month) > (today.year, today.month):
+        return 0.0
+    return 1.0
 
 
 def available_months(company_id):
@@ -83,12 +101,19 @@ def available_months(company_id):
 
 
 def _month_rows(month_ids):
-    """[(month_id, 'YYYY-MM-01', elapsed_fraction)] for the selected months."""
+    """[(month_id, 'YYYY-MM-01', target_weight, is_current)] for the selected months.
+
+    `is_current` is carried separately rather than inferred from the weight: now that a
+    running month weighs a full 1.0 like a finished one, the weight no longer tells the
+    two apart, and the by-month table still needs to mark the month in progress.
+    """
     today = date.today()
     out = []
     for m in month_ids:
         y, mo = int(m[:4]), int(m[5:7])
-        out.append((m, f"{y:04d}-{mo:02d}-01", _elapsed(y, mo, today)))
+        out.append((m, f"{y:04d}-{mo:02d}-01",
+                    _target_weight(y, mo, today),
+                    (y, mo) == (today.year, today.month)))
     return out
 
 
@@ -116,10 +141,36 @@ class Scope:
         self.groups = list(groups or [])
         self.parts = list(parts or [])
         self.month_rows = _month_rows(self.months)
-        self.periods = [p for _, p, _ in self.month_rows]
-        self.elapsed = {p: e for _, p, e in self.month_rows}
+        self.periods = [p for _, p, _, _ in self.month_rows]
+        self.weights = {p: w for _, p, w, _ in self.month_rows}
+        self._memo = {}   # see memo(): per-request cache of pure derived results
+
+    def memo(self, key, compute):
+        """Cache a pure per-scope result for the life of this Scope.
+
+        A Scope is built once per request and never mutated, so anything derived purely
+        from it is the same every time it is asked for. Without this, one dashboard load
+        recomputed the same category aggregate nine times — each a full pass over the
+        sales join — because kpis(), by_executive(), by_dealer() and table_axis() each
+        ask for it independently. Sub-scopes (one per month, for the by-month grid) are
+        separate objects and so keep separate caches, which is what makes this safe.
+        """
+        if key not in self._memo:
+            self._memo[key] = compute()
+        return self._memo[key]
 
     # -- sales side -------------------------------------------------------
+    def _range_start(self):
+        """First day of the earliest selected month — the index-usable lower bound."""
+        return min(self.months) + '-01'
+
+    def _range_end(self):
+        """First day of the month AFTER the latest selected one, so the bound is a
+        half-open `< end` and never has to know how long the month is."""
+        y, m = int(max(self.months)[:4]), int(max(self.months)[5:7])
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+        return f"{y:04d}-{m:02d}-01"
+
     def sales_from(self):
         """The billed-line join: sale → dealer → executive, product → category,
         part → that month's part group and scheme."""
@@ -134,7 +185,15 @@ class Scope:
 
     def sales_where(self):
         params = [self.company_id, self.company_id, self.company_id]
-        conds = [f"DATE_FORMAT(b.sale_date, '%%Y-%%m') IN ({_in(self.months)})"]
+        # A bare `DATE_FORMAT(b.sale_date,'%Y-%m') IN (...)` wraps the column in a
+        # function, so idx_company_sale_date cannot be used and every query full-scans
+        # busy_sales_data. Bounding the same predicate with a plain range on the raw
+        # column lets the index prune first; the DATE_FORMAT test is kept as-is so a
+        # non-contiguous month selection still filters exactly. Same rows, ~3x faster.
+        conds = ["b.company_id = %s",
+                 "b.sale_date >= %s", "b.sale_date < %s",
+                 f"DATE_FORMAT(b.sale_date, '%%Y-%%m') IN ({_in(self.months)})"]
+        params += [self.company_id, self._range_start(), self._range_end()]
         params += self.months
         if self.execs:
             conds.append(f"d.sales_executive_id IN ({_in(self.execs)})"); params += self.execs
@@ -152,11 +211,24 @@ class Scope:
         return q, tuple(params)
 
     # -- dealer side ------------------------------------------------------
-    def dealer_where(self, alias='d'):
+    def dealer_where(self, alias='d', active_only=False):
         """Dealers in scope. Part / part-group filters narrow SALES, never the dealer
-        list or the targets — a target is not smaller because you looked at one part."""
+        list or the targets — a target is not smaller because you looked at one part.
+
+        `active_only` is for COUNTING dealers, not for aggregating their money. A dealer
+        marked inactive has stopped trading, so counting them in "X of Y billed" makes
+        the base look worse than it is — but the revenue they billed while active is
+        still real, and dropping it from sales and targets would restate history. So the
+        flag is opt-in per query rather than applied to the whole scope: see kpis() and
+        by_executive(), the only places that count dealers rather than sum from them.
+        """
         conds = [f"{alias}.company_id = %s"]
         params = [self.company_id]
+        if active_only:
+            # `<> 'inactive'` rather than `= 'active'`: the column is free text with a
+            # default of 'active', so any future status stays counted unless it is
+            # explicitly the one the user asked to hide.
+            conds.append(f"{alias}.status <> 'inactive'")
         if self.execs:
             conds.append(f"{alias}.sales_executive_id IN ({_in(self.execs)})"); params += self.execs
         if self.dealers:
@@ -192,8 +264,8 @@ _GRAIN = {
 }
 
 
-def _target_at(scope, grain, target_type, by=None):
-    """Target to date for one grain, in one unit. {key: {'target', 'uom'}}.
+def _target_at_uncached(scope, grain, target_type, by=None):
+    """The month's full target for one grain, in one unit. {key: {'target', 'uom'}}.
 
     grain: 'category' | 'scheme' | 'group'. target_type: 'value' | 'qty'.
     by: None, or 'dealer'/'exec' to key the result by that entity first.
@@ -212,7 +284,8 @@ def _target_at(scope, grain, target_type, by=None):
     target; adding them can overstate the achievement, and only one of those makes a
     dealer look better than they are.
 
-    Each month is pro-rated on its own before summing (§3.1).
+    Each selected month contributes its whole target; a month that has not started
+    contributes nothing (§3.1).
     """
     key_col, own_level = _GRAIN[grain]
     amount_col = 'target_value' if target_type == 'value' else 'target_qty'
@@ -232,8 +305,8 @@ def _target_at(scope, grain, target_type, by=None):
 
     # {entity: {level: {key: [amount, uom]}}} — kept split by level until the choice below.
     by_level = {}
-    for _, period, frac in scope.month_rows:
-        if frac <= 0:
+    for _, period, weight, _ in scope.month_rows:
+        if weight <= 0:
             continue
         rows = mysql_manager.execute_query(
             f"""SELECT {esel}t.target_level AS lvl, {key_col} AS k,
@@ -251,7 +324,7 @@ def _target_at(scope, grain, target_type, by=None):
             slot = by_level.setdefault(r['e'] if ekey else None, {}) \
                            .setdefault(r['lvl'], {})
             cell = slot.setdefault(r['k'], {'target': 0.0, 'uom': r['uom'] or ''})
-            cell['target'] += float(r['amt']) * frac
+            cell['target'] += float(r['amt']) * weight
 
     def _resolve(levels):
         """First level at or below `own_level` that has any target — never a mix."""
@@ -268,7 +341,7 @@ def _target_at(scope, grain, target_type, by=None):
 
 
 def value_target(scope, by=None):
-    """Rupee target to date. by=None total, 'dealer' or 'exec' for a breakdown.
+    """The month's full rupee target. by=None total, 'dealer' or 'exec' for a breakdown.
 
     A dealer's rupee target is its CATEGORY-level target for Parts — the figure the
     business actually sets — not that plus the baskets inside it.
@@ -302,7 +375,7 @@ UNCATEGORISED = '(Uncategorised)'
 _LITRES_SOLD = "COALESCE(SUM(b.quantity * COALESCE(p.litres_per_unit, 0)), 0)"
 
 
-def sales_by_category(scope, by=None):
+def sales_by_category_uncached(scope, by=None):
     """Billed sales per category: {category: {'sales', 'qty', 'litres'}}.
 
     With `by` = 'exec'/'dealer' the result is keyed by that id first. Sales with no
@@ -365,7 +438,7 @@ def _cell(sold, value_cell, qty_cell):
             'target_uom': unit, 'pct': pct}
 
 
-def category_axis(scope):
+def category_axis_uncached(scope):
     """The categories this screen reports on, in display order.
 
     A category appears if it has sales OR a target in scope, so a category that was
@@ -438,6 +511,27 @@ def _cells_for(scope, entity_ids, by, axis):
     return out
 
 
+# --- memoised entry points --------------------------------------------------
+# These three are pure functions of the Scope, and each is asked for several times per
+# request — kpis(), by_executive(), by_dealer() and table_axis() all want the same
+# category aggregate, and the by-month grid asks again for every month. The workers above
+# do the SQL; these cache it on the Scope so one dashboard load pays for each result once.
+# Call sites are unchanged: they still call these public names.
+
+def _target_at(scope, grain, target_type, by=None):
+    return scope.memo(('target_at', grain, target_type, by),
+                      lambda: _target_at_uncached(scope, grain, target_type, by))
+
+
+def sales_by_category(scope, by=None):
+    return scope.memo(('sales_by_category', by),
+                      lambda: sales_by_category_uncached(scope, by))
+
+
+def category_axis(scope):
+    return scope.memo('category_axis', lambda: category_axis_uncached(scope))
+
+
 # ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
@@ -493,12 +587,15 @@ def kpis(scope):
     produce the meaningless denominator this screen exists to avoid. The per-category
     detail behind it travels in `other.categories` for the breakdown popup.
     """
-    # Dealers billed: every dealer in scope, and how many actually billed. Zero-sales
-    # dealers stay countable (§10.4) — they are the point of this card.
-    dwhere, dparams = scope.dealer_where()
+    # Dealers billed: every ACTIVE dealer in scope, and how many actually billed.
+    # Zero-sales dealers stay countable (§10.4) — they are the point of this card.
+    # Both halves carry the same active-only filter, so the card can never report more
+    # billed than it has dealers.
+    dwhere, dparams = scope.dealer_where(active_only=True)
     total_dealers = (mysql_manager.execute_query(
         f"SELECT COUNT(*) AS n FROM dealer d WHERE {dwhere}", tuple(dparams)) or [{'n': 0}])[0]['n']
-    q3, p3 = scope.sql("COUNT(DISTINCT d.dealer_id) AS n", extra="AND b.quantity > 0")
+    q3, p3 = scope.sql("COUNT(DISTINCT d.dealer_id) AS n",
+                       extra="AND b.quantity > 0 AND d.status <> 'inactive'")
     billed = (mysql_manager.execute_query(q3, p3) or [{'n': 0}])[0]['n']
 
     axis = category_axis(scope)
@@ -526,14 +623,14 @@ def kpis(scope):
 def by_month(scope):
     """One entry per selected month, chronological (§5.2), broken out per category."""
     out = []
-    for mid, period, frac in sorted(scope.month_rows):
+    for mid, period, weight, is_current in sorted(scope.month_rows):
         sub = Scope(scope.company_id, [mid], scope.execs, scope.dealers, scope.groups, scope.parts)
         y, mo = int(mid[:4]), int(mid[5:7])
         axis = category_axis(sub)
         cols = collapse({c['category']: c for c in axis})
         out.append({
             'id': mid, 'label': f"{calendar.month_abbr[mo]} {y}",
-            'current': frac < 1.0,
+            'current': is_current,
             'categories': [{'category': a['category'],
                             'target_kind': a['target_kind'],
                             **cols[a['category']]}
@@ -544,7 +641,9 @@ def by_month(scope):
 
 def by_executive(scope):
     """Sales by executive (§5.3). Worst achievement first, no-target rows last (§9.1)."""
-    dwhere, dparams = scope.dealer_where()
+    # Dealer HEADCOUNT per executive — active only, and matched by the billed count
+    # below, for the same reason as the KPI card. Their sales still count everywhere else.
+    dwhere, dparams = scope.dealer_where(active_only=True)
     execs = mysql_manager.execute_query(
         f"""SELECT u.id AS exec_id, u.name,
                    COUNT(DISTINCT d.dealer_id) AS dealers
@@ -553,6 +652,7 @@ def by_executive(scope):
 
     q, p = scope.sql("d.sales_executive_id AS k, "
                      "COUNT(DISTINCT CASE WHEN b.quantity > 0 THEN d.dealer_id END) AS billed",
+                     extra="AND d.status <> 'inactive'",
                      group_by="GROUP BY d.sales_executive_id")
     billed = {r['k']: r for r in (mysql_manager.execute_query(q, p) or [])}
     visits = visit_stats(scope, by='exec')

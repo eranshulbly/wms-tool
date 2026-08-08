@@ -167,12 +167,18 @@
 .tt-root .kpi .foot { font-size: 12px; color: var(--muted); margin-top: 8px; }
 
 /* ---------- panels ---------- */
-.tt-root .duo { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 18px; }
+/* Stacked, not side by side. These tables carry too many columns to survive half a
+   screen: at 1fr 1fr the dealer table lost "Other qty" behind its own horizontal
+   scrollbar, so reading one row meant scrolling in two directions. Full width lets
+   every column show and only the page scrolls. */
+.tt-root .duo { display: grid; grid-template-columns: 1fr; gap: 18px; margin-bottom: 18px; }
 .tt-root .panel { background: var(--card); border-radius: var(--r); box-shadow: var(--shadow); overflow: hidden; margin-bottom: 18px; }
 .tt-root .panel-h { padding: 20px 22px 14px; display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .tt-root .panel-h h3 { font-size: 19px; font-weight: 500; margin: 0; }
 .tt-root .panel-h .note { font-size: 12px; color: var(--muted); }
-.tt-root .scroll { max-height: 420px; overflow: auto; }
+/* Viewport-relative rather than a flat 420px: a full-width panel has the room, and the
+   fixed cap was forcing an inner scrollbar after ~6 rows on a normal laptop screen. */
+.tt-root .scroll { max-height: 70vh; overflow: auto; }
 .tt-root table { width: 100%; border-collapse: collapse; font-size: 14px; }
 /* The header row is tinted and bold so it reads as a header while scrolling — it is
    `position: sticky`, so its background must stay fully opaque or rows show through it. */
@@ -205,7 +211,7 @@
 
 @media (max-width: 1000px) {
   .tt-root .kpis { grid-template-columns: 1fr 1fr; }
-  .tt-root .duo { grid-template-columns: 1fr; }
+  /* .duo is single-column at every width now, so it needs no override here. */
 }
 @media (max-width: 620px) {
   .tt-root .wrap { padding: 20px 14px 48px; }

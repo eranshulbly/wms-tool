@@ -145,7 +145,7 @@ const FilterTrail = ({
 
       {/* Step 2 — months. Multi-select, applied only on confirm (§4.2). */}
       {state.companyId && pending !== 'company' && (!state.months.length || pending === 'month') && (
-        <StepShell n={2} q="Which months?" hint="The current month is partial, so its targets are pro-rated to date.">
+        <StepShell n={2} q="Which months?" hint="Every month counts its full target — the current one included, so its % climbs as the month is worked through.">
           <div className="presets">
             <button type="button" className="preset" onClick={() => setDraftMonths(months.slice(0, 1).map((m) => m.id))}>This month</button>
             <button type="button" className="preset" onClick={() => setDraftMonths(months.slice(0, 3).map((m) => m.id))}>Last 3 months</button>

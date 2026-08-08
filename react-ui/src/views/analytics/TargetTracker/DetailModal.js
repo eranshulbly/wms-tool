@@ -96,7 +96,7 @@ const DetailModal = ({ detail, loading, scopeLabel, monthsLabel, onClose }) => {
               <div className="msum">
                 {headTargeted && (
                   <div>
-                    <span>Target to date</span>
+                    <span>Month target</span>
                     <b>{amount(d.target, headUnit)}</b>
                   </div>
                 )}

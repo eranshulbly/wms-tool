@@ -223,7 +223,7 @@ const TargetTracker = () => {
                   label={`Total sales ${kp.parts.category}`}
                   value={sold(kp.parts)}
                   foot={kp.parts.target_kind
-                    ? `${pctText(kp.parts.pct)} of ${amount(kp.parts.target, unitOf(kp.parts.target_kind, kp.parts.target_uom))} target to date`
+                    ? `${pctText(kp.parts.pct)} of ${amount(kp.parts.target, unitOf(kp.parts.target_kind, kp.parts.target_uom))} month target`
                     : null}
                 />
               )}
@@ -256,12 +256,12 @@ const TargetTracker = () => {
               <section className="panel">
                 <div className="panel-h">
                   <h3>Month by month</h3>
-                  <span className="note">Billed value against target to date</span>
+                  <span className="note">Billed value against the month target</span>
                 </div>
                 <div className="mstrip">
                   {data.months.map((m) => (
                     <div className="mcard" key={m.id}>
-                      <div className="ml">{m.label}{m.current ? ' · to date' : ''}</div>
+                      <div className="ml">{m.label}{m.current ? ' · in progress' : ''}</div>
                       {(m.categories || []).map((c) => (
                         <div className="mcat" key={c.category}>
                           <div className="mcatname">{c.category}</div>
