@@ -8,6 +8,7 @@ import { Typography } from '@material-ui/core';
 // project imports
 import NavGroup from './NavGroup';
 import menuItem, { sectionForPath } from './../../../../menu-items';
+import { scopeForRole } from './../../../../utils/roleScope';
 
 //-----------------------|| SIDEBAR MENU LIST ||-----------------------//
 
@@ -42,18 +43,21 @@ const MenuList = () => {
     const homeGroup = menuItem.items.find((g) => g.id === 'home');
     let sectionGroup = menuItem.items.find((g) => g.id === section);
 
+    // A single-screen role sees only its own item, and no Home link — the launcher is
+    // one of the places it is not allowed to go, so offering the link would just bounce.
+    const scope = scopeForRole(user?.role);
+
     if (sectionGroup && sectionGroup.id === 'order-tracking') {
         sectionGroup = filterOrderTracking(sectionGroup, allowedUploads);
-        // The part convertor is scoped to Submitted Orders only.
-        if (user?.role === 'part_convertor') {
+        if (scope) {
             sectionGroup = {
                 ...sectionGroup,
-                children: sectionGroup.children.filter((c) => c.id === 'submitted-orders')
+                children: sectionGroup.children.filter((c) => c.id === scope.menuId)
             };
         }
     }
 
-    const groups = [homeGroup, sectionGroup].filter(Boolean);
+    const groups = [scope ? null : homeGroup, sectionGroup].filter(Boolean);
 
     return groups.map((group) => {
         if (group.type === 'group') {

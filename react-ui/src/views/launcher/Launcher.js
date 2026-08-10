@@ -19,6 +19,8 @@ import {
     IconArrowRight
 } from '@tabler/icons';
 
+import { scopeForRole } from '../../utils/roleScope';
+
 // -----------------------|| SYSTEM LAUNCHER (tile home) ||-----------------------//
 
 const Launcher = () => {
@@ -27,18 +29,19 @@ const Launcher = () => {
     const { user } = useSelector((state) => state.account);
 
     const isAdmin = user?.role === 'admin';
-    const isPartConvertor = user?.role === 'part_convertor';
     const perms = user?.permissions || {};
 
-    // The part convertor is scoped to Submitted Orders only.
-    const submittedTile = {
-        key: 'submitted',
-        title: 'Submitted Orders',
-        description: 'Review submitted (photo / app) orders and build part-convertor sheets.',
+    // A single-screen role gets exactly one tile, built from the same table the sidebar
+    // and route guard use, so the three can never disagree about where it may go.
+    const scope = scopeForRole(user?.role);
+    const scopedTile = scope && {
+        key: 'scoped',
+        title: scope.title,
+        description: scope.description,
         icon: IconClipboardList,
         color: theme.palette.success.dark,
         tint: theme.palette.success.light,
-        path: '/warehouse/submitted-orders',
+        path: scope.home,
         show: true
     };
 
@@ -98,8 +101,8 @@ const Launcher = () => {
         }
     ];
 
-    // Part convertor sees only Submitted Orders; everyone else sees their permitted systems.
-    const tiles = isPartConvertor ? [submittedTile] : allTiles.filter((t) => t.show);
+    // A scoped role sees only its own screen; everyone else sees their permitted systems.
+    const tiles = scopedTile ? [scopedTile] : allTiles.filter((t) => t.show);
 
     return (
         <Box>

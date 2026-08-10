@@ -262,8 +262,14 @@ def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None
         f"SELECT COUNT(*) AS n FROM dealer d WHERE {' AND '.join(dcwhere)}",
         tuple(dcparams)) or [{'n': 0}])[0]['n']
 
+    # `u.name AS username` is not cosmetic: the row is read as r['username'] below, and
+    # the users table's display column was renamed username -> name (see the migration in
+    # db_manager). Selecting it unaliased raised KeyError: 'username' on every scope that
+    # had any sales at all — an empty result set skipped the comprehension and looked
+    # fine, so this failed only for dealers with data. Other callers alias it the same
+    # way (see admin.py).
     by_executive = mysql_manager.execute_query(
-        f"""SELECT u.id AS user_id, u.name,
+        f"""SELECT u.id AS user_id, u.name AS username,
                    SUM({_SALES}) AS sales, SUM(b.quantity) AS qty
             {_base(company_id)} JOIN users u ON u.id = d.sales_executive_id
             WHERE {where}
@@ -379,25 +385,57 @@ def sales_explorer(executive_id=None, dealer_id=None, part_group=None, part=None
                 LEFT JOIN product p ON p.product_string = b.item_code
                     AND p.company_id = {int(company_id)}
                 WHERE {sales_where}
-            )
+            ),
+            -- The sales are rolled up to each of the three grains FIRST, and the target
+            -- row then reads the one its own level names. The previous form joined the
+            -- `sales` CTE directly on an OR of the three key tests and grouped the
+            -- result: a CTE cannot be indexed, and an OR'd join condition cannot be
+            -- reduced to a lookup, so MySQL nested-looped 3.4k target rows against the
+            -- whole CTE. That cost 4s for this month, 14s for last_6m, and for last_24h
+            -- it ran past the 60s read_timeout and took the whole dashboard down with
+            -- OperationalError 2013 — worst on the period holding the LEAST data, which
+            -- is the signature of a plan problem rather than a volume one.
+            -- Each rollup is unique on its grain and only the matching level's join can
+            -- fire, so a target row still matches at most one row and no GROUP BY is
+            -- needed here. Verified row-for-row against the previous form.
+            a_pg AS (SELECT dealer_id, part_group, SUM(quantity) AS q,
+                            SUM(amount) AS a, SUM(litres) AS l
+                       FROM sales GROUP BY dealer_id, part_group),
+            a_sc AS (SELECT dealer_id, scheme, SUM(quantity) AS q,
+                            SUM(amount) AS a, SUM(litres) AS l
+                       FROM sales GROUP BY dealer_id, scheme),
+            a_ct AS (SELECT dealer_id, category_id, SUM(quantity) AS q,
+                            SUM(amount) AS a, SUM(litres) AS l
+                       FROM sales GROUP BY dealer_id, category_id)
             SELECT dpg.id, dpg.dealer_id, d.name AS dealer, dpg.part_group, dpg.scheme,
                    dpg.category_id, c.name AS category,
                    dpg.target_level AS level, dpg.target_type, dpg.target_uom,
                    dpg.target_qty, dpg.target_value,
-                   COALESCE(SUM(s.quantity), 0) AS sold_qty,
-                   COALESCE(SUM(s.amount), 0)   AS sold_value,
-                   COALESCE(SUM(s.litres), 0)   AS sold_litres
+                   COALESCE(CASE dpg.target_level WHEN 'part_group' THEN pgx.q
+                                                  WHEN 'scheme'     THEN scx.q
+                                                  WHEN 'category'   THEN ctx.q END, 0)
+                       AS sold_qty,
+                   COALESCE(CASE dpg.target_level WHEN 'part_group' THEN pgx.a
+                                                  WHEN 'scheme'     THEN scx.a
+                                                  WHEN 'category'   THEN ctx.a END, 0)
+                       AS sold_value,
+                   COALESCE(CASE dpg.target_level WHEN 'part_group' THEN pgx.l
+                                                  WHEN 'scheme'     THEN scx.l
+                                                  WHEN 'category'   THEN ctx.l END, 0)
+                       AS sold_litres
             FROM dealer_target dpg
             JOIN dealer d ON d.dealer_id = dpg.dealer_id
             LEFT JOIN categories c ON c.category_id = dpg.category_id
-            LEFT JOIN sales s ON s.dealer_id = dpg.dealer_id AND (
-                    (dpg.target_level = 'part_group' AND s.part_group  = dpg.part_group)
-                 OR (dpg.target_level = 'scheme'     AND s.scheme      = dpg.scheme)
-                 OR (dpg.target_level = 'category'   AND s.category_id = dpg.category_id))
+            LEFT JOIN a_pg pgx ON dpg.target_level = 'part_group'
+                              AND pgx.dealer_id = dpg.dealer_id
+                              AND pgx.part_group = dpg.part_group
+            LEFT JOIN a_sc scx ON dpg.target_level = 'scheme'
+                              AND scx.dealer_id = dpg.dealer_id
+                              AND scx.scheme = dpg.scheme
+            LEFT JOIN a_ct ctx ON dpg.target_level = 'category'
+                              AND ctx.dealer_id = dpg.dealer_id
+                              AND ctx.category_id = dpg.category_id
             WHERE {' AND '.join(dgwhere)}
-            GROUP BY dpg.id, dpg.dealer_id, d.name, dpg.part_group, dpg.scheme,
-                     dpg.category_id, c.name, dpg.target_level, dpg.target_type,
-                     dpg.target_uom, dpg.target_qty, dpg.target_value
             ORDER BY d.name, dpg.target_level, dpg.scheme, dpg.part_group""",
         tuple(dgparams)) or []
 

@@ -8,7 +8,7 @@ import json
 import logging
 import os
 
-from flask import Flask
+from flask import Flask, request
 
 _startup_logger = logging.getLogger(__name__)
 
@@ -32,6 +32,15 @@ def create_app(config_override: dict = None) -> Flask:
 
     # Flask sessions need a fixed secret key (used by Flask-Admin login)
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'AnshulWMSSecretKey2024')
+
+    # Stop Flask-RESTX appending `str(exception)` to error bodies as `message`. It does
+    # this by default, INDEPENDENTLY of DEBUG, and it merges on top of whatever an error
+    # handler returns — so a 500 shipped the raw exception text to the client (the
+    # KeyError that broke the dealer screen went out as {"message": "'username'"}, and a
+    # failing query would send its SQL and column names the same way). The client gets
+    # the handler's safe wording; the detail goes to the log. HTTPException descriptions
+    # are unaffected: handle_unexpected_error passes those through deliberately.
+    app.config['ERROR_INCLUDE_MESSAGE'] = False
 
     if config_override:
         app.config.update(config_override)
@@ -76,20 +85,59 @@ def create_app(config_override: dict = None) -> Flask:
 
 
 def _register_error_handlers(app: Flask) -> None:
+    # The two clients read different keys, and an error body in the wrong shape is an
+    # error the user never sees: the Flutter app reads `detail` and otherwise falls back
+    # to rendering a bare "HTTP 500", while the React UI reads `msg`. Which one is asking
+    # is decided by the path, so neither contract has to change.
+    from .extensions import rest_api
+
+    _V1_PREFIX = '/api/v1/'
+
+    def _error_body(text, path):
+        return ({"detail": text} if str(path).startswith(_V1_PREFIX)
+                else {"success": False, "msg": text})
+
+    @rest_api.errorhandler(Exception)
+    def handle_unexpected_error(error):
+        """Last resort for an exception no route handled.
+
+        Without this, Flask-RESTX renders `{"message": "Internal Server Error"}` — no
+        `detail`, so the mobile app could only show "HTTP 500" with no clue what broke,
+        and the user's report was indistinguishable from a timeout. The exception itself
+        is deliberately NOT sent to the client (it can carry SQL and column names); it
+        goes to the log, with the route, so the two can be matched up afterwards.
+        """
+        from werkzeug.exceptions import HTTPException
+        if isinstance(error, HTTPException):
+            # 404/405/413/... already carry a meaningful, safe description.
+            return _error_body(error.description, request.path), error.code
+        _startup_logger.exception(
+            "Unhandled exception on %s %s", request.method, request.path,
+            extra={'path': request.path, 'method': request.method})
+        return _error_body("Something went wrong on the server.", request.path), 500
+
     @app.after_request
     def after_request(response):
-        """Normalise error responses to {"success": false, "msg": "..."} shape."""
+        """Normalise error bodies to whichever shape the caller's client understands."""
         if int(response.status_code) >= 400:
+            path = request.path
             try:
                 response_data = json.loads(response.get_data())
-                if "errors" in response_data:
-                    response_data = {"success": False, "msg": response_data["errors"]}
-                    response.set_data(json.dumps(response_data))
-                response.headers.add('Content-Type', 'application/json')
-            except json.JSONDecodeError:
-                response_data = {"success": False, "msg": "An error occurred"}
-                response.set_data(json.dumps(response_data))
-                response.headers.add('Content-Type', 'application/json')
+                # Flask-RESTX puts request-validation failures under `errors`, and its
+                # own aborts under `message` — neither key is one the mobile app reads.
+                if isinstance(response_data, dict) and "detail" not in response_data:
+                    if "errors" in response_data:
+                        response.set_data(json.dumps(
+                            _error_body(response_data["errors"], path)))
+                    elif "message" in response_data and path.startswith(_V1_PREFIX):
+                        response.set_data(json.dumps(
+                            _error_body(response_data["message"], path)))
+                response.headers['Content-Type'] = 'application/json'
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # A non-JSON error body (Flask's HTML 404/405 pages) would otherwise
+                # reach the client as markup it cannot parse.
+                response.set_data(json.dumps(_error_body("An error occurred", path)))
+                response.headers['Content-Type'] = 'application/json'
         return response
 
 

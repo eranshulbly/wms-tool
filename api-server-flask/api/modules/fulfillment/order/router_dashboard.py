@@ -1040,6 +1040,210 @@ class SubmittedOrderPartConvertor(Resource):
         return {'success': True, 'item_count': len(items)}, 200
 
 
+@rest_api.route('/api/orders/inventory')
+class DmsInventory(Resource):
+    """Stock on hand for the DMS download step.
+
+    Same permission as downloading a DMS file (a logged-in active user on this
+    dashboard), because it is the same operator doing both: they upload the stock sheet
+    they are picking from, then download the files it can cover.
+
+    GET  — freshness summary, for the banner and to warn before a download is attempted.
+    POST — apply an uploaded stock sheet (multipart, field 'file').
+    """
+
+    @token_required
+    @active_required
+    def get(self, current_user):
+        from api.modules.fulfillment.order import temp_inventory
+        return {'success': True, 'inventory': temp_inventory.status()}, 200
+
+    @rest_api.response(400, 'Error', dash_error_response)
+    @token_required
+    @active_required
+    def post(self, current_user):
+        from api.modules.fulfillment.order import temp_inventory
+
+        f = request.files.get('file')
+        if f is None:
+            return {'success': False,
+                    'msg': 'an Excel file is required (form field "file")'}, 422
+        try:
+            items = temp_inventory.parse_inventory_sheet(f)
+        except temp_inventory.InventorySheetError as e:
+            return {'success': False, 'msg': str(e)}, 422
+
+        updated, inserted, zeroed = temp_inventory.replace_stock(items)
+        return {
+            'success': True,
+            'parts_in_sheet': len(items),
+            'updated': updated,
+            'inserted': inserted,
+            # Named plainly because it surprises people: a part the sheet omits is taken
+            # to be out of stock, not left at its previous quantity.
+            'zeroed_not_in_sheet': zeroed,
+            'inventory': temp_inventory.status(),
+        }, 200
+
+
+@rest_api.route('/api/orders/dealers')
+class OrderDealerOptions(Resource):
+    """Active dealers, for the dealer picker when raising an order by hand.
+
+    A dedicated route rather than /api/admin/dealers because that one is admin-only,
+    and the operator who raises these orders is not necessarily an admin — the rest of
+    this dashboard asks only for a logged-in active user. Read-only and no more than a
+    picker needs. `company_id` narrows it, since an order's dealer must belong to the
+    company it is raised against.
+    """
+
+    @rest_api.response(400, 'Error', dash_error_response)
+    @token_required
+    @active_required
+    def get(self, current_user):
+        where, params = ["(d.status IS NULL OR d.status = 'active')"], []
+        raw = (request.args.get('company_id') or '').strip()
+        if raw and raw != 'all':
+            try:
+                params.append(int(raw))
+            except ValueError:
+                return {'success': False, 'msg': 'company_id must be a number'}, 422
+            # A dealer with no company is offered for any company: unassigned dealers are
+            # still real, and create validates the pairing the same lenient way.
+            where.append("(d.company_id = %s OR d.company_id IS NULL)")
+        rows = mysql_manager.execute_query(
+            f"""SELECT d.dealer_id, d.name, d.dealer_code, d.town
+                FROM dealer d WHERE {' AND '.join(where)} ORDER BY d.name""",
+            tuple(params)) or []
+        return {'success': True, 'dealers': [{
+            'dealer_id': r['dealer_id'], 'name': r['name'],
+            'dealer_code': r['dealer_code'] or '', 'town': r['town'] or '',
+        } for r in rows]}, 200
+
+
+@rest_api.route('/api/orders/submitted/manual')
+class SubmittedOrderManualCreate(Resource):
+    """Raise an order from the web side, with its parts taken from an uploaded sheet.
+
+    For parts that arrived outside the app — a phone or WhatsApp order the rep never
+    entered. The operator fills in the order details and attaches the same parts sheet
+    the part convertor uses, and the result is an ordinary submitted order: it lands in
+    the Download DMS input list alongside every other one, and its DMS file is fetched
+    through the existing per-order route rather than a separate download path.
+
+    It goes straight in at dms_status='ready' for the same reason an itemised app order
+    does — the lines are already present, so there is no part-convertor step to wait for.
+
+    Multipart: 'file' plus dealer_id, company_id, and optionally warehouse_id, notes,
+    expected_delivery_date.
+    """
+
+    @rest_api.response(400, 'Error', dash_error_response)
+    @token_required
+    @active_required
+    def post(self, current_user):
+        from api.modules.fulfillment.order import dms
+        from api.modules.fulfillment.order.constants import OrderStatus
+
+        f = request.files.get('file')
+        if f is None:
+            return {'success': False,
+                    'msg': 'a parts Excel file is required (form field "file")'}, 422
+
+        def _int(name):
+            raw = (request.form.get(name) or '').strip()
+            if not raw:
+                return None, None
+            try:
+                return int(raw), None
+            except ValueError:
+                return None, f'{name} must be a number'
+
+        dealer_id, err = _int('dealer_id')
+        if err:
+            return {'success': False, 'msg': err}, 422
+        company_id, err2 = _int('company_id')
+        if err2:
+            return {'success': False, 'msg': err2}, 422
+        warehouse_id, err3 = _int('warehouse_id')
+        if err3:
+            return {'success': False, 'msg': err3}, 422
+        if dealer_id is None:
+            return {'success': False, 'msg': 'a dealer is required'}, 422
+        if company_id is None:
+            return {'success': False, 'msg': 'a company is required'}, 422
+
+        dealer = mysql_manager.execute_query(
+            "SELECT dealer_id, name, status, company_id FROM dealer WHERE dealer_id = %s",
+            (dealer_id,))
+        if not dealer or (dealer[0].get('status') or 'active') != 'active':
+            return {'success': False,
+                    'msg': f'dealer {dealer_id} not found or inactive'}, 422
+        # Mirrors create_order: an order whose dealer belongs to another company would be
+        # invisible to the people who could act on it.
+        if dealer[0].get('company_id') not in (None, company_id):
+            return {'success': False,
+                    'msg': f"{dealer[0]['name']} does not belong to the selected company"}, 422
+
+        company = mysql_manager.execute_query(
+            "SELECT company_id, name FROM company WHERE company_id = %s", (company_id,))
+        if not company:
+            return {'success': False, 'msg': f'company {company_id} not found'}, 422
+        if warehouse_id is not None and not mysql_manager.execute_query(
+                "SELECT warehouse_id FROM warehouse WHERE warehouse_id = %s", (warehouse_id,)):
+            return {'success': False, 'msg': f'warehouse {warehouse_id} not found'}, 422
+
+        # Parsed before anything is written, so a sheet we can't read leaves no order
+        # behind. Unknown part numbers are deliberately NOT rejected — same as the
+        # part-convertor upload, whose sheets routinely name parts the catalogue lacks;
+        # the DMS file needs the part number, not a catalogue match.
+        try:
+            items = dms.parse_part_convertor(f)
+        except dms.PartConvertorError as e:
+            return {'success': False, 'msg': str(e)}, 422
+
+        expected = (request.form.get('expected_delivery_date') or '').strip() or None
+        notes = (request.form.get('notes') or '').strip() or None
+        created_by = getattr(current_user, 'id', None)
+        now = datetime.utcnow()
+
+        with mysql_manager.get_cursor() as cursor:
+            cursor.execute(
+                """INSERT INTO submitted_orders
+                     (dealer_id, warehouse_id, company_id, status, source, dms_status,
+                      requested_by, created_by, submitted_at, expected_delivery_date,
+                      notes, created_at, updated_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (dealer_id, warehouse_id, company_id, OrderStatus.SUBMITTED.value,
+                 'itemised', 'ready', created_by, created_by, now, expected, notes,
+                 now, now))
+            order_id = cursor.lastrowid
+            order_number = f"ORD-{order_id:06d}"
+            cursor.execute(
+                "UPDATE submitted_orders SET order_number = %s WHERE submitted_order_id = %s",
+                (order_number, order_id))
+            for it in items:
+                cursor.execute(
+                    """INSERT INTO submitted_order_products
+                         (submitted_order_id, product_id, sku_code, product_name, uom,
+                          quantity, mrp, created_at, updated_at)
+                       VALUES (%s,
+                               (SELECT product_id FROM product
+                                 WHERE product_string = %s LIMIT 1),
+                               %s, %s, NULL, %s, %s, %s, %s)""",
+                    (order_id, it['sku_code'], it['sku_code'], it['product_name'],
+                     it['quantity'], it['mrp'], now, now))
+            cursor.execute(
+                """INSERT INTO submitted_order_status_history
+                     (submitted_order_id, status, changed_by, changed_at)
+                   VALUES (%s, 'ready', %s, %s)""",
+                (order_id, created_by, now))
+
+        return {'success': True, 'order_id': order_id, 'order_number': order_number,
+                'item_count': len(items),
+                'dms_available': dms.has_dms_format(company[0]['name'])}, 201
+
+
 @rest_api.route('/api/orders/submitted/<int:order_id>/dms-file')
 class SubmittedOrderDmsFile(Resource):
     """Download the company's DMS upload file for a submitted order.
@@ -1077,7 +1281,8 @@ class SubmittedOrderDmsFile(Resource):
             }, 501
 
         items = mysql_manager.execute_query(
-            """SELECT sku_code, product_name, quantity, mrp
+            """SELECT submitted_order_product_id, sku_code, product_name, quantity, mrp,
+                      dms_quantity
                FROM submitted_order_products
                WHERE submitted_order_id = %s
                ORDER BY submitted_order_product_id""",
@@ -1089,29 +1294,78 @@ class SubmittedOrderDmsFile(Resource):
                 'msg': 'this order has no parts yet — upload the part-convertor file first',
             }, 409
 
-        csv_text = dms.build_dms_csv(head['company_name'], items)
+        from api.modules.fulfillment.order import temp_inventory
 
-        # Downloading marks the order Done (dms_status='done') but it STAYS in the
-        # Download DMS tab, so it can still be rejected afterwards. Reject sends it back
-        # to Submitted Orders; a fresh part-convertor upload brings it forward again.
-        now = datetime.utcnow()
-        with mysql_manager.get_cursor() as cursor:
-            cursor.execute(
-                "UPDATE submitted_orders SET dms_status = 'done', updated_at = %s "
-                "WHERE submitted_order_id = %s",
-                (now, order_id),
-            )
-            cursor.execute(
-                """INSERT INTO submitted_order_status_history
-                     (submitted_order_id, status, changed_by, changed_at)
-                   VALUES (%s, 'done', %s, %s)""",
-                (order_id, getattr(current_user, 'id', None), now),
-            )
+        # An order already downloaded replays its stored allocation. It must NOT allocate
+        # again: the stock it consumed is already gone, so a second pass would deduct the
+        # same parts twice and — reading the reduced quantities — hand over a SMALLER file
+        # than the one the DMS already received. Replaying also means a re-download is not
+        # subject to the freshness rule, because it takes nothing new out of stock.
+        already_allocated = any(i['dms_quantity'] is not None for i in items)
+        shortfalls = []
+
+        if already_allocated:
+            lines = [dict(i, quantity=i['dms_quantity']) for i in items
+                     if (i['dms_quantity'] or 0) > 0]
+        else:
+            # Stock older than the freshness window cannot be allocated against — someone
+            # has probably picked from it since, so the file would promise parts that are
+            # no longer on the shelf.
+            stale = temp_inventory.staleness_error()
+            if stale:
+                return {'success': False, 'msg': stale}, 409
+
+            lines, shortfalls = temp_inventory.allocate(items)
+            if not lines:
+                return {
+                    'success': False,
+                    'msg': 'none of the parts on this order are in stock — '
+                           'upload current inventory, or reject the order.',
+                }, 409
+
+            supplied = {ln['submitted_order_product_id']: ln['quantity'] for ln in lines}
+            now = datetime.utcnow()
+            with mysql_manager.get_cursor() as cursor:
+                # Every line is stamped, including the ones stock could not cover (0), so
+                # the replay above reproduces exactly this set of rows.
+                for it in items:
+                    cursor.execute(
+                        "UPDATE submitted_order_products SET dms_quantity = %s "
+                        "WHERE submitted_order_product_id = %s",
+                        (supplied.get(it['submitted_order_product_id'], 0),
+                         it['submitted_order_product_id']))
+                # Downloading marks the order Done (dms_status='done') but it STAYS in the
+                # Download DMS tab, so it can still be rejected afterwards. Reject sends it
+                # back to Submitted Orders; a fresh part-convertor upload brings it forward.
+                cursor.execute(
+                    "UPDATE submitted_orders SET dms_status = 'done', updated_at = %s "
+                    "WHERE submitted_order_id = %s",
+                    (now, order_id),
+                )
+                cursor.execute(
+                    """INSERT INTO submitted_order_status_history
+                         (submitted_order_id, status, changed_by, changed_at)
+                       VALUES (%s, 'done', %s, %s)""",
+                    (order_id, getattr(current_user, 'id', None), now),
+                )
+
+        csv_text = dms.build_dms_csv(head['company_name'], lines)
 
         buf = io.BytesIO(csv_text.encode('utf-8-sig'))  # BOM so Excel opens it cleanly
         buf.seek(0)
         filename = f"DMS_{head['order_number'] or order_id}.csv"
-        return send_file(buf, mimetype='text/csv', as_attachment=True, download_name=filename)
+        resp = send_file(buf, mimetype='text/csv', as_attachment=True,
+                         download_name=filename)
+        # A short-supplied file looks normal, so the fact that it was trimmed has to be
+        # told to the operator. The body is the CSV, so it travels in headers instead.
+        if shortfalls:
+            resp.headers['X-DMS-Shortfall-Count'] = str(len(shortfalls))
+            resp.headers['X-DMS-Shortfall-Summary'] = '; '.join(
+                f"{s['part_number']} {s['supplied']}/{s['ordered']}"
+                for s in shortfalls[:12])
+            resp.headers['Access-Control-Expose-Headers'] = (
+                'Content-Disposition, X-DMS-Shortfall-Count, X-DMS-Shortfall-Summary')
+        return resp
 
 
 @rest_api.route('/api/orders/submitted/<int:order_id>/reject')

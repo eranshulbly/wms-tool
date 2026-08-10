@@ -17,16 +17,99 @@ Usage:
             ...
 """
 
+import re
 from functools import wraps
 
 import jwt
 from flask import request
 
 from ..config import BaseConfig
-from .db_manager import mysql_manager, partition_filter
+from .db_manager import (mysql_manager, partition_filter,
+                         _PART_CONVERTOR_ROLE_NAME, _DMS_OPERATOR_ROLE_NAME)
 from .logging import get_logger
 
 logger = get_logger(__name__)
+
+
+# ── part_convertor: confined to the Submitted Orders screen ───────────────────────
+#
+# The UI already hides everything else from this role (the launcher shows one tile, the
+# sidebar one item, and AuthGuard bounces every other path). None of that is access
+# control: the role's token is a normal bearer token that works against every endpoint,
+# so anyone holding it could still call the DMS download, the inventory upload or the
+# admin routes directly. The restriction is therefore enforced HERE — token_required is
+# the one place every web route passes through, so nothing can be added later that
+# accidentally skips the check.
+#
+# An allowlist rather than a blocklist, and matched exactly rather than by prefix: a
+# prefix test on '/api/orders/submitted' would also admit .../dms-file, .../reject and
+# .../manual, which are precisely the things this role must not reach.
+# Paths every signed-in user keeps, whatever their scope. Signing out must never be
+# blocked, or a restricted user is stuck in the app with no way out.
+_ALWAYS_ALLOWED = (
+    ('POST', r'^/api/users/logout/?$'),
+)
+
+# role -> (screen name, allowed (method, path) pairs). A role listed here can reach
+# NOTHING else; a role absent from this map is unrestricted and pays only a dict lookup.
+#
+# Matched exactly, never by prefix. A prefix test on '/api/orders/submitted' would admit
+# .../dms-file, .../reject and .../manual — precisely the calls that separate these two
+# roles from each other.
+_ROLE_SCOPES = {
+    # Transcription only: read a paper order's photo, upload the sheet that becomes its
+    # lines. Cannot download a DMS file or touch stock.
+    _PART_CONVERTOR_ROLE_NAME: ('Submitted Orders', (
+        ('GET',  r'^/api/orders/submitted/?$'),
+        ('GET',  r'^/api/orders/submitted/\d+/photo/\d+/?$'),
+        ('POST', r'^/api/orders/submitted/\d+/part-convertor/?$'),
+        ('GET',  r'^/api/warehouses/?$'),
+        ('GET',  r'^/api/companies/?$'),
+    )),
+    # The DMS screen end to end: stock in, DMS files out, manual orders raised, bad ones
+    # rejected. Cannot upload a part-convertor sheet — that is the other role's job.
+    _DMS_OPERATOR_ROLE_NAME: ('Download DMS Input', (
+        ('GET',  r'^/api/orders/submitted/?$'),
+        ('GET',  r'^/api/orders/submitted/\d+/photo/\d+/?$'),
+        ('GET',  r'^/api/orders/submitted/\d+/dms-file/?$'),
+        ('POST', r'^/api/orders/submitted/\d+/reject/?$'),
+        ('POST', r'^/api/orders/submitted/manual/?$'),
+        ('GET',  r'^/api/orders/inventory/?$'),
+        ('POST', r'^/api/orders/inventory/?$'),
+        ('GET',  r'^/api/orders/dealers/?$'),
+        ('GET',  r'^/api/warehouses/?$'),
+        ('GET',  r'^/api/companies/?$'),
+    )),
+}
+
+# Compiled once at import; matching runs on every authenticated request.
+_COMPILED_SCOPES = {
+    role: (screen, tuple((m, re.compile(p)) for m, p in patterns))
+    for role, (screen, patterns) in _ROLE_SCOPES.items()
+}
+_COMPILED_ALWAYS = tuple((m, re.compile(p)) for m, p in _ALWAYS_ALLOWED)
+
+
+def role_scope_error(current_user):
+    """403 payload when a single-screen role asks for anything outside its screen.
+
+    Returns None for unrestricted roles and for the paths a restricted role needs.
+    """
+    scope = _COMPILED_SCOPES.get(getattr(current_user, 'role', None) or '')
+    if scope is None:
+        return None
+    screen, patterns = scope
+    path, method = request.path, request.method.upper()
+    for allowed_method, pattern in patterns + _COMPILED_ALWAYS:
+        if method == allowed_method and pattern.match(path):
+            return None
+    logger.warning("role blocked outside its scope", extra={
+        'path': path, 'method': method, 'role': current_user.role,
+        'user_id': getattr(current_user, 'id', None)})
+    message = f"Your account only has access to {screen}."
+    # `detail` as well, so a client that reads that key shows the reason rather than
+    # falling back to a bare "HTTP 403".
+    return {"success": False, "msg": message, "detail": message}, 403
 
 
 def token_required(f):
@@ -70,6 +153,12 @@ def token_required(f):
 
             if current_user.status == 'blocked':
                 return {"success": False, "msg": "Account has been blocked."}, 403
+
+            # Role-scoping: refuse before the view runs, so a restricted role cannot
+            # reach a handler at all.
+            scope_error = role_scope_error(current_user)
+            if scope_error is not None:
+                return scope_error
 
         except jwt.ExpiredSignatureError:
             return {"success": False, "msg": "Token has expired."}, 401

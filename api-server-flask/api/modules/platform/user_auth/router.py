@@ -19,15 +19,24 @@ logger = get_logger(__name__)
 
 # ── Request / Response Models ────────────────────────────────────────────────
 
+# The password cap is 128, not 16. A 16-character ceiling on a value that is hashed
+# immediately bought nothing — the column stores a fixed-length digest whatever the input
+# length — while blocking longer, stronger passwords. Worse, it failed at the VALIDATION
+# layer: a 17-character password was rejected as a malformed request before the handler
+# compared anything, so a correct password came back as a flat "Wrong credentials." with
+# nothing to distinguish it from a typo. Raising a maximum cannot invalidate any password
+# already in use.
+_PASSWORD = dict(required=True, min_length=4, max_length=128)
+
 signup_model = rest_api.model('SignUpModel', {
     "username": fields.String(required=True, min_length=2, max_length=32),
     "email":    fields.String(required=True, min_length=4, max_length=64),
-    "password": fields.String(required=True, min_length=4, max_length=16),
+    "password": fields.String(**_PASSWORD),
 })
 
 login_model = rest_api.model('LoginModel', {
     "email":    fields.String(required=True, min_length=4, max_length=64),
-    "password": fields.String(required=True, min_length=4, max_length=16),
+    "password": fields.String(**_PASSWORD),
 })
 
 user_edit_model = rest_api.model('UserEditModel', {

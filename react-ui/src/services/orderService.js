@@ -102,8 +102,55 @@ export const downloadDmsFile = (orderId) =>
     const disposition = res.headers['content-disposition'] || '';
     const match = /filename[^;=\n]*=(?:"?)([^";\n]*)/.exec(disposition);
     const filename = match ? match[1].trim() : `DMS_${orderId}.csv`;
-    return { blob: res.data, filename };
+    // A file trimmed to available stock is indistinguishable from a complete one, so the
+    // server reports what it cut in headers (the body is the CSV itself).
+    return {
+      blob: res.data,
+      filename,
+      shortfallCount: parseInt(res.headers['x-dms-shortfall-count'] || '0', 10),
+      shortfallSummary: res.headers['x-dms-shortfall-summary'] || ''
+    };
   });
+
+// Stock on hand for the DMS step. The freshness summary drives the banner; a DMS download
+// is refused when the last upload is older than the server's window.
+export const getDmsInventory = () => api.get('orders/inventory').then((res) => res.data);
+
+// Apply a stock sheet (PART# | QTY). A full snapshot: parts the sheet omits are set to 0.
+export const uploadDmsInventory = (file) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  return api
+    .post('orders/inventory', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
+    .then((res) => res.data);
+};
+
+// Active dealers for the manual-order picker. Narrowed by company, because an order's
+// dealer has to belong to the company it is raised against.
+export const getOrderDealers = (companyId) => {
+  const params = {};
+  if (companyId && companyId !== 'all') params.company_id = companyId;
+  return api.get('orders/dealers', { params }).then((res) => res.data);
+};
+
+// Raise an order by hand with its parts taken from an uploaded sheet — for parts that
+// arrived outside the app (phone/WhatsApp). The result is an ordinary submitted order
+// that appears in this list like any other, so its DMS file is then downloaded through
+// the normal per-order route.
+export const createManualOrder = ({ file, dealerId, companyId, warehouseId, notes, expectedDate }) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('dealer_id', dealerId);
+  formData.append('company_id', companyId);
+  if (warehouseId && warehouseId !== 'all') formData.append('warehouse_id', warehouseId);
+  if (notes) formData.append('notes', notes);
+  if (expectedDate) formData.append('expected_delivery_date', expectedDate);
+  return api
+    .post('orders/submitted/manual', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    .then((res) => res.data);
+};
 
 // Best-effort extraction of a JSON error message from an axios error whose response
 // body is a Blob (because we requested responseType: 'blob').

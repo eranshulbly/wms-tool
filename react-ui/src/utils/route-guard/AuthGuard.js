@@ -4,8 +4,7 @@ import { useSelector } from 'react-redux';
 import { Redirect, useLocation } from 'react-router-dom';
 import { Box, Typography, Paper } from '@material-ui/core';
 
-// Path the part-convertor role is confined to.
-const PART_CONVERTOR_HOME = '/warehouse/submitted-orders';
+import { scopeForRole } from '../roleScope';
 
 //-----------------------|| AUTH GUARD ||-----------------------//
 
@@ -18,10 +17,11 @@ const AuthGuard = ({ children }) => {
         return <Redirect to="/login" />;
     }
 
-    // The part convertor may only ever see Submitted Orders — any other path
-    // (including the /home launcher) bounces there.
-    if (user && user.role === 'part_convertor' && !location.pathname.startsWith(PART_CONVERTOR_HOME)) {
-        return <Redirect to={PART_CONVERTOR_HOME} />;
+    // A single-screen role may only ever see its own page — any other path (including
+    // the /home launcher) bounces there.
+    const scope = user && scopeForRole(user.role);
+    if (scope && !location.pathname.startsWith(scope.home)) {
+        return <Redirect to={scope.home} />;
     }
 
     if (user && user.status === 'pending') {

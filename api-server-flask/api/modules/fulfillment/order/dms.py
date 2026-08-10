@@ -135,15 +135,38 @@ class DMSNotConfiguredError(Exception):
     """No DMS layout is known for this company yet."""
 
 
+def _company_key(company_name):
+    """Map a company's stored name onto its DMS layout key, or None.
+
+    The lookup used to be an exact match on the lower-cased name, which never fired: the
+    company table holds trading names ('Hero Moto Corp Spares'), not the bare brand the
+    builders are keyed on. So every order in the system reported "no DMS layout yet" —
+    the Download button was replaced by "Coming soon" for all of them and the file route
+    answered 501, making the whole download unreachable rather than merely unconfigured.
+
+    Matching is on the leading brand word, so the suffixes a real company name carries
+    are tolerated. It stays deliberate — a brand still has to be listed in
+    COMPANY_DMS_BUILDERS — and the trailing-space test keeps it from reaching a different
+    company that merely starts with the same letters ('Heroic Parts' is not Hero).
+    """
+    norm = ' '.join(''.join(
+        ch if (ch.isalnum() or ch.isspace()) else ' '
+        for ch in str(company_name or '').lower()).split())
+    for key in COMPANY_DMS_BUILDERS:
+        if norm == key or norm.startswith(key + ' '):
+            return key
+    return None
+
+
 def has_dms_format(company_name):
     """True only when a company's DMS layout is known (so far, just Hero)."""
-    return (company_name or '').strip().lower() in COMPANY_DMS_BUILDERS
+    return _company_key(company_name) is not None
 
 
 def build_dms_csv(company_name, items):
     """Render the DMS file for `company_name` as CSV text (matches that company's
     sample). Raises DMSNotConfiguredError if the company's layout isn't known yet."""
-    builder = COMPANY_DMS_BUILDERS.get((company_name or '').strip().lower())
+    builder = COMPANY_DMS_BUILDERS.get(_company_key(company_name))
     if builder is None:
         raise DMSNotConfiguredError(company_name)
     buf = io.StringIO()

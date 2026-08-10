@@ -159,18 +159,38 @@ class V1Skus(Resource):
 
         # working_set: the parts a sales rep actually deals with — anything sold
         # in the last 6 months, plus everything in this month's target part
-        # groups. ~1.8k rows instead of 59k, so the app can hold it locally and
+        # groups. ~3.7k rows instead of 60k, so the app can hold it locally and
         # search it instantly; the long tail is reached via `q` instead. The
         # sales window is bounded so this can't grow without limit as history
         # accumulates.
+        #
+        # Joined as a derived table, driving from it, rather than
+        # `product_string IN (SELECT ... UNION ...)`:
+        #
+        #  * The IN form was rated a DEPENDENT SUBQUERY with a DEPENDENT UNION — i.e.
+        #    re-executed for each of ~54k candidate product rows. It ran for over two
+        #    minutes, past both the app's 30s receive timeout (the picker just spun) and
+        #    PyMySQL's 60s read_timeout, whose broken connection then made the failing
+        #    rollback mask the real error. Joining evaluates the set once.
+        #  * STRAIGHT_JOIN pins the small side first. Left to itself MySQL drove from
+        #    `product` — a 54k-row scan plus a filesort for ORDER BY name — and probed the
+        #    derived set: 2.4s. Driving from the working set makes the catalogue an eq_ref
+        #    hit on uq_product_string and sorts only the ~3.7k surviving rows: 204ms.
+        #    Safe to pin, because the working set is by construction a subset of the
+        #    catalogue and so always the smaller input.
+        #
+        # UNION already dedupes, so this cannot multiply rows. Verified row-for-row
+        # against the IN form, and against the join without STRAIGHT_JOIN.
         if working_set:
-            conds.append("""product_string IN (
-                SELECT item_code FROM busy_sales_data
-                 WHERE sale_date >= DATE_SUB(DATE_FORMAT(CURDATE(), '%%Y-%%m-01'),
-                                             INTERVAL 6 MONTH)
-                UNION
-                SELECT part_number FROM part_groups
-                 WHERE time_period = DATE_FORMAT(CURDATE(), '%%Y-%%m-01'))""")
+            frm = """(SELECT item_code AS ps FROM busy_sales_data
+                       WHERE sale_date >= DATE_SUB(DATE_FORMAT(CURDATE(), '%%Y-%%m-01'),
+                                                   INTERVAL 6 MONTH)
+                      UNION
+                      SELECT part_number AS ps FROM part_groups
+                       WHERE time_period = DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
+                     ) ws STRAIGHT_JOIN product ON product.product_string = ws.ps """
+        else:
+            frm = "product "
 
         # Server-side search for parts outside the working set. A leading
         # wildcard can't use a B-tree index, so this is a scan of ~59k rows —
@@ -182,7 +202,8 @@ class V1Skus(Resource):
 
         where = ("WHERE " + " AND ".join(conds)) if conds else ""
         rows = mysql_manager.execute_query(
-            f"SELECT {SKU_COLS} FROM product {where} ORDER BY name LIMIT %s OFFSET %s",
+            f"SELECT {SKU_COLS} FROM {frm}{where} "
+            f"ORDER BY name LIMIT %s OFFSET %s",
             tuple(params + [limit, offset]),
         ) or []
         return [_sku_out(r) for r in rows], 200

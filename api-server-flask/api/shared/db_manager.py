@@ -234,11 +234,28 @@ class MySQLManager:
                 yield cursor
                 if commit:
                     conn.commit()
-            except Exception as e:
-                conn.rollback()
-                raise e
+            except Exception:
+                # The rollback's OWN failure must never replace the error that caused it.
+                # When a query trips PyMySQL's 60s read_timeout the connection is already
+                # dead, so ROLLBACK raises InterfaceError(0, '') — and re-raising that
+                # threw away the real OperationalError(2013, 'Lost connection to MySQL
+                # server during query'), the only thing that says what went wrong. A slow
+                # query and a broken one became indistinguishable in the log.
+                # The dead connection is still discarded, by get_connection's handler.
+                try:
+                    conn.rollback()
+                except Exception:
+                    logger.warning(
+                        "rollback failed after a query error — connection is broken; "
+                        "reporting the original error", exc_info=True)
+                raise
             finally:
-                cursor.close()
+                # close() on a dead connection raises too, and an exception from a finally
+                # block replaces the in-flight one just as effectively as the rollback did.
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
 
     def execute_query(self, query, params=None, fetch=True):
         """Execute a query and return results"""
@@ -808,6 +825,12 @@ def create_all_tables():
     # After both _migrate_company_id (adds company_id) and _migrate_part_groups_period
     # (renames period -> time_period): the widened key names both of those columns.
     _migrate_part_groups_company_uq()
+    # Restores an index the widened key can no longer serve — see the docstring.
+    _migrate_part_groups_join_index()
+    # Same class of gap on the sales feed: date-window reads can't use a company-led key.
+    _migrate_busy_sales_saledate_index()
+    _migrate_dms_quantity_column()
+    _migrate_temp_inventory_uploaded_index()
     # Runs last: it only adds columns, and several of the migrations above assume the
     # base tables already exist in their pre-v2 shape.
     _migrate_v2_api_columns()
@@ -1682,6 +1705,117 @@ def _migrate_part_groups_company_uq():
         logger.exception("%s: migration failed for uq_period_part", table)
 
 
+def _migrate_temp_inventory_uploaded_index():
+    """Add temp_inventory.idx_temp_inv_uploaded (uploaded_at) — idempotent.
+
+    The DMS screen reads MAX(uploaded_at) on every load to decide whether stock is fresh
+    enough to download against. Unindexed that is a full scan of the whole stock table
+    (tens of thousands of parts) on a query that runs constantly.
+    """
+    table = 'temp_inventory'
+    try:
+        if not mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.TABLES
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s""", (table,)):
+            return  # table not created yet; the registry DDL carries the index
+        if mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.STATISTICS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                     AND INDEX_NAME = 'idx_temp_inv_uploaded'""", (table,)):
+            return
+        mysql_manager.execute_query(
+            f"ALTER TABLE {table} ADD INDEX idx_temp_inv_uploaded (uploaded_at)",
+            fetch=False)
+        logger.info("%s: added idx_temp_inv_uploaded", table)
+    except Exception:
+        logger.exception("%s: migration failed for idx_temp_inv_uploaded", table)
+
+
+def _migrate_dms_quantity_column():
+    """Add submitted_order_products.dms_quantity (idempotent).
+
+    Holds what the DMS file actually requested after stock allocation, so a re-download
+    replays the same numbers instead of allocating a second time against already-reduced
+    stock. The registry only issues CREATE TABLE IF NOT EXISTS, so this is what carries
+    the column to a database that already has the table.
+    """
+    try:
+        if not mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.COLUMNS
+                   WHERE TABLE_SCHEMA = DATABASE()
+                     AND TABLE_NAME = 'submitted_order_products'
+                     AND COLUMN_NAME = 'dms_quantity'"""):
+            mysql_manager.execute_query(
+                "ALTER TABLE submitted_order_products "
+                "ADD COLUMN dms_quantity INT NULL AFTER mrp", fetch=False)
+            logger.info("submitted_order_products: added column dms_quantity")
+    except Exception:
+        logger.exception(
+            "submitted_order_products: migration failed for column dms_quantity")
+
+
+def _migrate_busy_sales_saledate_index():
+    """Add idx_bsd_saledate_item (sale_date, item_code) — idempotent.
+
+    Same shape of problem as _migrate_part_groups_join_index: the table's own DDL declares
+    idx_company_sale_date (company_id, sale_date), but the reads that scan a date WINDOW
+    rather than one company's rows — the catalog working set being the hot one — filter on
+    sale_date alone. company_id leading means that is not a prefix, so those queries fell
+    back to a full scan of every row in the table.
+
+    (sale_date, item_code) rather than (sale_date) alone so the working-set subquery is
+    answered from the index without touching the rows at all ("Using index"): 504ms -> 120ms
+    on ~159k rows, and it degrades gracefully as history accumulates.
+    """
+    table = 'busy_sales_data'
+    try:
+        if mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.STATISTICS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                     AND INDEX_NAME = 'idx_bsd_saledate_item'""", (table,)):
+            return
+        mysql_manager.execute_query(
+            f"ALTER TABLE {table} ADD INDEX idx_bsd_saledate_item "
+            "(sale_date, item_code)", fetch=False)
+        logger.info("%s: added idx_bsd_saledate_item", table)
+    except Exception:
+        logger.exception("%s: migration failed for idx_bsd_saledate_item", table)
+
+
+def _migrate_part_groups_join_index():
+    """Add idx_pg_part_period (part_number, time_period) — idempotent.
+
+    The companion to _migrate_part_groups_company_uq, and the reason it is needed: putting
+    company_id FIRST in uq_period_part made that key unusable for the analytics joins,
+    which every read in field_sales/service.py spells as
+
+        JOIN part_groups pg ON pg.part_number = b.item_code AND pg.time_period = <period>
+
+    with no company_id predicate (attribution goes through `dealer`, so the mapping is not
+    company-filtered here). company_id being the leading column means that is not an index
+    prefix, so MySQL fell back to idx_period — time_period alone — and re-scanned every
+    row of the period for each candidate sales row. On ~1.3k mapping rows that was ~676
+    row reads per outer row: the mobile dealer payload's peer-opportunity query took 3.6s
+    of a 4.9s response, and it grows with each period loaded. With this index the join is a
+    single lookup — 88ms and 659ms respectively, same rows.
+
+    Deliberately NOT unique: uq_period_part is the constraint, this is only an access path.
+    """
+    table = 'part_groups'
+    try:
+        if mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.STATISTICS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                     AND INDEX_NAME = 'idx_pg_part_period'""", (table,)):
+            return
+        mysql_manager.execute_query(
+            f"ALTER TABLE {table} ADD INDEX idx_pg_part_period "
+            "(part_number, time_period)", fetch=False)
+        logger.info("%s: added idx_pg_part_period", table)
+    except Exception:
+        logger.exception("%s: migration failed for idx_pg_part_period", table)
+
+
 def _migrate_dealer_visits_columns():
     """Add the free-text visit note (idempotent).
 
@@ -1910,6 +2044,13 @@ ALL_ORDER_STATES = ['Open', 'Picking', 'Packed', 'Invoiced', 'Dispatch Ready', '
 ALL_UPLOAD_TYPES = ['orders', 'invoices', 'products']
 
 
+# The single-screen roles, named once here because several places must agree on each
+# string: this seed, the server-side scope check in shared/auth.py, and the React
+# launcher / sidebar / AuthGuard. A typo in any of them silently grants full access.
+_PART_CONVERTOR_ROLE_NAME = 'part_convertor'
+_DMS_OPERATOR_ROLE_NAME = 'dms_operator'
+
+
 def seed_default_roles():
     """Seed default roles into DB if they don't exist yet."""
     defaults = [
@@ -1959,6 +2100,43 @@ def seed_default_roles():
             'name': 'sales_executive',
             'description': 'Field sales. Own dealers analytics only. No order states or uploads.',
             'all_warehouses': False,
+            'order_states': [],
+            'uploads': [],
+        },
+        # Back-office transcription only: reads a paper order's photo and uploads the
+        # part-convertor sheet that turns it into order lines. The name matters — the UI
+        # (launcher tile, sidebar, AuthGuard) and the server-side scope check in
+        # shared/auth.py all key on exactly 'part_convertor'.
+        #
+        # No order states and no uploads: `uploads` here governs the Upload Orders /
+        # Invoices / Products screens, which this role must not see. The part-convertor
+        # sheet is not one of those uploads — it goes through the Submitted Orders screen
+        # and is allowed by the scope check, not by this flag.
+        #
+        # all_warehouses because the work is central: whoever transcribes photos handles
+        # whatever arrives, and scoping them to assigned warehouses would silently hide
+        # orders they are meant to process.
+        {
+            'name': _PART_CONVERTOR_ROLE_NAME,
+            'description': 'Submitted Orders only. Reads order photos and uploads '
+                           'part-convertor sheets. No other tabs or sections.',
+            'all_warehouses': True,
+            'order_states': [],
+            'uploads': [],
+        },
+        # The other half of the DMS pipeline: uploads stock, allocates it into DMS files
+        # and downloads them, raises phone/WhatsApp orders, and rejects what is wrong.
+        # Confined to the Download DMS Input screen — it never sees Submitted Orders, so
+        # transcription and dispatch stay separate people.
+        #
+        # `uploads: []` again governs only the Upload Orders / Invoices / Products screens.
+        # This role's two uploads (stock and the manual order's parts sheet) both belong to
+        # the DMS screen and are permitted by the scope check in shared/auth.py.
+        {
+            'name': _DMS_OPERATOR_ROLE_NAME,
+            'description': 'Download DMS Input only. Uploads inventory, downloads DMS '
+                           'files, raises manual orders. No other tabs or sections.',
+            'all_warehouses': True,
             'order_states': [],
             'uploads': [],
         },
