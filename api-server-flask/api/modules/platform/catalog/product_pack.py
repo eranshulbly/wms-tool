@@ -20,7 +20,6 @@ so a rep orders in the unit the goods ship in, and the money is computed in the 
 supplier quotes.
 """
 
-from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
 from api.shared.db_manager import mysql_manager
@@ -187,27 +186,58 @@ def replace_ladder(cursor, product_id, rungs):
 
 
 # ── Prices ───────────────────────────────────────────────────────────────────────
+#
+# Prices go to fc_sku_price_details — the table inventory.ingestion already writes when
+# stock is received — NOT to a catalogue price table. Price belongs to the stock it was
+# paid for; a second store would mean two answers to "what does this cost".
+#
+# A rate list has no batch: nothing has been received. It is written against batch_id 0,
+# which the table's unique key (company_id, entity_id, entity_type, batch_id) accepts as
+# an ordinary value, so this needs no schema change. Reading then has one rule:
+#
+#     most recent real batch  ->  else the batch-0 list rate  ->  else unpriced
+#
+# so a brand-new catalogue can be ordered on day one, and every receipt afterwards
+# quietly takes precedence over the list.
+#
+# The one thing to know: anything reporting on ACTUAL receipts must exclude batch 0, or a
+# rate that was never received shows up as stock that was. batch_costing_report does.
+LIST_RATE_BATCH_ID = 0
+LIST_RATE_REFERENCE = 'RATE LIST'
 
-def upsert_prices(cursor, product_id, company_id, price_uom, prices,
-                  effective_from, price_list=None):
-    """Write one dated row per supplied price type.
 
-    Same (product, company, uom, type, date) twice is an UPDATE, so re-uploading a
-    corrected file replaces that day's figure instead of stacking a second row the
-    lookup would have to choose between.
+def upsert_list_rate(cursor, product_id, company_id, price_uom, prices, gst_percent=None,
+                     reference=LIST_RATE_REFERENCE):
+    """Write the supplier's list rate for a product as its batch-less price row.
+
+    `landing_price` is the figure orders are valued at, so it takes the landing rate when
+    the file supplies one and falls back to the billing rate — the sheet only carries a
+    separate landing figure for some products, and a missing one means the two are equal
+    rather than that the product is free.
+
+    quantity_received stays 0 and cn_rate stays 0: no goods arrived and no credit note was
+    raised. Both are honest zeroes, not placeholders.
     """
-    rows = [(product_id, company_id, price_uom, ptype, amount, price_list, effective_from)
-            for ptype, amount in prices.items() if amount is not None]
-    if not rows:
+    landing = prices.get('landing') or prices.get('billing')
+    if landing is None and prices.get('mrp') is None:
         return 0
-    cursor.executemany(
-        """INSERT INTO product_price
-             (product_id, company_id, price_uom_code, price_type, amount,
-              price_list, effective_from)
-           VALUES (%s,%s,%s,%s,%s,%s,%s)
-           ON DUPLICATE KEY UPDATE amount = VALUES(amount),
-                                   price_list = VALUES(price_list)""", rows)
-    return len(rows)
+    cursor.execute(
+        """INSERT INTO fc_sku_price_details
+             (company_id, planogram_id, entity_id, entity_type, batch_id,
+              mrp, landing_price, cn_rate, gst_rate, uom,
+              quantity_received, grn_reference, created_by, updated_by)
+           VALUES (%s, 0, %s, 'sku', %s, %s, %s, 0, %s, %s, 0, %s, 'upload', 'upload')
+           ON DUPLICATE KEY UPDATE
+              mrp           = VALUES(mrp),
+              landing_price = VALUES(landing_price),
+              gst_rate      = VALUES(gst_rate),
+              uom           = VALUES(uom),
+              grn_reference = VALUES(grn_reference),
+              updated_by    = VALUES(updated_by)""",
+        (company_id, product_id, LIST_RATE_BATCH_ID,
+         prices.get('mrp') or 0, landing or 0, gst_percent or 0,
+         (price_uom or 'strip').lower(), reference))
+    return 1
 
 
 # ── Attributes ───────────────────────────────────────────────────────────────────
@@ -290,9 +320,9 @@ def read_row(row, resolved_headers):
     }
 
 
-def apply_rows(profile, company_id, rows_by_product_id, effective_from=None,
-               price_list=None):
-    """Write ladders, prices and attributes for every product in the upload.
+def apply_rows(profile, company_id, rows_by_product_id, gst_by_product_id=None,
+               reference=LIST_RATE_REFERENCE):
+    """Write ladders, list rates and attributes for every product in the upload.
 
     `rows_by_product_id` is {product_id: (row_values, is_new)}. Everything is written in
     one transaction so a master can never leave a product with a new ladder priced at the
@@ -301,7 +331,7 @@ def apply_rows(profile, company_id, rows_by_product_id, effective_from=None,
     if not rows_by_product_id:
         return {'ladders': 0, 'prices': 0, 'attributes': 0}
 
-    effective_from = effective_from or date.today()
+    gst_by_product_id = gst_by_product_id or {}
     attr_ids = ensure_attribute_defs(company_id, profile.get('attributes', ()))
     ladders = prices = attributes = 0
 
@@ -322,13 +352,15 @@ def apply_rows(profile, company_id, rows_by_product_id, effective_from=None,
                 replace_ladder(cursor, product_id, rungs)
                 ladders += 1
 
+            # The list rate. `net` is deliberately not written: fc_sku_price_details
+            # models a discount as cn_rate against a real receipt, and a rate list has no
+            # receipt to discount — recording one here would claim a credit note exists.
             price_uom = values.get('selling_unit') or profile['price_uom_default']
-            prices += upsert_prices(cursor, product_id, company_id, price_uom, {
+            prices += upsert_list_rate(cursor, product_id, company_id, price_uom, {
                 'billing': values.get('price_billing'),
                 'landing': values.get('price_landing'),
-                'net':     values.get('price_net'),
                 'mrp':     values.get('price_mrp'),
-            }, effective_from, price_list)
+            }, gst_by_product_id.get(product_id), reference)
 
             attributes += upsert_attributes(cursor, product_id, {
                 attr_ids[code]: values.get(code)
@@ -355,20 +387,69 @@ def conversion(product_id, from_uom):
     return row[0]['factor_to_base'] if row else None
 
 
-def price_for(product_id, company_id, on_date=None, price_type='landing'):
-    """The price in force on a date, falling back to billing when no landing is set.
+def price_for(product_id, company_id):
+    """What one selling unit costs, for valuing an order at entry.
 
-    Dated lookup rather than "latest row": an order placed in June must still price at
-    June's list after July's has been loaded.
+    The rule, in one query:
+
+        the most recently received batch  ->  else the batch-0 list rate  ->  else None
+
+    Received stock outranks the list because it is what was actually paid; the list rate
+    exists so a catalogue can be ordered before anything has been received at all. A
+    caller getting None has a product nobody has priced yet — that is a real state and it
+    is reported rather than defaulted to zero, which would quietly value an order at nil.
+
+    Returns {'amount', 'uom', 'gst_rate', 'batch_id', 'is_list_rate'}; `amount` is net of
+    any credit note, matching how the ingestion module computes effective cost.
     """
-    on_date = on_date or date.today()
     rows = mysql_manager.execute_query(
-        """SELECT price_type, price_uom_code, amount FROM product_price
-            WHERE product_id = %s AND company_id = %s
-              AND effective_from <= %s
-              AND (effective_to IS NULL OR effective_to >= %s)
-              AND price_type IN (%s, 'billing')
-            ORDER BY effective_from DESC""",
-        (product_id, company_id, on_date, on_date, price_type)) or []
-    by_type = {r['price_type']: r for r in reversed(rows)}
-    return by_type.get(price_type) or by_type.get('billing')
+        """SELECT batch_id, uom, gst_rate, mrp,
+                  (landing_price - cn_rate) AS amount
+             FROM fc_sku_price_details
+            WHERE entity_id = %s AND company_id = %s AND entity_type = 'sku'
+            ORDER BY (batch_id = 0), created_on DESC
+            LIMIT 1""", (product_id, company_id))
+    if not rows:
+        return None
+    r = rows[0]
+    return {'amount': r['amount'], 'uom': r['uom'], 'gst_rate': r['gst_rate'],
+            'mrp': r['mrp'], 'batch_id': r['batch_id'],
+            'is_list_rate': r['batch_id'] == LIST_RATE_BATCH_ID}
+
+
+def order_value(product_id, company_id, order_uom, order_qty):
+    """Value an order line placed in `order_uom` (BOX / CASE / …).
+
+    This is the calculation the whole packaging model exists for:
+
+        order_qty x factor(order_uom) / factor(price_uom)  ->  quantity in priced units
+        x price per priced unit                            ->  line value
+
+    Returns None when the product has no ladder or no price, so the caller can say which
+    is missing instead of showing a confidently wrong number.
+    """
+    price = price_for(product_id, company_id)
+    if not price:
+        return None
+    rungs = {r['uom_code']: r['factor_to_base'] for r in (mysql_manager.execute_query(
+        "SELECT uom_code, factor_to_base FROM product_uom WHERE product_id = %s",
+        (product_id,)) or [])}
+    if not rungs:
+        return None
+    order_factor = rungs.get((order_uom or '').upper())
+    price_factor = rungs.get((price['uom'] or '').upper())
+    if not order_factor or not price_factor:
+        return None
+    priced_qty = (Decimal(order_qty) * order_factor) / price_factor
+    return {
+        'priced_qty': priced_qty,
+        'price_uom': price['uom'],
+        'unit_price': price['amount'],
+        # Snapshot this: the factor is what makes the value reproducible if the supplier
+        # repacks later, and without it a stored amount cannot be explained.
+        'uom_factor': order_factor / price_factor,
+        'amount': (priced_qty * price['amount']).quantize(Decimal('0.01')),
+        'gst_rate': price['gst_rate'],
+        'batch_id': price['batch_id'],
+        'is_list_rate': price['is_list_rate'],
+    }

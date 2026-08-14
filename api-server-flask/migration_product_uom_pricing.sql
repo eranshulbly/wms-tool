@@ -60,25 +60,45 @@ CREATE TABLE IF NOT EXISTS product_uom (
     INDEX idx_puom_product (product_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- ── 3. Dated prices ──────────────────────────────────────────────────────────
--- price_type is a ROW, not a column, so a company needing a fifth kind of price
--- adds rows rather than a migration. Dating is not optional: the supplier's file
--- is titled "PRICE LIST - JUNE'26", and prices held on `product` would mean
--- uploading July silently re-prices every order already placed.
-CREATE TABLE IF NOT EXISTS product_price (
-    product_price_id INT AUTO_INCREMENT PRIMARY KEY,
-    product_id     INT NOT NULL,
-    company_id     INT NOT NULL,
-    price_uom_code VARCHAR(16) NOT NULL,
-    price_type     VARCHAR(16) NOT NULL,
-    amount         DECIMAL(12,4) NOT NULL,
-    price_list     VARCHAR(32) NULL,
-    effective_from DATE NOT NULL,
-    effective_to   DATE NULL,
-    created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uq_product_price (product_id, company_id, price_uom_code, price_type, effective_from),
-    INDEX idx_pprice_lookup (product_id, effective_from, effective_to)
+-- ── 3. Prices — NO new table ─────────────────────────────────────────────────
+-- Price is not catalogue data here: it belongs to the stock it was paid for, and
+-- fc_sku_price_details already holds it at one row per (company, sku, batch) with
+-- landing_price, cn_rate, mrp, gst_rate and the uom the supplier billed in.
+--
+-- A supplier RATE LIST has no batch — nothing has been received — so the product
+-- master upload writes it against batch_id = 0. The table's existing unique key
+-- (company_id, entity_id, entity_type, batch_id) takes that as an ordinary value,
+-- so no schema change is needed. Reading is then one rule:
+--
+--     most recent real batch -> else the batch-0 list rate -> else unpriced
+--
+-- The DDL is repeated here (identical to
+-- api/modules/inventory/ingestion/schema.py) because that module is not yet
+-- deployed on every server, and the product upload writes to this table. CREATE
+-- TABLE IF NOT EXISTS makes it a no-op wherever the module already created it.
+CREATE TABLE IF NOT EXISTS fc_sku_price_details (
+    id                  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    company_id          INT NOT NULL,
+    planogram_id        INT UNSIGNED NOT NULL DEFAULT 0,
+    entity_id           INT UNSIGNED NOT NULL,
+    entity_type         VARCHAR(32) NOT NULL DEFAULT 'sku',
+    batch_id            BIGINT UNSIGNED NOT NULL,
+    mrp                 DECIMAL(12,4) NOT NULL DEFAULT 0,
+    landing_price       DECIMAL(12,4) NOT NULL DEFAULT 0,
+    cn_rate             DECIMAL(12,4) NOT NULL DEFAULT 0,
+    gst_rate            DECIMAL(6,2) NOT NULL DEFAULT 0,
+    uom                 VARCHAR(16) NOT NULL DEFAULT 'strip',
+    quantity_received   DECIMAL(16,4) NOT NULL DEFAULT 0,
+    grn_reference       VARCHAR(64) NOT NULL DEFAULT '',
+    cn_reference        VARCHAR(64) NOT NULL DEFAULT '',
+    created_by          VARCHAR(255) NOT NULL DEFAULT 'system',
+    created_on          DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_on          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    updated_by          VARCHAR(255) NOT NULL DEFAULT 'system',
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_sku_batch_price (company_id, entity_id, entity_type, batch_id),
+    KEY idx_batch (batch_id),
+    KEY idx_landing (company_id, landing_price)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ── 4. Per-industry attributes ───────────────────────────────────────────────
@@ -128,11 +148,11 @@ EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
 -- ── 6. Verification ──────────────────────────────────────────────────────────
-SELECT 'uom'               AS table_name, COUNT(*) AS rows_present FROM uom
-UNION ALL SELECT 'product_uom',       COUNT(*) FROM product_uom
-UNION ALL SELECT 'product_price',     COUNT(*) FROM product_price
-UNION ALL SELECT 'attribute_def',     COUNT(*) FROM attribute_def
-UNION ALL SELECT 'product_attribute', COUNT(*) FROM product_attribute;
+SELECT 'uom'                  AS table_name, COUNT(*) AS rows_present FROM uom
+UNION ALL SELECT 'product_uom',          COUNT(*) FROM product_uom
+UNION ALL SELECT 'fc_sku_price_details', COUNT(*) FROM fc_sku_price_details
+UNION ALL SELECT 'attribute_def',        COUNT(*) FROM attribute_def
+UNION ALL SELECT 'product_attribute',    COUNT(*) FROM product_attribute;
 
 SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
   FROM information_schema.COLUMNS
@@ -140,6 +160,12 @@ SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
    AND TABLE_NAME   = 'product'
    AND COLUMN_NAME  = 'gst_percent';
 
+-- Any list rates already loaded (batch 0 = a price with no receipt behind it).
+SELECT COUNT(*) AS list_rate_rows FROM fc_sku_price_details WHERE batch_id = 0;
+
 -- ── Rollback (only while the tables are still empty) ─────────────────────────
--- DROP TABLE IF EXISTS product_attribute, attribute_def, product_price, product_uom, uom;
+-- fc_sku_price_details is NOT in this list: it is owned by inventory.ingestion and
+-- may already hold real receipts. To undo only what this migration put there:
+--     DELETE FROM fc_sku_price_details WHERE batch_id = 0;
+-- DROP TABLE IF EXISTS product_attribute, attribute_def, product_uom, uom;
 -- ALTER TABLE product DROP COLUMN gst_percent;

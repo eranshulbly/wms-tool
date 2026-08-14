@@ -106,29 +106,17 @@ CREATE TABLE IF NOT EXISTS product_uom (
 """, order=13)
 
 
-# Prices, quoted against a named rung and dated.
+# NOTE: there is deliberately NO price table here.
 #
-# `price_type` is a ROW, not a column, so a company needing a fifth kind of price adds
-# rows rather than a migration. Dating is not optional: the source file is literally
-# titled "PRICE LIST - JUNE'26", and if prices lived on `product` then uploading July's
-# list would silently re-price every order already placed. effective_to NULL = current.
-register_table("product_price", """
-CREATE TABLE IF NOT EXISTS product_price (
-    product_price_id INT AUTO_INCREMENT PRIMARY KEY,
-    product_id     INT NOT NULL,
-    company_id     INT NOT NULL,
-    price_uom_code VARCHAR(16) NOT NULL,
-    price_type     VARCHAR(16) NOT NULL,
-    amount         DECIMAL(12,4) NOT NULL,
-    price_list     VARCHAR(32) NULL,
-    effective_from DATE NOT NULL,
-    effective_to   DATE NULL,
-    created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uq_product_price (product_id, company_id, price_uom_code, price_type, effective_from),
-    INDEX idx_pprice_lookup (product_id, effective_from, effective_to)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-""", order=14)
+# Price is not catalogue data in this system — it belongs to the stock it was paid for,
+# and `fc_sku_price_details` (owned by inventory.ingestion) already holds it at the right
+# grain: one row per (company, sku, batch), carrying landing_price, cn_rate, mrp, gst_rate
+# and the uom the supplier billed in. A price table here would be a second answer to
+# "what does this cost", with nothing to say which one wins.
+#
+# What catalogue DOES own is the conversion — product_uom above — which is what lets an
+# order placed in cases be turned into the strips that price is quoted per. See
+# catalog/product_pack.py for how a rate list is loaded as a batch-less rate.
 
 
 # Everything that is real for one industry and meaningless for the others — composition

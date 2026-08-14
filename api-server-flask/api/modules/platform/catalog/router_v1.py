@@ -17,13 +17,68 @@ from api.shared.db_manager import mysql_manager
 from api.shared.auth_v1 import v1_require_permission, company_filter, company_scope
 from api.modules.platform.user_auth.rbac import P
 
-SKU_COLS = """product_string AS sku_code, name, description, category_id,
+SKU_COLS = """product_id, product_string AS sku_code, name, description, category_id,
               uom, size, weight, barcode, hsn_code, price, is_active, created_at,
               company_id"""
 
 
 def _iso(dt):
     return dt.isoformat() if isinstance(dt, datetime) else dt
+
+
+# ── Orderable units ──────────────────────────────────────────────────────────────
+#
+# What units a product may be ordered in comes from its packaging ladder, per product —
+# NOT from a rule about the company. Cadila's tablets can only be ordered by the box or
+# the case; a Hero part is ordered in pieces; both are the same statement expressed as
+# product_uom rows, so the app renders whatever it is given and needs no notion of who
+# the supplier is.
+#
+# A product with no ladder returns an empty list, which the app reads as "one implicit
+# unit" — exactly today's behaviour for all 60k Hero parts, so nothing changes for them.
+#
+# `qty_in_price_uom` is the multiplier the app shows the rep ("2 CASE = 3,960 strips")
+# and submits the order in. Sent rather than derived client-side so the conversion has
+# one definition, on the server, next to the data it comes from.
+
+def order_units_for(product_ids):
+    """{product_id: {'price_uom': code, 'order_units': [...]}} for the given products.
+
+    ONE query for the whole page. The picker fetches up to 5000 SKUs, so a per-SKU
+    lookup here would be 5000 round trips — the N+1 the coding standards call out, and
+    the same shape of bug that made this endpoint take two minutes before.
+    """
+    if not product_ids:
+        return {}
+    ids = list(product_ids)
+    out = {}
+    for i in range(0, len(ids), 1000):
+        chunk = ids[i:i + 1000]
+        ph = ','.join(['%s'] * len(chunk))
+        for r in (mysql_manager.execute_query(
+                f"""SELECT product_id, uom_code, factor_to_base, label, level_no,
+                           is_order_unit, is_price_unit
+                      FROM product_uom
+                     WHERE product_id IN ({ph})
+                     ORDER BY product_id, level_no""", tuple(chunk)) or []):
+            out.setdefault(r['product_id'], []).append(r)
+
+    shaped = {}
+    for pid, rungs in out.items():
+        price_rung = next((r for r in rungs if r['is_price_unit']), None)
+        price_factor = price_rung['factor_to_base'] if price_rung else None
+        shaped[pid] = {
+            'price_uom': price_rung['uom_code'] if price_rung else None,
+            'order_units': [{
+                'code': r['uom_code'],
+                'label': r['label'],
+                # How many priced units one of these is. 1 when nothing is priced, so
+                # the app still has a usable multiplier rather than a null.
+                'qty_in_price_uom': float(r['factor_to_base'] / price_factor)
+                                    if price_factor else 1.0,
+            } for r in rungs if r['is_order_unit']],
+        }
+    return shaped
 
 
 # The working set, as a FROM clause: parts sold in the last 6 months plus this
@@ -73,7 +128,11 @@ def _has_working_set(current_user):
         f"SELECT 1 FROM {_WORKING_SET_FROM}{where}LIMIT 1", tuple(params)))
 
 
-def _sku_out(r):
+def _sku_out(r, packing=None):
+    """One SKU as JSON. `packing` is this product's entry from order_units_for(), when
+    the caller has fetched them — omitted, the SKU simply carries no order units and the
+    app falls back to a single implicit unit."""
+    packing = packing or {}
     return {
         "sku_code": r['sku_code'], "name": r['name'], "description": r['description'],
         "category_id": r['category_id'], "uom": r['uom'],
@@ -81,7 +140,16 @@ def _sku_out(r):
         "barcode": r['barcode'], "hsn_code": r['hsn_code'],
         "price": float(r['price']) if r['price'] is not None else None,
         "is_active": bool(r['is_active']), "created_at": _iso(r['created_at']),
+        # Empty list = no packaging ladder = order in the one implicit unit.
+        "order_units": packing.get('order_units', []),
+        "price_uom": packing.get('price_uom'),
     }
+
+
+def _skus_out(rows):
+    """A list of SKUs with their order units attached, in one extra query."""
+    packing = order_units_for([r['product_id'] for r in rows if r.get('product_id')])
+    return [_sku_out(r, packing.get(r.get('product_id'))) for r in rows]
 
 
 def _category_out(r):
@@ -240,7 +308,7 @@ class V1Skus(Resource):
             f"ORDER BY name LIMIT %s OFFSET %s",
             tuple(params + [limit, offset]),
         ) or []
-        return [_sku_out(r) for r in rows], 200
+        return _skus_out(rows), 200
 
     @v1_require_permission(P.CATALOG_MANAGE)
     def post(self, current_user):
@@ -288,7 +356,7 @@ class V1Skus(Resource):
              body.get('hsn_code'), body.get('price'), company_id),
             fetch=False,
         )
-        return _sku_out(get_sku(sku_code)), 201
+        return _skus_out([get_sku(sku_code)])[0], 201
 
 
 @rest_api.route('/api/v1/catalog/skus/<string:sku_code>')
@@ -298,7 +366,7 @@ class V1SkuDetail(Resource):
         r = get_sku(sku_code, current_user)
         if not r:
             return {"detail": f"sku {sku_code} not found"}, 404
-        return _sku_out(r), 200
+        return _skus_out([r])[0], 200
 
     @v1_require_permission(P.CATALOG_MANAGE)
     def patch(self, current_user, sku_code):
@@ -334,4 +402,4 @@ class V1SkuDetail(Resource):
                 f"UPDATE product SET {', '.join(sets)} WHERE product_string = %s",
                 tuple(params), fetch=False,
             )
-        return _sku_out(get_sku(sku_code)), 200
+        return _skus_out([get_sku(sku_code)])[0], 200

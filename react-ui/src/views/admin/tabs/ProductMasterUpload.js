@@ -91,8 +91,9 @@ const CADILA_TEMPLATE = {
     'The product master for a supplier that sells in packs. Matched on Part Number: existing ' +
     'products are updated, new ones are created, nothing is ever deleted. Orders are placed in ' +
     'boxes or cases and converted to selling units (strips) for pricing, so a new product must ' +
-    'carry its pack sizes and a billing price. Prices are dated on upload — orders already ' +
-    'placed keep the rate they were priced at.',
+    'carry its pack sizes and a billing price. Prices here are the supplier LIST RATE — they let ' +
+    'a product be ordered before any stock has been received, and are superseded automatically ' +
+    'by the actual landing price of each batch as it is received.',
   columns: [
     { name: 'Part Number', required: true, note: 'The key rows are matched on (Cadila: PD. CODE). Also accepted: Part No, Product String' },
     { name: 'Name', required: true, note: 'Product name, e.g. ALERTRIZ 5MG TAB' },
@@ -101,9 +102,10 @@ const CADILA_TEMPLATE = {
     { name: 'Billing Price', required: true, note: 'Price of ONE selling unit (per strip), not per box. Up to 4 decimals' },
     { name: 'Base Units per Selling Unit', required: false, note: 'Tablets in one strip (Cadila: TAB). Informational — never ordered or priced. Defaults to 1' },
     { name: 'Selling Unit', required: false, note: 'STRIP / BOTTLE / VIAL / TUBE / SACHET. Defaults to STRIP; use BOTTLE for liquids so the unit reads correctly' },
-    { name: 'Landing Price', required: false, note: 'Per selling unit, net of scheme. Used for order value when present, else Billing Price' },
-    { name: 'Net Rate', required: false, note: 'Per selling unit, after further scheme discount' },
+    { name: 'Landing Price', required: false, note: 'Per selling unit. This is what orders are valued at; Billing Price is used when it is absent' },
+    { name: 'Net Rate', required: false, note: 'Per selling unit, after further scheme discount. Recorded for reference — a discount against actual stock is a credit note at receipt, not a list rate' },
     { name: 'MRP', required: false, note: 'Per selling unit' },
+    { name: 'GST %', required: false, note: 'e.g. 5 or 18. Stored on the product and copied onto the price so a landing price can be grossed up. Also accepted: GST' },
     { name: 'Pack', required: false, note: 'Label for one selling unit, e.g. 10 T or 200 ML' },
     { name: 'Box Pack', required: false, note: 'Label for one box, e.g. 30X10T' },
     { name: 'Composition', required: false, note: 'Stored as a product attribute, not a product column' },
@@ -112,12 +114,14 @@ const CADILA_TEMPLATE = {
     { name: 'Description', required: false, note: 'Longer description. Also accepted: Part Description' },
     { name: 'is_active', required: false, note: 'Y or N — defaults to active on a new product' },
   ],
+  // Column order here must match `columns` above — the sample IS the downloadable
+  // template, so a value out of position teaches the operator the wrong layout.
   sample: [
     // Real shapes from the June'26 list: a 30x10 tablet box, a 100x1 box, and a
     // single-bottle liquid where the strip level collapses to 1.
-    ['TBA38AU', 'ALERTRIZ 5MG TAB', '30', '66', '4.14', '10', 'STRIP', '', '', '52.73', '10 T', '30X10T', 'Levocetirizine Dihydrochloride 5mg', 'CG', '30049099', '', 'Y'],
-    ['TBA15BP', 'ALBENDAZOLE TAB', '100', '60', '2.75', '1', 'STRIP', '', '', '7.57', '1 T', '100X1 T', 'Albendazole IP 400mg', 'CG', '30049099', '', 'Y'],
-    ['LQA45AM', 'ADD APP SYRUP', '1', '60', '26.25', '1', 'BOTTLE', '25.48', '', '138.66', '200 ML', '200 ML', 'Cyproheptadine Hcl IP', 'CG', '30049093', '', 'Y'],
+    ['TBA38AU', 'ALERTRIZ 5MG TAB', '30', '66', '4.14', '10', 'STRIP', '', '', '52.73', '5', '10 T', '30X10T', 'Levocetirizine Dihydrochloride 5mg', 'CG', '30049099', '', 'Y'],
+    ['TBA15BP', 'ALBENDAZOLE TAB', '100', '60', '2.75', '1', 'STRIP', '', '', '7.57', '5', '1 T', '100X1 T', 'Albendazole IP 400mg', 'CG', '30049099', '', 'Y'],
+    ['LQA45AM', 'ADD APP SYRUP', '1', '60', '26.25', '1', 'BOTTLE', '25.48', '', '138.66', '5', '200 ML', '200 ML', 'Cyproheptadine Hcl IP', 'CG', '30049093', '', 'Y'],
   ],
 };
 

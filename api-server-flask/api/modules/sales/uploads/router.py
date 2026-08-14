@@ -1129,6 +1129,9 @@ _PRODUCT_FIELDS = (
     ('Price',             'price',       'decimal', (10, 2),   ()),
     ('Barcode',           'barcode',     'text',    100,       ()),
     ('HSN Code',          'hsn_code',    'text',    20,        ('HSN',)),
+    # A core column beside hsn_code, which determines it. Written here so the price row
+    # can gross a landing price up to an inc-GST figure without joining back to product.
+    ('GST %',             'gst_percent', 'decimal', (5, 2),    ('GST', 'GST Percent')),
     ('is_active',         'is_active',   'bool',    None,      ()),
 )
 
@@ -1469,7 +1472,19 @@ def _load_products(df, company_id):
                 ids[_pkey(r['product_string'])] = r['product_id']
         resolved = {ids[k]: (v, k not in existing)
                     for k, v in pack_rows.items() if k in ids}
-        pack_summary = product_pack.apply_rows(pack_profile, company_id, resolved)
+        # GST lives on `product` (it follows the HSN, not the price list), but the price
+        # row carries its own copy so a landing price can be grossed up without a join.
+        # Read it back rather than threading it through: the product write above may have
+        # just set it, and this is the one place both are known.
+        gst_by_product = {}
+        if resolved:
+            ph = ','.join(['%s'] * len(resolved))
+            gst_by_product = {r['product_id']: r['gst_percent'] for r in (
+                mysql_manager.execute_query(
+                    f"SELECT product_id, gst_percent FROM product "
+                    f"WHERE product_id IN ({ph})", tuple(resolved)) or [])}
+        pack_summary = product_pack.apply_rows(
+            pack_profile, company_id, resolved, gst_by_product)
 
     warnings = []
     if pack_summary:

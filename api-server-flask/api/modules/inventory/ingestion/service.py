@@ -446,8 +446,14 @@ SELECT  p.name                                        AS product_name,
 
 
 def batch_costing_report(company_ids=None, search=None, limit=2000, offset=0):
-    """One row per SKU + batch: what it cost, what it retails for, and the margin."""
-    where, params = ['1=1'], []
+    """One row per SKU + batch: what it cost, what it retails for, and the margin.
+
+    batch_id 0 is excluded. That row is a supplier LIST RATE loaded from a price list by
+    the product-master upload (see catalog/product_pack.py) — a rate for goods that have
+    not been received. Including it would put a line in a costing report for stock that
+    never arrived, with a blank batch number and a quantity of zero.
+    """
+    where, params = ['pr.batch_id > 0'], []
     if company_ids is not None:
         if not company_ids:
             return []
