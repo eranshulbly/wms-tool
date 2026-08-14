@@ -1123,7 +1123,6 @@ _PRODUCT_FIELDS = (
     # 'Subcategory' is the product table's own column name, so a file exported straight
     # from the database round-trips instead of silently dropping this column.
     ('Product Category',  'subcategory', 'text',    100,       ('Subcategory',)),
-    ('Nickname',          'nickname',    'text',    200,       ()),
     ('UOM',               'uom',         'text',    20,        ('Unit of Measure',)),
     ('Size',              'size',        'text',    100,       ()),
     ('Weight',            'weight',      'decimal', (10, 3),   ('Net Weight',)),
@@ -1134,6 +1133,67 @@ _PRODUCT_FIELDS = (
 )
 
 _PART_NUMBER_HEADERS = ('Part Number', 'Part No', 'Product String')
+
+_NAME_HEADERS = ('Name', 'Product Name', 'Product')
+
+# Column added to the frame when the file has no part number; never a real header, so it
+# cannot collide with one the supplier supplied.
+_DERIVED_KEY = '__derived_product_string'
+
+
+def _codes_for_names(names, company_id):
+    """A product_string for each name: the existing product's, else a generated one.
+
+    Matching is by name WITHIN the company, which is how a master without part numbers
+    identifies a product and how inventory.ingestion resolves one. Reusing the same
+    <PREFIX>-<slug> shape for new codes is what keeps the two routes on one product row.
+    """
+    from api.modules.inventory.ingestion.service import _slug
+
+    # pandas reads a blank cell as NaN, which str() turns into the string 'nan' — left
+    # alone that becomes a real product called CADI-NAN. Blank rows are blank.
+    cleaned = []
+    for n in names:
+        text = '' if n is None else str(n).strip()
+        cleaned.append('' if text.lower() in ('', 'nan', 'none', 'nat') else text)
+    wanted = [n for n in cleaned if n]
+    known = {}
+    if wanted:
+        unique = list(dict.fromkeys(wanted))
+        placeholders = ','.join(['%s'] * len(unique))
+        rows = mysql_manager.execute_query(
+            f"""SELECT name, product_string FROM product
+                 WHERE company_id = %s AND name IN ({placeholders})
+                   AND product_string IS NOT NULL""",
+            (company_id, *unique)) or []
+        known = {r['name']: r['product_string'] for r in rows}
+
+    prefix_rows = mysql_manager.execute_query(
+        "SELECT name FROM company WHERE company_id = %s", (company_id,))
+    prefix = (_slug(prefix_rows[0]['name'], 4) if prefix_rows else '') or 'PROD'
+
+    # Codes minted in this file are not yet visible to the database, so they are tracked
+    # here as well — two products whose names slug identically would otherwise collide.
+    taken, out = set(known.values()), []
+    for name in cleaned:
+        if not name:
+            out.append('')
+            continue
+        if name in known:
+            out.append(known[name])
+            continue
+        base = f"{prefix}-{_slug(name)}"[:90]
+        candidate, n = base, 1
+        while candidate in taken or mysql_manager.execute_query(
+                "SELECT 1 FROM product WHERE product_string = %s LIMIT 1", (candidate,)):
+            n += 1
+            candidate = f"{base[:90 - len(str(n)) - 1]}-{n}"
+        taken.add(candidate)
+        known[name] = candidate
+        out.append(candidate)
+    return out
+
+
 
 # The category is resolved by NAME against the categories table — a category_id column in
 # the file is deliberately ignored, since an id is only meaningful in the database that
@@ -1209,9 +1269,22 @@ def _load_products(df, company_id):
     """
     key_col = _find_header(df, _PART_NUMBER_HEADERS)
     if not key_col:
-        raise ValueError(
-            'Missing required column: Part Number (also accepted: '
-            + ', '.join(_PART_NUMBER_HEADERS[1:]) + '). Available: ' + ', '.join(df.columns))
+        # A master without part numbers is not a broken file — some suppliers identify
+        # products by name alone (Cadila's master is Name + Description). The name within
+        # the company becomes the key, and a code is derived for anything new.
+        #
+        # The derived code deliberately matches inventory.ingestion's convention, so a
+        # product created from a supplier PDF and the same product loaded from the master
+        # land on ONE row instead of splitting that product's stock across two codes.
+        name_col = _find_header(df, _NAME_HEADERS)
+        if not name_col:
+            raise ValueError(
+                'Missing required column: Part Number (also accepted: '
+                + ', '.join(_PART_NUMBER_HEADERS[1:]) + '), or Name for masters that '
+                'identify products by name. Available: ' + ', '.join(df.columns))
+        df = df.copy()
+        df[_DERIVED_KEY] = _codes_for_names(df[name_col], company_id)
+        key_col = _DERIVED_KEY
 
     cmap = _category_map()
     category_col = _find_header(df, _CATEGORY_HEADERS)

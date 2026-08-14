@@ -8,11 +8,11 @@ import {
     Paper,
 } from '@material-ui/core';
 import { makeStyles } from '@material-ui/styles';
-import { IconTrash, IconMapPin, IconTag, IconCurrentLocation, IconUsers } from '@tabler/icons';
+import { IconTrash, IconMapPin, IconPackage, IconCurrentLocation, IconUsers } from '@tabler/icons';
 
 import DeleteUploads from './tabs/DeleteUploads';
 import DealerTownUpload from './tabs/DealerTownUpload';
-import ProductNicknameUpload from './tabs/ProductNicknameUpload';
+import ProductMasterUpload from './tabs/ProductMasterUpload';
 import DealerAdmin from './tabs/DealerAdmin';
 import UserManagement from './tabs/UserManagement';
 
@@ -39,10 +39,10 @@ const TABS = [
         component: DealerTownUpload,
     },
     {
-        id:        'product-nickname',
-        label:     'Product Nickname',
-        icon:      <IconTag size={16} />,
-        component: ProductNicknameUpload,
+        id:        'product-master',
+        label:     'Product Master',
+        icon:      <IconPackage size={16} />,
+        component: ProductMasterUpload,
     },
     {
         id:        'dealers',
@@ -62,7 +62,7 @@ const useStyles = makeStyles((theme) => ({
     },
     tabsWrapper: {
         borderBottom: `1px solid ${theme.palette.divider}`,
-        marginBottom: theme.spacing(2),
+        padding:      theme.spacing(0, 3),
     },
     tab: {
         textTransform: 'none',
@@ -70,7 +70,7 @@ const useStyles = makeStyles((theme) => ({
         fontWeight:    500,
     },
     tabPanel: {
-        padding: theme.spacing(0),
+        padding: theme.spacing(3),
     },
 }));
 

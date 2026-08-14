@@ -47,6 +47,10 @@ pandas>=2.0.0
 
 Pillow>=10.0.0  # For PNG image generation
 reportlab>=4.0.0  # For PDF supply sheet generation
+# Reads the supplier's GRN / credit-note PDFs (inventory.ingestion). Needed for its
+# character-level geometry: the template carries a light-grey watermark that lands inside
+# table cells, and it is filtered by font size and colour before the table is extracted.
+pdfplumber>=0.11.0
 # Only needed when MEDIA_BACKEND=s3 (order photos in S3 instead of local disk).
 # api/shared/media.py imports it lazily, so a local-disk deployment runs without it.
 boto3>=1.34.0

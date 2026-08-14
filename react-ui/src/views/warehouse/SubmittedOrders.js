@@ -300,6 +300,7 @@ const SubmittedOrders = () => {
                     <TableRow>
                       <TableCell>Order #</TableCell>
                       <TableCell>Dealer</TableCell>
+                      <TableCell>Sales Executive</TableCell>
                       <TableCell>Company</TableCell>
                       <TableCell>Warehouse</TableCell>
                       <TableCell>Submitted</TableCell>
@@ -314,6 +315,9 @@ const SubmittedOrders = () => {
                       <TableRow key={o.order_id} hover>
                         <TableCell>{o.order_number || `#${o.order_id}`}</TableCell>
                         <TableCell>{o.dealer_name}</TableCell>
+                        {/* Who raised the order in the app — blank for any order that
+                            predates the field rather than guessing at one. */}
+                        <TableCell>{o.sales_executive_name || '—'}</TableCell>
                         <TableCell>{o.company_name || '—'}</TableCell>
                         <TableCell>{o.warehouse_name || '—'}</TableCell>
                         <TableCell>{formatDateTime(o.submitted_at || o.created_at)}</TableCell>

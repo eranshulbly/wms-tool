@@ -495,7 +495,7 @@ def exec_summary(executive_id, company_id=DEFAULT_COMPANY):
     The target is the sum of the exec's dealers' category-level rupee targets and exists
     even with zero sales, so it's read straight from the target table, not the sales join.
     """
-    data = sales_explorer(executive_id=executive_id)
+    data = sales_explorer(executive_id=executive_id, company_id=company_id)
     row = next((e for e in data['by_executive'] if e['user_id'] == executive_id), None)
     sales = row['sales'] if row else 0
     target = row['target'] if row else _exec_target_only(executive_id, company_id=company_id)
@@ -506,6 +506,7 @@ def exec_summary(executive_id, company_id=DEFAULT_COMPANY):
         'target': target,
         'pct': _pct(sales, target),
         'data_through': sales_data_through(),
+        'has_targets': True,
     }
 
 
@@ -517,6 +518,109 @@ def _exec_target_only(executive_id, company_id=DEFAULT_COMPANY):
               AND mt.target_period = {_PERIOD}
               AND mt.category_id IS NOT NULL AND {_VALUE_TARGET_ROW}""", (executive_id,))
     return _num(rows[0]['t']) if rows else 0
+
+
+# ---------------------------------------------------------------------------
+# Invoice-mode analytics
+#
+# A company on analytics_mode='invoices' has no Busy feed and no dealer_target
+# rows: nothing above reports anything for it, and everything measured against a
+# target is meaningless. All these companies can answer is "how much was invoiced
+# this month", so that is all these functions return — the app reads has_targets
+# False and drops the target/category surfaces rather than rendering empty ones.
+#
+# The month is taken from invoice_date (when the sale happened), not created_at
+# (when the file was uploaded), so a late upload lands in the month it belongs to.
+# Cancelled invoices carry a cancellation_date and are excluded — a cancelled
+# invoice is not a sale, and leaving it in inflates the rep's own number.
+# ---------------------------------------------------------------------------
+
+_INVOICE_MONTH = ("YEAR(i.invoice_date) = YEAR(CURDATE()) "
+                  "AND MONTH(i.invoice_date) = MONTH(CURDATE())")
+_INVOICE_LIVE = "i.cancellation_date IS NULL"
+
+
+def company_analytics_mode(company_id):
+    """'targets' (Busy feed + dealer targets) or 'invoices' (uploaded invoices only).
+
+    Unknown company or unreadable column falls back to 'targets', which is the
+    behaviour every caller had before the column existed.
+    """
+    rows = mysql_manager.execute_query(
+        "SELECT analytics_mode FROM company WHERE company_id = %s", (int(company_id),))
+    return (rows[0]['analytics_mode'] if rows else None) or 'targets'
+
+
+def invoice_data_through(company_id):
+    """The latest invoice_date on file for the company, as 'YYYY-MM-DD'.
+
+    The invoice-mode counterpart of sales_data_through: invoices arrive by upload,
+    so the figures trail today by however long it's been since the last one.
+    """
+    rows = mysql_manager.execute_query(
+        f"""SELECT MAX(i.invoice_date) AS d FROM invoice i
+            WHERE i.company_id = %s AND {_INVOICE_LIVE}""", (int(company_id),))
+    d = rows[0]['d'] if rows else None
+    return d.date().isoformat() if hasattr(d, 'date') else (d.isoformat() if d else None)
+
+
+def exec_invoice_summary(executive_id, company_id):
+    """This month's invoiced total for one executive — the check-in home's card.
+
+    Attribution runs invoice -> dealer -> dealer.sales_executive_id, the same path
+    the Busy-feed side uses. An invoice with no dealer_id belongs to nobody and is
+    therefore counted for nobody.
+    """
+    rows = mysql_manager.execute_query(
+        f"""SELECT COALESCE(SUM(i.total_invoice_amount), 0) AS s
+            FROM invoice i
+            JOIN dealer d ON d.dealer_id = i.dealer_id AND d.company_id = %s
+            WHERE i.company_id = %s AND d.sales_executive_id = %s
+              AND {_INVOICE_LIVE} AND {_INVOICE_MONTH}""",
+        (int(company_id), int(company_id), executive_id))
+    return {
+        'month': month_label(),
+        'executive_id': executive_id,
+        'sales': _num(rows[0]['s']) if rows else 0,
+        'target': 0,
+        'pct': None,
+        'data_through': invoice_data_through(company_id),
+        'has_targets': False,
+    }
+
+
+def dealer_invoice_summary(dealer_id, company_id):
+    """This month's invoiced total for one dealer — the dealer session's overview.
+
+    Shaped like dealer_category_analytics so the app parses one payload either way,
+    with the category blocks empty: an invoice-mode company has no category targets
+    to split the total across. None when the dealer isn't in this company, matching
+    dealer_category_analytics.
+    """
+    head = mysql_manager.execute_query(
+        "SELECT dealer_id, name FROM dealer WHERE dealer_id = %s AND company_id = %s",
+        (dealer_id, int(company_id)))
+    if not head:
+        return None
+
+    rows = mysql_manager.execute_query(
+        f"""SELECT COALESCE(SUM(i.total_invoice_amount), 0) AS s
+            FROM invoice i
+            WHERE i.company_id = %s AND i.dealer_id = %s
+              AND {_INVOICE_LIVE} AND {_INVOICE_MONTH}""",
+        (int(company_id), dealer_id))
+    return {
+        'month': month_label(),
+        'dealer_id': head[0]['dealer_id'],
+        'dealer_name': head[0]['name'],
+        'sales': _num(rows[0]['s']) if rows else 0,
+        'target': 0,
+        'pct': None,
+        'categories': [],
+        'category_sales': [],
+        'data_through': invoice_data_through(company_id),
+        'has_targets': False,
+    }
 
 
 def dealer_summary(dealer_id, company_id=DEFAULT_COMPANY):
@@ -1076,6 +1180,9 @@ def dealer_category_analytics(dealer_id, company_id=DEFAULT_COMPANY):
         'dealer': head['name'],
         'target': target,
         'data_through': sales_data_through(),
+        # Tells the app this payload's categories and targets are real, so it draws
+        # the full target sheet. The invoice-mode payload says False instead.
+        'has_targets': True,
         'categories': categories,
         # Sales across EVERY category (Parts, Pro Parts, Oil, …), this month + the
         # prior 6 months, with each category's own target where it has one.

@@ -11,7 +11,17 @@ import {
   InputLabel,
   MenuItem,
   Select,
-  Typography
+  Typography,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogContentText,
+  DialogActions,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow
 } from '@material-ui/core';
 import { makeStyles, useTheme } from '@material-ui/styles';
 import CloudUploadIcon from '@material-ui/icons/CloudUpload';
@@ -81,12 +91,20 @@ const useStyles = makeStyles((theme) => ({
   }
 }));
 
+// PDFs are accepted alongside spreadsheets: the backend renders a supplier PDF into the
+// same column shape the sheets use (api/shared/pdf_upload_adapter), so every upload on
+// this form takes either. All three consumers — orders, invoices, products — run through
+// the same pipeline, so the list does not vary by screen.
 const VALID_TYPES = [
   'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'text/csv',
-  'application/csv'
+  'application/csv',
+  'application/pdf'
 ];
+
+const ACCEPT_ATTR = '.xlsx,.xls,.csv,.pdf';
+const SUPPORTED_LABEL = '.xlsx, .xls, .csv, .pdf';
 
 /**
  * Generic drag-and-drop file upload form driven by props.
@@ -140,10 +158,11 @@ const FileUploadForm = ({
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null); // null | 'uploading' | 'success' | 'error'
   const [uploadResults, setUploadResults] = useState(null);
+  const [approval, setApproval] = useState(null); // backend asked a question before writing
 
   const validateAndSetFile = (selectedFile) => {
     if (!VALID_TYPES.includes(selectedFile.type)) {
-      showSnackbar('Please upload a valid Excel or CSV file', 'error');
+      showSnackbar('Please upload an Excel, CSV or PDF file', 'error');
       return;
     }
     if (selectedFile.size > maxSizeMB * 1024 * 1024) {
@@ -166,23 +185,37 @@ const FileUploadForm = ({
     if (e.target.files?.[0]) validateAndSetFile(e.target.files[0]);
   };
 
-  const handleUpload = () => {
+  // `approvals` carries the operator's answers to anything the backend asked about — see
+  // the needs_approval branch below. The same file is simply re-posted with the answer, so
+  // no partially-processed upload is left waiting on the server for a decision.
+  const handleUpload = (approvals = null) => {
     if (!file) { showSnackbar('Please select a file to upload', 'warning'); return; }
     if (requiresWarehouse && !selectedWarehouse) { showSnackbar('Please select a warehouse', 'warning'); return; }
     if (requiresCompany && !selectedCompany) { showSnackbar('Please select a company', 'warning'); return; }
 
     setIsUploading(true);
     setUploadStatus('uploading');
+    setApproval(null);
 
     const formData = new FormData();
     formData.append('file', file);
     if (requiresWarehouse) formData.append('warehouse_id', selectedWarehouse);
     if (requiresCompany) formData.append('company_id', selectedCompany);
+    if (approvals) Object.entries(approvals).forEach(([k, v]) => formData.append(k, v));
 
     api
       .post(endpoint, formData, { headers: { 'Content-Type': 'multipart/form-data' } })
       .then((response) => {
         const data = response.data;
+
+        // The backend stopped to ask something rather than guessing. Nothing has been
+        // written at this point, so declining is a genuine no-op.
+        if (data.needs_approval) {
+          setApproval(data);
+          setUploadStatus(null);
+          return;
+        }
+
         setUploadResults(data);
         if (data.success) {
           setUploadStatus('success');
@@ -267,7 +300,7 @@ const FileUploadForm = ({
                           type="file"
                           id={inputId}
                           style={{ display: 'none' }}
-                          accept=".xlsx,.xls,.csv"
+                          accept={ACCEPT_ATTR}
                           onChange={handleFileSelect}
                         />
                         {!file ? (
@@ -280,7 +313,7 @@ const FileUploadForm = ({
                               or click to browse
                             </Typography>
                             <Typography variant="caption" color="textSecondary" style={{ marginTop: '8px' }}>
-                              Supported formats: .xlsx, .xls, .csv (Max {maxSizeMB}MB)
+                              Supported formats: {SUPPORTED_LABEL} (Max {maxSizeMB}MB)
                             </Typography>
                           </>
                         ) : (
@@ -391,7 +424,7 @@ const FileUploadForm = ({
                             isUploading ||
                             uploadStatus === 'success'
                           }
-                          onClick={handleUpload}
+                          onClick={() => handleUpload()}
                         >
                           {isUploading ? 'Processing…' : uploadButtonLabel}
                         </Button>
@@ -412,6 +445,64 @@ const FileUploadForm = ({
           </Grid>
         </Grid>
       </Grid>
+
+      {/* The backend asks before writing anything it had to guess at. Approving re-posts
+          the same file with the answer; rejecting simply discards it, and because nothing
+          was written on the first attempt there is nothing to undo. */}
+      <Dialog open={!!approval} onClose={() => setApproval(null)} maxWidth="sm" fullWidth>
+        <DialogTitle>Missing product numbers</DialogTitle>
+        <DialogContent>
+          <DialogContentText>{approval?.msg}</DialogContentText>
+          {approval?.sample?.length > 0 && (
+            <>
+              <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
+                Examples of what would be created
+                {approval.missing_count > approval.sample.length
+                  ? ` (first ${approval.sample.length} of ${approval.missing_count})`
+                  : ''}
+              </Typography>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Row</TableCell>
+                    <TableCell>Description</TableCell>
+                    <TableCell>Product number</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {approval.sample.map((r) => (
+                    <TableRow key={r.row}>
+                      <TableCell>{r.row}</TableCell>
+                      <TableCell>{r.description}</TableCell>
+                      <TableCell sx={{ fontFamily: 'monospace' }}>{r.generated}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mt: 2 }}>
+                These become permanent product codes. Reject if the supplier will issue its
+                own — a generated code cannot be reconciled with a real one afterwards.
+              </Typography>
+            </>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              setApproval(null);
+              showSnackbar('Upload cancelled — nothing was saved', 'info');
+            }}
+          >
+            Reject
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => handleUpload({ [approval.needs_approval]: 'true' })}
+          >
+            Approve &amp; upload
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Snackbar
         open={snackbar.open}

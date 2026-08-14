@@ -360,7 +360,7 @@ def _fetch_supply_sheet_data(warehouse_id: int, company_id: int, dealer_ids: lis
       invoice_number, original_order_id, dealer_name, town, order_type,
       invoice_value, box_count, invoice_date,
       oil_products: { product_label: qty }   — only for ZGOI orders
-      (product_label uses nickname if set, otherwise description)
+      (product_label is the product description)
     """
     if not dealer_ids:
         return []
@@ -413,7 +413,7 @@ def _fetch_supply_sheet_data(warehouse_id: int, company_id: int, dealer_ids: lis
     ]
 
     # oil_map: { potential_order_id: { product_label: qty } }
-    # product_label = nickname if set, else description
+    # product_label = the product description
     oil_map = {}
     if zgoi_po_ids:
         po_placeholders = ', '.join(['%s'] * len(zgoi_po_ids))
@@ -421,7 +421,7 @@ def _fetch_supply_sheet_data(warehouse_id: int, company_id: int, dealer_ids: lis
             f"""
             SELECT
                 pop.potential_order_id,
-                COALESCE(NULLIF(TRIM(p.nickname), ''), p.description) AS product_label,
+                p.description AS product_label,
                 pop.quantity    AS qty
             FROM potential_order_product pop
             JOIN product p ON pop.product_id = p.product_id

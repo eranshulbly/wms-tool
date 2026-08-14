@@ -121,7 +121,6 @@ class Product(MySQLModel):
         self.product_string = kwargs.get('product_string')
         self.name = kwargs.get('name')
         self.description = kwargs.get('description')
-        self.nickname = kwargs.get('nickname')
         self.price = kwargs.get('price')
         self.category_id = kwargs.get('category_id')
         self.subcategory = kwargs.get('subcategory')
@@ -141,11 +140,11 @@ class Product(MySQLModel):
         if self.product_id:
             mysql_manager.execute_query(
                 """UPDATE product SET company_id=%s, product_string=%s, name=%s,
-                   description=%s, nickname=%s, price=%s, category_id=%s, subcategory=%s,
+                   description=%s, price=%s, category_id=%s, subcategory=%s,
                    uom=%s, size=%s, weight=%s, barcode=%s, hsn_code=%s, is_active=%s,
                    updated_at=%s WHERE product_id=%s""",
                 (self.company_id, self.product_string, self.name, self.description,
-                 self.nickname, self.price, self.category_id, self.subcategory,
+                 self.price, self.category_id, self.subcategory,
                  self.uom, self.size, self.weight, self.barcode, self.hsn_code,
                  self.is_active, datetime.utcnow(), self.product_id),
                 fetch=False
@@ -154,11 +153,11 @@ class Product(MySQLModel):
             with mysql_manager.get_cursor() as cursor:
                 cursor.execute(
                     """INSERT INTO product (company_id, product_string, name, description,
-                       nickname, price, category_id, subcategory, uom, size, weight,
+                       price, category_id, subcategory, uom, size, weight,
                        barcode, hsn_code, is_active, created_at, updated_at)
                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     (self.company_id, self.product_string, self.name, self.description,
-                     self.nickname, self.price, self.category_id, self.subcategory,
+                     self.price, self.category_id, self.subcategory,
                      self.uom, self.size, self.weight, self.barcode, self.hsn_code,
                      self.is_active, datetime.utcnow(), datetime.utcnow())
                 )

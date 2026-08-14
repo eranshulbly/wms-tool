@@ -22,7 +22,7 @@ import {
   Snackbar,
   Grid
 } from '@material-ui/core';
-import { IconUserPlus, IconKey, IconRefresh } from '@tabler/icons';
+import { IconUserPlus, IconKey, IconRefresh, IconBuildingWarehouse } from '@tabler/icons';
 import api from '../../../services/api';
 
 // Create and manage logins from the web app.
@@ -40,6 +40,14 @@ import api from '../../../services/api';
 
 const STATUSES = ['active', 'pending', 'blocked'];
 
+// Sentinel for the "All" choice in the pickers. Expanded to the real ids on save, so a
+// user granted "all" today does not silently gain a company added tomorrow — grants stay
+// a fact about what was decided, not a rule re-evaluated later.
+const ALL_ID = '__all__';
+
+const expand = (chosen, all) =>
+  (chosen.includes(ALL_ID) ? all.map((x) => x.id) : chosen.filter((x) => x !== ALL_ID));
+
 // Roles that act in the field and therefore need a warehouse/company grant to function.
 const NEEDS_SCOPE = ['sales_executive', 'warehouse_staff', 'dispatcher', 'manager'];
 
@@ -56,8 +64,12 @@ const UserManagement = () => {
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({
     name: '', email: '', password: '', role: 'viewer', status: 'active',
-    warehouse_id: '', company_id: ''
+    // ALL_ID is a sentinel, not a company: picking it expands to every company at save
+    // time so the stored grants stay explicit (warehouse, company) pairs.
+    warehouse_ids: [], company_ids: []
   });
+  const [scopeUser, setScopeUser] = useState(null);
+  const [scopeDraft, setScopeDraft] = useState({ warehouse_ids: [], company_ids: [] });
   const [pwUser, setPwUser] = useState(null);
   const [newPw, setNewPw] = useState('');
 
@@ -90,17 +102,14 @@ const UserManagement = () => {
   const create = () => {
     setSaving(true);
     const body = { ...form };
-    if (body.warehouse_id && body.company_id) {
-      body.grants = [{ warehouse_id: body.warehouse_id, company_id: body.company_id }];
-    }
-    delete body.warehouse_id;
-    delete body.company_id;
+    body.warehouse_ids = expand(form.warehouse_ids, warehouses);
+    body.company_ids = expand(form.company_ids, companies);
     api
       .post('admin/users', body)
       .then((r) => {
         setSnack({ sev: 'success', msg: r.data.msg });
         setOpen(false);
-        setForm({ name: '', email: '', password: '', role: 'viewer', status: 'active', warehouse_id: '', company_id: '' });
+        setForm({ name: '', email: '', password: '', role: 'viewer', status: 'active', warehouse_ids: [], company_ids: [] });
         load();
       })
       .catch((e) => setSnack({ sev: 'error', msg: e?.response?.data?.msg || 'Could not create user' }))
@@ -117,6 +126,10 @@ const UserManagement = () => {
       .catch((e) => setSnack({ sev: 'error', msg: e?.response?.data?.msg || 'Update failed' }));
 
   const scopeNeeded = NEEDS_SCOPE.includes(form.role);
+  const roleHasAllCompanies = Boolean(roles.find((r) => r.name === form.role)?.all_companies);
+  // "All" collapses to one chip rather than listing every name.
+  const renderScope = (vals, all) =>
+    (vals.includes(ALL_ID) ? 'All' : all.filter((x) => vals.includes(x.id)).map((x) => x.name).join(', '));
   const canCreate =
     form.name.trim().length >= 3 &&
     form.email.includes('@') &&
@@ -190,8 +203,16 @@ const UserManagement = () => {
                   <TableCell align="right">
                     {/* A field role with no grant cannot see anything in the order app —
                         worth calling out rather than showing a bare 0. */}
-                    {u.grants ? (
-                      <Chip size="small" label={`${u.grants} grant${u.grants === 1 ? '' : 's'}`} variant="outlined" />
+                    {u.companies ? (
+                      <Chip
+                        size="small"
+                        label={u.company_ids.length === companies.length && companies.length > 1
+                          ? `All companies · ${u.grants} grants`
+                          : `${u.companies} · ${u.grants} grants`}
+                        variant="outlined"
+                      />
+                    ) : roles.find((r) => r.name === u.role)?.all_companies ? (
+                      <Chip size="small" label="all (by role)" variant="outlined" />
                     ) : NEEDS_SCOPE.includes(u.role) ? (
                       <Chip size="small" label="no scope" color="warning" variant="outlined" />
                     ) : (
@@ -199,6 +220,16 @@ const UserManagement = () => {
                     )}
                   </TableCell>
                   <TableCell align="right">
+                    <Button
+                      size="small"
+                      startIcon={<IconBuildingWarehouse size={14} />}
+                      onClick={() => {
+                        setScopeUser(u);
+                        setScopeDraft({ warehouse_ids: u.warehouse_ids, company_ids: u.company_ids });
+                      }}
+                    >
+                      Scope
+                    </Button>
                     <Button
                       size="small"
                       startIcon={<IconKey size={14} />}
@@ -268,26 +299,51 @@ const UserManagement = () => {
               </TextField>
             </Grid>
 
-            {scopeNeeded && (
-              <>
-                <Grid item xs={12}>
-                  <Alert severity="info">
-                    A <strong>{form.role}</strong> needs a warehouse and company, or their scope is
-                    empty and the order app shows them nothing.
-                  </Alert>
-                </Grid>
-                <Grid item xs={12} sm={6}>
-                  <TextField fullWidth select size="small" label="Warehouse" value={form.warehouse_id} onChange={(e) => set({ warehouse_id: e.target.value })}>
-                    {warehouses.map((w) => <MenuItem key={w.id} value={w.id}>{w.name}</MenuItem>)}
-                  </TextField>
-                </Grid>
-                <Grid item xs={12} sm={6}>
-                  <TextField fullWidth select size="small" label="Company" value={form.company_id} onChange={(e) => set({ company_id: e.target.value })}>
-                    {companies.map((c) => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}
-                  </TextField>
-                </Grid>
-              </>
-            )}
+            {/* Scope is offered for every role, not just field ones — an admin may
+                still want a specific company recorded against the account. */}
+            <Grid item xs={12}>
+              {roleHasAllCompanies ? (
+                <Alert severity="info">
+                  The <strong>{form.role}</strong> role already reaches every company and
+                  warehouse. Grants below are optional for it.
+                </Alert>
+              ) : scopeNeeded ? (
+                <Alert severity="info">
+                  A <strong>{form.role}</strong> needs at least one company, or their scope is
+                  empty and the order app shows them nothing.
+                </Alert>
+              ) : null}
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                select
+                size="small"
+                label="Companies"
+                SelectProps={{ multiple: true, renderValue: (v) => renderScope(v, companies) }}
+                value={form.company_ids}
+                onChange={(e) => set({ company_ids: e.target.value })}
+                helperText="Which principals this person works on"
+              >
+                <MenuItem value={ALL_ID}>All companies</MenuItem>
+                {companies.map((c) => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}
+              </TextField>
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                select
+                size="small"
+                label="Warehouses"
+                SelectProps={{ multiple: true, renderValue: (v) => renderScope(v, warehouses) }}
+                value={form.warehouse_ids}
+                onChange={(e) => set({ warehouse_ids: e.target.value })}
+                helperText="A grant is a warehouse + company pair"
+              >
+                <MenuItem value={ALL_ID}>All warehouses</MenuItem>
+                {warehouses.map((w) => <MenuItem key={w.id} value={w.id}>{w.name}</MenuItem>)}
+              </TextField>
+            </Grid>
 
             {form.status !== 'active' && (
               <Grid item xs={12}>
@@ -303,6 +359,68 @@ const UserManagement = () => {
           <Button onClick={() => setOpen(false)}>Cancel</Button>
           <Button variant="contained" disabled={!canCreate} onClick={create}>
             {saving ? 'Creating…' : 'Create user'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ---- scope (companies + warehouses) ---- */}
+      <Dialog open={Boolean(scopeUser)} onClose={() => setScopeUser(null)} maxWidth="sm" fullWidth>
+        <DialogTitle>Scope — {scopeUser?.name}</DialogTitle>
+        <DialogContent>
+          <Grid container spacing={2} sx={{ mt: 0.5 }}>
+            <Grid item xs={12}>
+              <Alert severity="info">
+                Saving replaces this person&apos;s grants entirely. A grant is a warehouse +
+                company pair, so both lists must have a selection for anything to be stored.
+              </Alert>
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                select
+                size="small"
+                label="Companies"
+                SelectProps={{ multiple: true, renderValue: (v) => renderScope(v, companies) }}
+                value={scopeDraft.company_ids}
+                onChange={(e) => setScopeDraft((d) => ({ ...d, company_ids: e.target.value }))}
+              >
+                <MenuItem value={ALL_ID}>All companies</MenuItem>
+                {companies.map((c) => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}
+              </TextField>
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                select
+                size="small"
+                label="Warehouses"
+                SelectProps={{ multiple: true, renderValue: (v) => renderScope(v, warehouses) }}
+                value={scopeDraft.warehouse_ids}
+                onChange={(e) => setScopeDraft((d) => ({ ...d, warehouse_ids: e.target.value }))}
+              >
+                <MenuItem value={ALL_ID}>All warehouses</MenuItem>
+                {warehouses.map((w) => <MenuItem key={w.id} value={w.id}>{w.name}</MenuItem>)}
+              </TextField>
+            </Grid>
+          </Grid>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setScopeUser(null)}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              update(
+                scopeUser.id,
+                {
+                  warehouse_ids: expand(scopeDraft.warehouse_ids, warehouses),
+                  company_ids: expand(scopeDraft.company_ids, companies)
+                },
+                `Scope updated for "${scopeUser.name}".`
+              );
+              setScopeUser(null);
+            }}
+          >
+            Save scope
           </Button>
         </DialogActions>
       </Dialog>

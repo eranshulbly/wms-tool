@@ -20,13 +20,21 @@ axios.interceptors.request.use((cfg) => {
     return cfg;
 });
 
-// Auto-logout on 401 (token expired or invalid)
+// Auto-logout when a call comes back unauthenticated.
 // Dispatch LOGOUT to Redux so both localStorage keys AND redux-persist storage
 // are cleared together, preventing stale rehydration on the next page load.
+//
+// An expired token returns 401; a MISSING one returns 400 ("Valid JWT token is missing").
+// Both mean the session is over, so both log out — otherwise the app keeps rendering as
+// if signed in while every request fails.
 axios.interceptors.response.use(
     (response) => response,
     (error) => {
-        if (error.response && error.response.status === 401) {
+        const res = error && error.response;
+        const unauthenticated =
+            res && (res.status === 401 ||
+                    (res.status === 400 && /token is missing/i.test(res.data?.msg || '')));
+        if (unauthenticated) {
             store.dispatch({ type: LOGOUT });
         }
         return Promise.reject(error);

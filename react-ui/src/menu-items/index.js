@@ -18,6 +18,10 @@ export const SECTION_FOR_PATH = [
     { match: (p) => p.startsWith('/admin'), section: 'admin' },
     // Monthly Data Upload lives under the Admin section (shown in the Admin sidebar group).
     { match: (p) => p.startsWith('/monthly-data-upload'), section: 'admin' },
+    // Inventory Ingestion likewise. Without an entry here sectionForPath returns null and
+    // MenuList finds no group to render, so the whole sidebar comes up empty — the page
+    // still works, but the user loses all navigation.
+    { match: (p) => p.startsWith('/inventory-ingestion'), section: 'admin' },
     { match: (p) => p.startsWith('/analytics'), section: 'analytics' },
     { match: (p) => p === '/warehouse/eway-bill', section: 'eway' },
     { match: (p) => p === '/warehouse/supply-sheet', section: 'supply' },

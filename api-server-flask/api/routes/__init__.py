@@ -34,6 +34,7 @@ def register_all_routes():
     from ..modules.logistics.eway_bill import router as _eway_router             # noqa: F401
     from ..modules.logistics.supply_sheet import router as _supply_sheet_router  # noqa: F401
     from ..modules.inventory import router as _inventory_router        # noqa: F401
+    from ..modules.inventory.ingestion import router as _ingestion_router  # noqa: F401
     from ..modules.fulfillment.assignment import router as _assignment_router      # noqa: F401
     from ..modules.sales.uploads import router as _monthly_uploads  # noqa: F401
     from ..modules.sales.target_tracker import router as _target_tracker_router  # noqa: F401

@@ -28,12 +28,16 @@ const EwayBillGenerator = Loadable(lazy(() => import('../views/warehouse/EwayBil
 
 // analytics routing
 const TargetTracker = Loadable(lazy(() => import('../views/analytics/TargetTracker')));
+const InventoryReport = Loadable(lazy(() => import('../views/analytics/InventoryReport')));
 
 // admin routing
 const AdminControls = Loadable(lazy(() => import('../views/admin/AdminControls')));
 
 // monthly data upload (top-level, admin only)
 const MonthlyDataUpload = Loadable(lazy(() => import('../views/monthly/MonthlyDataUpload')));
+
+// supplier document ingestion (top-level, admin only)
+const InventoryIngestion = Loadable(lazy(() => import('../views/inventory/InventoryIngestion')));
 
 //-----------------------|| MAIN ROUTING ||-----------------------//
 
@@ -55,10 +59,13 @@ const MainRoutes = () => {
                 '/warehouse/eway-bill',
                 '/analytics',
                 '/analytics/target-tracker',
+                '/analytics/inventory-report',
                 // Admin routes
                 '/admin-controls',
                 // Monthly data upload (top-level, admin only)
                 '/monthly-data-upload',
+                // Supplier document ingestion (top-level, admin only)
+                '/inventory-ingestion',
             ]}
         >
             <MainLayout>
@@ -104,8 +111,9 @@ const MainRoutes = () => {
                         )}
                     />
 
-                    {/* Analytics — Target Tracker is the only screen, so /analytics lands on it */}
+                    {/* Analytics — /analytics lands on Target Tracker */}
                     <Route path="/analytics/target-tracker" render={() => <AuthGuard><TargetTracker /></AuthGuard>} />
+                    <Route path="/analytics/inventory-report" render={() => <AuthGuard><InventoryReport /></AuthGuard>} />
                     <Route exact path="/analytics" render={() => <Redirect to="/analytics/target-tracker" />} />
 
                     {/* Admin routes */}
@@ -127,6 +135,18 @@ const MainRoutes = () => {
                             <AuthGuard>
                                 <AdminGuard>
                                     <MonthlyDataUpload />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+
+                    {/* Inventory Ingestion — supplier GRN / credit notes, admin only */}
+                    <Route
+                        path="/inventory-ingestion"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard>
+                                    <InventoryIngestion />
                                 </AdminGuard>
                             </AuthGuard>
                         )}

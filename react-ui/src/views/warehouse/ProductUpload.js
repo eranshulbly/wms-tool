@@ -23,7 +23,7 @@ const ProductUpload = () => (
       computeExtraStats={computeExtraStats}
       descriptionNode={
         <>
-          <Typography variant="h4" gutterBottom>Upload Product Excel/CSV File</Typography>
+          <Typography variant="h4" gutterBottom>Upload Product File</Typography>
           <Typography variant="body2" color="textSecondary" gutterBottom>
             Upload your spare parts / product file to attach product lines to existing orders.
             Each row links a <strong>Part #</strong> to an <strong>Order #</strong>.

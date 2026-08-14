@@ -1,4 +1,5 @@
 // action - state management
+import { REHYDRATE } from 'redux-persist';
 import { ACCOUNT_INITIALIZE, LOGIN, LOGOUT } from './actions';
 
 // Bug 26 fix: check JWT expiry on rehydration so an expired token in localStorage
@@ -35,6 +36,26 @@ export const initialState = {
 
 const accountReducer = (state = initialState, action) => {
     switch (action.type) {
+        // `account` is wrapped in persistReducer, so redux-persist restores the previous
+        // session on top of initialState — including isLoggedIn: true — even when the
+        // token that session was based on has since expired. The expiry guard above runs
+        // at module load and is then silently overwritten.
+        //
+        // The consequence is worse than a stale flag: initialState has already deleted
+        // wms_token, so every request goes out WITHOUT a token and the API answers 400
+        // ("token is missing") rather than 401. The 401 interceptor never fires, and the
+        // app sits there looking logged in while nothing works.
+        //
+        // Re-checking here, after rehydration, is what makes the token the authority.
+        case REHYDRATE: {
+            const restored = { ...state, ...(action.payload || {}) };
+            if (!_isTokenValid(restored.token)) {
+                localStorage.removeItem('wms_token');
+                localStorage.removeItem('wms_user');
+                return { ...restored, isLoggedIn: false, token: '', user: null, isInitialized: true };
+            }
+            return { ...restored, isInitialized: true };
+        }
         case ACCOUNT_INITIALIZE: {
             const { isLoggedIn, user, token } = action.payload;
             if (isLoggedIn && token) {

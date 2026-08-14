@@ -144,7 +144,8 @@ class InvoiceRepository(BaseRepository):
         # Bulk fetch product rows for those potential orders
         pf_sql_p, pf_params_p = self._pf('potential_order_product')
         pop_rows = self._db.execute_query(
-            f"SELECT potential_order_id, product_id, quantity, mrp, total_price "
+            f"SELECT potential_order_id, product_id, quantity, mrp, total_price, "
+            f"       batch_id "
             f"FROM potential_order_product "
             f"WHERE {pf_sql_p} AND potential_order_id IN ({placeholders})",
             pf_params_p + tuple(pot_ids)
@@ -152,9 +153,13 @@ class InvoiceRepository(BaseRepository):
         if not pop_rows:
             return
 
+        # Batch travels with the line into order_product. Without it the chain that is
+        # batch-tracked from receipt through stock would break at invoicing, which is
+        # exactly where "which batch did this customer get" has to be answerable.
         op_rows = [
             (pot_to_order[r['potential_order_id']], r['product_id'],
-             r['quantity'], r['mrp'], r['total_price'], current_time, current_time)
+             r['quantity'], r['mrp'], r['total_price'], current_time, current_time,
+             r.get('batch_id'))
             for r in pop_rows
             if r['potential_order_id'] in pot_to_order
         ]
@@ -163,8 +168,9 @@ class InvoiceRepository(BaseRepository):
             with self._db.get_cursor() as cursor:
                 cursor.executemany(
                     """INSERT IGNORE INTO order_product
-                       (order_id, product_id, quantity, mrp, total_price, created_at, updated_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                       (order_id, product_id, quantity, mrp, total_price, created_at,
+                        updated_at, batch_id)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
                     op_rows
                 )
             logger.debug("Migrated product rows", extra={'product_rows': len(op_rows), 'orders': len(pot_to_order)})

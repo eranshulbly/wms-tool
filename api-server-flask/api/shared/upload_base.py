@@ -34,7 +34,12 @@ from api.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-_SUPPORTED_EXTENSIONS = ('.csv', '.xls', '.xlsx')
+_SUPPORTED_EXTENSIONS = ('.csv', '.xls', '.xlsx', '.pdf')
+
+# PDFs arrive on a fixed supplier template rather than as operator-authored sheets, so
+# they are rendered into the same column shape the spreadsheet feeds use (see
+# shared/pdf_upload_adapter). Every rule downstream of parsing is therefore unchanged.
+_PDF_EXTENSION = '.pdf'
 
 
 class BaseUploadService(abc.ABC):
@@ -51,6 +56,17 @@ class BaseUploadService(abc.ABC):
     @abc.abstractmethod
     def required_columns(self) -> list:
         """Column names that must be present after fuzzy resolution."""
+
+    def before_processing(self, df, context: dict):
+        """Optional gate, run after parsing and before ANY write.
+
+        Return None to continue, or a (response_dict, status_code) tuple to stop. Use it
+        to ask the operator something the file cannot answer — nothing has been written at
+        this point, so declining costs nothing and leaves no partial upload behind.
+
+        `df` may be modified in place; the modified frame is what gets processed.
+        """
+        return None
 
     @abc.abstractmethod
     def process_dataframe(self, df, context: dict) -> dict:
@@ -94,12 +110,25 @@ class BaseUploadService(abc.ABC):
             if ext not in _SUPPORTED_EXTENSIONS:
                 return {
                     'success': False,
-                    'msg': 'Unsupported file format. Please upload a CSV or Excel file.',
+                    'msg': 'Unsupported file format. Please upload a CSV, Excel or PDF file.',
                     'processed_count': 0, 'error_count': 0,
                 }, 400
 
             # Step 3 — parse
-            df = read_upload_file(temp_path, ext)
+            if ext == _PDF_EXTENSION:
+                from api.shared.pdf_upload_adapter import pdf_to_dataframe
+                from api.modules.inventory.ingestion.parser import ParseError
+                try:
+                    df = pdf_to_dataframe(temp_path, context.get('company_id'),
+                                          upload_type=self.upload_type)
+                except ParseError as e:
+                    # The template did not match. Refusing beats reading a money column
+                    # from the wrong place, so the operator is told rather than the file
+                    # being half-imported.
+                    return {'success': False, 'msg': f'Could not read this PDF: {e}',
+                            'processed_count': 0, 'error_count': 0}, 400
+            else:
+                df = read_upload_file(temp_path, ext)
             df = df.dropna(how='all')
 
             # Step 4 — normalise columns + resolve required
@@ -107,6 +136,15 @@ class BaseUploadService(abc.ABC):
             df, error = resolve_required_columns(df, self.required_columns)
             if error:
                 return {'success': False, 'msg': error, 'processed_count': 0, 'error_count': 0}, 400
+
+            # Step 4b — let the subclass inspect the file before anything is written.
+            # Returning a response here aborts the upload having touched nothing: no
+            # upload_batches row, no rows, nothing to undo. That is what makes it safe to
+            # ask the operator a question and have them decline.
+            interrupt = self.before_processing(df, context)
+            if interrupt is not None:
+                cleanup_temp_file(temp_path)
+                return interrupt
 
             # Step 5 — create batch record
             upload_batch_id = create_upload_batch(

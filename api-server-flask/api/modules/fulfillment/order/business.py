@@ -34,6 +34,23 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
 
     logger.debug("Processing DataFrame", extra={'row_count': len(df), 'columns': df.columns.tolist()})
 
+    # Orders already on file for this company, fetched once. Re-uploading a file would
+    # otherwise create a second copy of every order in it — silently, because the
+    # duplicate handler below waits for a MySQL 1062 that can never arrive:
+    # potential_order is partitioned on created_at, and MySQL requires a UNIQUE key to
+    # include every partitioning column, so no unique constraint on original_order_id is
+    # possible. The check has to live here.
+    #
+    # `seen` additionally catches a number repeated WITHIN one file, which the database
+    # could not catch either.
+    existing_orders = order_repo.existing_original_order_ids(
+        company_id,
+        [str(r.get('Sales Order #', '') or '').strip()
+         for _, r in df.iterrows()
+         if str(r.get('Sales Order #', '') or '').strip()],
+    )
+    seen = set()
+
     for index, row in df.iterrows():
         try:
 
@@ -44,6 +61,13 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
             if not sales_order_id:
                 error_rows.append(_make_error_row('', purchaser_name, f"Row {index}: Missing Sales Order #"))
                 continue
+
+            if sales_order_id in existing_orders or sales_order_id in seen:
+                error_rows.append(_make_error_row(
+                    sales_order_id, purchaser_name,
+                    f"Order {sales_order_id} already exists — skipped, nothing changed"))
+                continue
+            seen.add(sales_order_id)
 
             # --- New columns ---
             b2b_po_number     = str(row.get('B2B PO#', '') or '').strip() or None

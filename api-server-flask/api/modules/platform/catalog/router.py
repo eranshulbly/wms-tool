@@ -21,12 +21,19 @@ product_upload_parser.add_argument('file',
                                    type=werkzeug.datastructures.FileStorage,
                                    location='files',
                                    required=True,
-                                   help='Excel/CSV file with product data')
+                                   help='Excel/CSV/PDF file with product data')
 product_upload_parser.add_argument('company_id',
                                    type=int,
                                    location='form',
                                    required=True,
                                    help='Company ID must be provided')
+# The operator's answer to the part-number prompt. Absent on a first attempt, so a file
+# without Part # is refused and explained rather than silently given generated codes.
+product_upload_parser.add_argument('auto_generate_part_numbers',
+                                   type=str,
+                                   location='form',
+                                   required=False,
+                                   help='Set to true to accept auto-generated product numbers')
 
 product_upload_response = rest_api.model('ProductUploadResponse', {
     'success':        fields.Boolean(description='Success status of upload'),
@@ -61,7 +68,11 @@ class ProductUpload(Resource):
                 return {'success': False, 'msg': f'Company with ID {company_id} not found',
                         'processed_count': 0, 'error_count': 0}, 400
 
-            return product_service.process_product_upload(uploaded_file, company_id, current_user.id)
+            approved = str(args.get('auto_generate_part_numbers') or '').lower() in (
+                '1', 'true', 'yes')
+            return product_service.process_product_upload(
+                uploaded_file, company_id, current_user.id,
+                auto_generate_part_numbers=approved)
 
         except Exception as e:
             return {'success': False, 'msg': f'Error processing upload: {str(e)}',

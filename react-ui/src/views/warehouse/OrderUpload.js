@@ -17,9 +17,9 @@ const OrderUpload = () => (
       inputId="order-file-upload"
       descriptionNode={
         <>
-          <Typography variant="h4" gutterBottom>Upload Excel/CSV File</Typography>
+          <Typography variant="h4" gutterBottom>Upload Order File</Typography>
           <Typography variant="body2" color="textSecondary" gutterBottom>
-            Upload your order file in Excel or CSV format. The system will process the data and
+            Upload your order file as Excel, CSV or PDF. The system will process the data and
             create orders accordingly.
           </Typography>
         </>

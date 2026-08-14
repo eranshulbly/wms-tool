@@ -17,7 +17,7 @@ from api.shared.db_manager import mysql_manager
 from api.shared.auth_v1 import v1_require_permission, company_filter, company_scope
 from api.modules.platform.user_auth.rbac import P
 
-SKU_COLS = """product_string AS sku_code, name, description, nickname, category_id,
+SKU_COLS = """product_string AS sku_code, name, description, category_id,
               uom, size, weight, barcode, hsn_code, price, is_active, created_at,
               company_id"""
 
@@ -26,10 +26,57 @@ def _iso(dt):
     return dt.isoformat() if isinstance(dt, datetime) else dt
 
 
+# The working set, as a FROM clause: parts sold in the last 6 months plus this
+# month's target part groups, joined to the catalogue. The sales window is
+# bounded so this can't grow without limit as history accumulates.
+#
+# Joined as a derived table, driving from it, rather than
+# `product_string IN (SELECT ... UNION ...)`:
+#
+#  * The IN form was rated a DEPENDENT SUBQUERY with a DEPENDENT UNION — i.e.
+#    re-executed for each of ~54k candidate product rows. It ran for over two
+#    minutes, past both the app's 30s receive timeout (the picker just spun) and
+#    PyMySQL's 60s read_timeout, whose broken connection then made the failing
+#    rollback mask the real error. Joining evaluates the set once.
+#  * STRAIGHT_JOIN pins the small side first. Left to itself MySQL drove from
+#    `product` — a 54k-row scan plus a filesort for ORDER BY name — and probed the
+#    derived set: 2.4s. Driving from the working set makes the catalogue an eq_ref
+#    hit on uq_product_string and sorts only the ~3.7k surviving rows: 204ms.
+#    Safe to pin, because the working set is by construction a subset of the
+#    catalogue and so always the smaller input.
+#
+# UNION already dedupes, so this cannot multiply rows. Verified row-for-row
+# against the IN form, and against the join without STRAIGHT_JOIN.
+#
+# (%% because execute_query runs `query % params`, so a literal % must be doubled.)
+_WORKING_SET_FROM = """(SELECT item_code AS ps FROM busy_sales_data
+                         WHERE sale_date >= DATE_SUB(DATE_FORMAT(CURDATE(), '%%Y-%%m-01'),
+                                                     INTERVAL 6 MONTH)
+                        UNION
+                        SELECT part_number AS ps FROM part_groups
+                         WHERE time_period = DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
+                       ) ws STRAIGHT_JOIN product ON product.product_string = ws.ps """
+
+
+def _has_working_set(current_user):
+    """Whether this caller's company has ANY product in the working set.
+
+    Both sources behind the set — busy_sales_data and part_groups — exist only
+    for companies on the Busy feed. For anyone else the intersection is empty,
+    and an empty product picker is never the right answer for a company that has
+    a catalogue. A LIMIT 1 probe, so it stops at the first hit rather than
+    counting the whole set.
+    """
+    frag, params = company_filter(current_user)
+    where = f"WHERE {frag} " if frag else ""
+    return bool(mysql_manager.execute_query(
+        f"SELECT 1 FROM {_WORKING_SET_FROM}{where}LIMIT 1", tuple(params)))
+
+
 def _sku_out(r):
     return {
         "sku_code": r['sku_code'], "name": r['name'], "description": r['description'],
-        "nickname": r['nickname'], "category_id": r['category_id'], "uom": r['uom'],
+        "category_id": r['category_id'], "uom": r['uom'],
         "size": r['size'], "weight": float(r['weight']) if r['weight'] is not None else None,
         "barcode": r['barcode'], "hsn_code": r['hsn_code'],
         "price": float(r['price']) if r['price'] is not None else None,
@@ -160,35 +207,22 @@ class V1Skus(Resource):
         # working_set: the parts a sales rep actually deals with — anything sold
         # in the last 6 months, plus everything in this month's target part
         # groups. ~3.7k rows instead of 60k, so the app can hold it locally and
-        # search it instantly; the long tail is reached via `q` instead. The
-        # sales window is bounded so this can't grow without limit as history
-        # accumulates.
+        # search it instantly; the long tail is reached via `q` instead. See
+        # _WORKING_SET_FROM for how the set is built and why it is shaped that way.
         #
-        # Joined as a derived table, driving from it, rather than
-        # `product_string IN (SELECT ... UNION ...)`:
+        # It only means anything for a company that HAS a Busy feed or target part
+        # groups. A company with neither — one whose sales arrive as uploaded
+        # invoices — intersects it in zero rows, and narrowing its catalogue down
+        # to nothing left the order picker empty with no way to add a line at all.
+        # So the narrowing is applied only where it narrows something: a company
+        # with no working set has its whole catalogue as its working set, which is
+        # what the flag was asking for to begin with.
         #
-        #  * The IN form was rated a DEPENDENT SUBQUERY with a DEPENDENT UNION — i.e.
-        #    re-executed for each of ~54k candidate product rows. It ran for over two
-        #    minutes, past both the app's 30s receive timeout (the picker just spun) and
-        #    PyMySQL's 60s read_timeout, whose broken connection then made the failing
-        #    rollback mask the real error. Joining evaluates the set once.
-        #  * STRAIGHT_JOIN pins the small side first. Left to itself MySQL drove from
-        #    `product` — a 54k-row scan plus a filesort for ORDER BY name — and probed the
-        #    derived set: 2.4s. Driving from the working set makes the catalogue an eq_ref
-        #    hit on uq_product_string and sorts only the ~3.7k surviving rows: 204ms.
-        #    Safe to pin, because the working set is by construction a subset of the
-        #    catalogue and so always the smaller input.
-        #
-        # UNION already dedupes, so this cannot multiply rows. Verified row-for-row
-        # against the IN form, and against the join without STRAIGHT_JOIN.
-        if working_set:
-            frm = """(SELECT item_code AS ps FROM busy_sales_data
-                       WHERE sale_date >= DATE_SUB(DATE_FORMAT(CURDATE(), '%%Y-%%m-01'),
-                                                   INTERVAL 6 MONTH)
-                      UNION
-                      SELECT part_number AS ps FROM part_groups
-                       WHERE time_period = DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
-                     ) ws STRAIGHT_JOIN product ON product.product_string = ws.ps """
+        # Decided before `q` is applied, so a search matching nothing inside a
+        # real working set still means "no results" rather than silently widening
+        # to the full 60k catalogue.
+        if working_set and _has_working_set(current_user):
+            frm = _WORKING_SET_FROM
         else:
             frm = "product "
 
@@ -245,11 +279,11 @@ class V1Skus(Resource):
                 return {"detail": f"company {company_id} is not yours"}, 403
 
         mysql_manager.execute_query(
-            """INSERT INTO product (product_string, name, description, nickname, category_id,
+            """INSERT INTO product (product_string, name, description, category_id,
                                     uom, size, weight, barcode, hsn_code, price, is_active,
                                     company_id)
                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s)""",
-            (sku_code, name, body.get('description'), body.get('nickname'), category_id,
+            (sku_code, name, body.get('description'), category_id,
              body.get('uom'), body.get('size'), body.get('weight'), barcode,
              body.get('hsn_code'), body.get('price'), company_id),
             fetch=False,
@@ -287,7 +321,7 @@ class V1SkuDetail(Resource):
 
         # v2 quirk preserved: only non-None values are applied (a field cannot be
         # cleared to NULL through this endpoint).
-        updatable = ['name', 'description', 'nickname', 'category_id', 'uom', 'size',
+        updatable = ['name', 'description', 'category_id', 'uom', 'size',
                      'weight', 'barcode', 'hsn_code', 'price', 'is_active']
         sets, params = [], []
         for field in updatable:

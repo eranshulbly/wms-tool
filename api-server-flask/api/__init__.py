@@ -126,7 +126,12 @@ def _register_error_handlers(app: Flask) -> None:
                 # Flask-RESTX puts request-validation failures under `errors`, and its
                 # own aborts under `message` — neither key is one the mobile app reads.
                 if isinstance(response_data, dict) and "detail" not in response_data:
-                    if "errors" in response_data:
+                    # Only rewrite when the body is Flask-RESTX's own validation shape.
+                    # A handler that already answered with {"success", "msg"} has said
+                    # what it means — replacing its msg with its `errors` list turns a
+                    # readable sentence into raw JSON in the operator's face, and drops
+                    # the per-row detail the UI wanted to render separately.
+                    if "errors" in response_data and "msg" not in response_data:
                         response.set_data(json.dumps(
                             _error_body(response_data["errors"], path)))
                     elif "message" in response_data and path.startswith(_V1_PREFIX):

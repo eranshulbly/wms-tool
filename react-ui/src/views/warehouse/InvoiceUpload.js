@@ -27,7 +27,7 @@ const InvoiceUpload = () => (
       computeExtraStats={computeExtraStats}
       descriptionNode={
         <>
-          <Typography variant="h4" gutterBottom>Upload Invoice Excel/CSV File</Typography>
+          <Typography variant="h4" gutterBottom>Upload Invoice File</Typography>
           <Typography variant="body2" color="textSecondary" gutterBottom>
             Upload your invoice file to move matched orders to <strong>Invoiced</strong> status.
             Orders in <em>Packed</em> state (or bypass order types like ZGOI) are invoiced immediately.

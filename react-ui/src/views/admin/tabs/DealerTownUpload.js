@@ -16,6 +16,7 @@ import {
   Divider,
   Grid,
   TextField,
+  MenuItem,
   IconButton,
   Tooltip,
   InputAdornment,
@@ -42,25 +43,51 @@ import UploadFormatHelp from '../UploadFormatHelp';
 // ---------------------------------------------------------------------------
 const FORMAT_SPEC = {
   id: 'dealer_town',
-  label: 'Dealer Town Master',
+  label: 'Dealer Master',
   table: 'dealer',
   blurb:
-    "Upload a file with columns Dealer Code and Town to update multiple dealers at once. " +
-    "Dealers that don't exist will be created.",
+    'Upload the dealer master for ONE company — pick the company first, since the file ' +
+    'carries no company column. Existing dealers are matched and updated; anything new ' +
+    'is created under that company.',
+  // Mirrors DEALER_ALL_COLUMNS / DEALER_REQUIRED_COLUMNS on the server. If the two ever
+  // disagree, this panel is the one that lies to the operator.
   columns: [
-    { name: 'Dealer Code', required: true, note: 'Matched against the dealer code already in the system' },
-    { name: 'Town', required: true, note: 'Town the dealer belongs to — leave blank to clear it' },
+    { name: 'name', required: true, note: 'Dealer name — used to match when no dealer code is given' },
+    { name: 'dealer_code', required: false, note: "Optional. When present it's the match key, within this company" },
+    { name: 'town', required: true, note: 'Town the dealer belongs to' },
+    { name: 'latitude', required: false, note: 'Optional. Decimal degrees, e.g. 28.3670' },
+    { name: 'longitude', required: false, note: 'Optional. Decimal degrees, e.g. 79.4304' },
+    { name: 'phone', required: true, note: 'Contact number' },
+    { name: 'address', required: true, note: 'Full postal address' },
+    { name: 'gstin', required: true, note: '15-character GSTIN' },
   ],
   sample: [
-    ['D-1042', 'Meerganj'],
-    ['D-1043', 'Bareilly'],
+    ['Aakash Auto Service', 'D-1042', 'Meerganj', '28.3670', '79.4304', '9805426558',
+     'A-4 Rampur Garden, Civil Lines', '09AAKFA2952M1Z2'],
+    ['Aban Auto Parts', 'D-1043', 'Bareilly', '28.3441', '79.4200', '9319620865',
+     'Vinod Complex, Dispensary Road', '09ATAPS3130Q1ZA'],
   ],
   info: (
     <>
-      Column headers must be spelled exactly <strong>Dealer Code</strong> and <strong>Town</strong> (leading
-      and trailing spaces are ignored). Each row <strong>overwrites</strong> the town on the matching dealer;
-      a dealer code that isn't found is <strong>created</strong> with the code as its placeholder name until an
-      order upload fills in the real one. Rows with an empty dealer code are skipped.
+      Headers are matched case-insensitively, and spaces are treated as underscores — so
+      <strong> Dealer Code</strong> and <strong>dealer_code</strong> are both accepted.
+      <br /><br />
+      <strong>name</strong>, <strong>town</strong>, <strong>phone</strong>,{' '}
+      <strong>address</strong> and <strong>gstin</strong> are mandatory;{' '}
+      <strong>dealer_code</strong>, <strong>latitude</strong> and <strong>longitude</strong>{' '}
+      are optional.
+      <br /><br />
+      The whole file is validated <strong>before anything is written</strong>. A missing
+      mandatory column, a blank mandatory value on any row, an unreadable coordinate, or a
+      dealer code already owned by another company rejects the <strong>entire</strong>{' '}
+      upload and names the rows at fault — a half-imported dealer master is worse than none,
+      because you cannot tell which rows landed.
+      <br /><br />
+      Rows are matched <strong>within the selected company only</strong>: by{' '}
+      <strong>dealer_code</strong> where the file gives one, otherwise by{' '}
+      <strong>name</strong>. A match is updated; anything else is created under that
+      company. The same code under a different company is a different dealer and is left
+      alone.
     </>
   ),
 };
@@ -132,6 +159,48 @@ const useStyles = makeStyles((theme) => ({
 const ACCEPTED_TYPES = '.csv,.xls,.xlsx';
 
 // ---------------------------------------------------------------------------
+// Per-row failures, as a table. Shared by both outcomes: rows the server
+// REJECTED before writing anything (400 — the whole file was refused), and rows
+// that failed during a write that otherwise succeeded (200). Same shape either
+// way, so the operator reads one thing and fixes the same spreadsheet cells.
+//
+// Name is shown alongside the code because most dealers have no code, and "row
+// 34 failed" is not something you can find in a file of several hundred.
+// ---------------------------------------------------------------------------
+const RowErrorTable = ({ errors, title }) => (
+  <Box mt={2}>
+    <Box display="flex" alignItems="center" style={{ gap: 6, marginBottom: 8 }}>
+      <IconAlertTriangle size={16} color="#c62828" />
+      <Typography variant="body2" style={{ color: '#c62828', fontWeight: 600 }}>
+        {title} ({errors.length})
+      </Typography>
+    </Box>
+    <TableContainer component={Paper} variant="outlined" style={{ maxHeight: 320 }}>
+      <Table size="small" stickyHeader>
+        <TableHead>
+          <TableRow>
+            <TableCell><strong>Row</strong></TableCell>
+            <TableCell><strong>Name</strong></TableCell>
+            <TableCell><strong>Dealer Code</strong></TableCell>
+            <TableCell><strong>Reason</strong></TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {errors.map((e, i) => (
+            <TableRow key={i}>
+              <TableCell>{e.row}</TableCell>
+              <TableCell>{e.name || '—'}</TableCell>
+              <TableCell>{e.dealer_code || '—'}</TableCell>
+              <TableCell>{e.reason}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  </Box>
+);
+
+// ---------------------------------------------------------------------------
 // DealerTownUpload
 // ---------------------------------------------------------------------------
 const DealerTownUpload = () => {
@@ -144,6 +213,15 @@ const DealerTownUpload = () => {
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
   const [uploadError, setUploadError]   = useState(null);
+  // Rows the server refused. Separate from uploadResult because on a rejection
+  // there IS no result — the file was validated and thrown back whole.
+  const [rejectedRows, setRejectedRows] = useState([]);
+
+  // ── Company ───────────────────────────────────────────────────────────
+  // One upload is one company: the file has no company column, and a dealer
+  // created without a company can't be seen by any rep in the mobile app.
+  const [companies, setCompanies] = useState([]);
+  const [companyId, setCompanyId] = useState('');
 
   // ── Dealer table state ────────────────────────────────────────────────
   const [dealers, setDealers]       = useState([]);
@@ -174,6 +252,22 @@ const DealerTownUpload = () => {
 
   useEffect(() => { fetchDealers(); }, [fetchDealers]);
 
+  // ── Fetch companies ───────────────────────────────────────────────────
+  useEffect(() => {
+    let live = true;
+    api.get('companies')
+      .then((res) => {
+        if (!live) return;
+        const cos = res.data?.companies || [];
+        setCompanies(cos);
+        // Only pre-select when there is no choice to make — picking one of
+        // several for the admin is how a file lands on the wrong company.
+        if (cos.length === 1) setCompanyId(cos[0].id);
+      })
+      .catch(() => live && showSnack('Failed to load companies', 'error'));
+    return () => { live = false; };
+  }, []);
+
   // Debounced search
   useEffect(() => {
     const t = setTimeout(() => fetchDealers(search), 350);
@@ -191,6 +285,7 @@ const DealerTownUpload = () => {
     setFile(f);
     setUploadResult(null);
     setUploadError(null);
+    setRejectedRows([]);
   };
 
   const handleDrop = (e) => {
@@ -201,13 +296,15 @@ const DealerTownUpload = () => {
 
   // ── Bulk upload ───────────────────────────────────────────────────────
   const handleUpload = async () => {
-    if (!file) return;
+    if (!file || !companyId) return;
     setUploading(true);
     setUploadResult(null);
     setUploadError(null);
+    setRejectedRows([]);
 
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('company_id', companyId);
 
     try {
       const res = await api.post('admin/dealer-town', formData, {
@@ -222,11 +319,15 @@ const DealerTownUpload = () => {
         fetchDealers(search); // refresh table
       } else {
         setUploadError(res.data.msg || 'Upload failed');
+        setRejectedRows(res.data.errors || []);
       }
     } catch (err) {
+      // A validation rejection is a 400, so it lands here rather than above. The
+      // body carries the offending rows; keep them, they are the whole point.
       setUploadError(
         err.response?.data?.msg || 'Upload failed — check file format and try again.'
       );
+      setRejectedRows(err.response?.data?.errors || []);
     } finally {
       setUploading(false);
     }
@@ -283,6 +384,26 @@ const DealerTownUpload = () => {
 
         <UploadFormatHelp spec={FORMAT_SPEC} />
 
+        {/* Company — asked before the file, because it decides which dealers the
+            rows match and which company any new dealer is created under. */}
+        <Box mb={2} mt={2} style={{ maxWidth: 360 }}>
+          <TextField
+            select
+            fullWidth
+            required
+            size="small"
+            variant="outlined"
+            label="Company"
+            value={companyId}
+            onChange={(e) => setCompanyId(e.target.value)}
+            helperText="Every row in the file belongs to this company. Dealers that don't exist here are created under it."
+          >
+            {companies.map((c) => (
+              <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>
+            ))}
+          </TextField>
+        </Box>
+
         {/* Drop zone */}
         <Box
           className={`${classes.dropZone} ${dragging ? classes.dropZoneActive : ''}`}
@@ -318,13 +439,13 @@ const DealerTownUpload = () => {
           onChange={(e) => handleFile(e.target.files[0])}
         />
 
-        <Box display="flex" justifyContent="center">
+        <Box display="flex" flexDirection="column" alignItems="center">
           <Button
             variant="contained"
             color="primary"
             className={classes.uploadButton}
             onClick={handleUpload}
-            disabled={!file || uploading}
+            disabled={!file || !companyId || uploading}
             startIcon={
               uploading
                 ? <CircularProgress size={16} color="inherit" />
@@ -333,10 +454,22 @@ const DealerTownUpload = () => {
           >
             {uploading ? 'Uploading…' : 'Upload File'}
           </Button>
+          {/* Says WHY the button is dead, rather than leaving it greyed out. */}
+          {file && !companyId && (
+            <Typography variant="caption" color="textSecondary" style={{ marginTop: 6 }}>
+              Select a company to upload.
+            </Typography>
+          )}
         </Box>
 
         {uploadError && (
           <Box mt={2}><Alert severity="error">{uploadError}</Alert></Box>
+        )}
+
+        {/* Nothing was saved when these are present — the message above says so;
+            this is the list of cells to go and fix. */}
+        {rejectedRows.length > 0 && (
+          <RowErrorTable errors={rejectedRows} title="Rows to fix — nothing was uploaded" />
         )}
 
         {/* Upload result summary */}
@@ -367,34 +500,7 @@ const DealerTownUpload = () => {
             </Grid>
 
             {uploadResult.errors?.length > 0 && (
-              <Box mt={2}>
-                <Box display="flex" alignItems="center" style={{ gap: 6, marginBottom: 8 }}>
-                  <IconAlertTriangle size={16} color="#c62828" />
-                  <Typography variant="body2" style={{ color: '#c62828', fontWeight: 600 }}>
-                    Row Errors ({uploadResult.errors.length})
-                  </Typography>
-                </Box>
-                <TableContainer component={Paper} variant="outlined">
-                  <Table size="small">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell><strong>Row</strong></TableCell>
-                        <TableCell><strong>Dealer Code</strong></TableCell>
-                        <TableCell><strong>Reason</strong></TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {uploadResult.errors.map((e, i) => (
-                        <TableRow key={i}>
-                          <TableCell>{e.row}</TableCell>
-                          <TableCell>{e.dealer_code || '—'}</TableCell>
-                          <TableCell>{e.reason}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              </Box>
+              <RowErrorTable errors={uploadResult.errors} title="Row Errors" />
             )}
           </Box>
         )}
@@ -457,6 +563,7 @@ const DealerTownUpload = () => {
                 <TableCell style={{ fontWeight: 600 }}>#</TableCell>
                 <TableCell style={{ fontWeight: 600 }}>Dealer Name</TableCell>
                 <TableCell style={{ fontWeight: 600 }}>Dealer Code</TableCell>
+                <TableCell style={{ fontWeight: 600 }}>Company</TableCell>
                 <TableCell style={{ fontWeight: 600 }}>Town</TableCell>
                 <TableCell style={{ fontWeight: 600, width: 100 }}>Action</TableCell>
               </TableRow>
@@ -465,14 +572,14 @@ const DealerTownUpload = () => {
               {tableLoading ? (
                 Array.from({ length: 6 }).map((_, i) => (
                   <TableRow key={i}>
-                    {[1, 2, 3, 4, 5].map((c) => (
+                    {[1, 2, 3, 4, 5, 6].map((c) => (
                       <TableCell key={c}>
                         <Box
                           style={{
                             height: 14,
                             background: '#e0e0e0',
                             borderRadius: 4,
-                            width: c === 5 ? 60 : '80%',
+                            width: c === 6 ? 60 : '80%',
                             animation: 'pulse 1.5s infinite',
                           }}
                         />
@@ -482,7 +589,7 @@ const DealerTownUpload = () => {
                 ))
               ) : dealers.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} align="center" style={{ padding: 32 }}>
+                  <TableCell colSpan={6} align="center" style={{ padding: 32 }}>
                     <Typography variant="body2" color="textSecondary">
                       {search ? `No dealers matching "${search}"` : 'No dealers found'}
                     </Typography>
@@ -503,6 +610,26 @@ const DealerTownUpload = () => {
                         {dealer.dealer_code
                           ? <code style={{ fontSize: '0.8rem' }}>{dealer.dealer_code}</code>
                           : <span style={{ color: '#bdbdbd' }}>—</span>}
+                      </TableCell>
+
+                      {/* Company — a blank one is a real problem, not a cosmetic
+                          gap: the mobile app scopes every read by company, so an
+                          unassigned dealer is invisible to every rep. Flagged
+                          rather than dashed out like an ordinary missing value. */}
+                      <TableCell>
+                        {dealer.company_name ? (
+                          <Typography variant="body2">{dealer.company_name}</Typography>
+                        ) : (
+                          <Tooltip title="No company — this dealer is hidden from the mobile app until one is assigned">
+                            <Chip
+                              size="small"
+                              variant="outlined"
+                              icon={<IconAlertTriangle size={13} />}
+                              label="Unassigned"
+                              style={{ color: '#ed6c02', borderColor: '#ed6c02' }}
+                            />
+                          </Tooltip>
+                        )}
                       </TableCell>
 
                       {/* Town — view or edit */}

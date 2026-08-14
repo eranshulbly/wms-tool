@@ -15,6 +15,28 @@ class OrderRepository(BaseRepository):
 
     # ── PotentialOrder ────────────────────────────────────────────────────────
 
+    def existing_original_order_ids(self, company_id, order_ids: list) -> set:
+        """Which of these order numbers this company already has, in one query.
+
+        Scoped to the company because the number comes from the customer's own series —
+        two tenants can legitimately use the same one, and treating that as a duplicate
+        would reject a valid order.
+
+        Deliberately NOT partition-filtered: an order uploaded outside the active window
+        is still an order, and missing it would let a duplicate through — which is the
+        whole point of this check.
+        """
+        ids = [str(o).strip() for o in (order_ids or []) if str(o).strip()]
+        if not ids:
+            return set()
+        unique = list(dict.fromkeys(ids))
+        placeholders = ','.join(['%s'] * len(unique))
+        rows = self._db.execute_query(
+            f"""SELECT DISTINCT original_order_id FROM potential_order
+                 WHERE company_id = %s AND original_order_id IN ({placeholders})""",
+            (company_id, *unique))
+        return {r['original_order_id'] for r in (rows or [])}
+
     def find_bulk_by_original_ids(self, order_ids: list) -> dict:
         """
         Fetch multiple PotentialOrders in one IN query (active partition window).

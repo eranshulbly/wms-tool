@@ -117,36 +117,6 @@ const FEEDS = [
     ],
     sample: [],
   },
-  {
-    id: 'products',
-    label: 'Products',
-    table: 'product',
-    color: '#00838f',
-    noPeriod: true,
-    blurb:
-      'The product master itself — not tied to a month. Matched on Part Number: existing ' +
-      'products are updated, new ones are created, nothing is ever deleted. Every column is ' +
-      'optional, so a file covering just a few of them updates only those.',
-    columns: [
-      { name: 'Part Number', required: true, note: 'The key rows are matched on. Also accepted: Part No, Product String' },
-      { name: 'Name', required: false, note: 'Product name; on a new product defaults to the description' },
-      { name: 'Description', required: false, note: 'Longer description. Also accepted: Part Description' },
-      { name: 'Product Category', required: false, note: 'Sub-category, e.g. HHML Parts / HDX Parts / VIDA Parts' },
-      { name: 'Category', required: false, note: 'Parts / Oil / Battery / Tyre / Accessories / Publications / Pro Parts' },
-      { name: 'Nickname', required: false, note: 'Short display name (max 200 chars)' },
-      { name: 'UOM', required: false, note: 'Selling unit, e.g. Pcs. (max 20 chars)' },
-      { name: 'Size', required: false, note: 'Packed size, e.g. 390 x 240 x 330 MM (max 100 chars)' },
-      { name: 'Weight', required: false, note: 'Number, stored as-is with no unit conversion. Also accepted: Net Weight' },
-      { name: 'Price', required: false, note: 'Number, up to 2 decimal places' },
-      { name: 'Barcode', required: false, note: 'Must be unique across products (max 100 chars)' },
-      { name: 'HSN Code', required: false, note: 'Max 20 chars. Also accepted: HSN' },
-      { name: 'is_active', required: false, note: 'Y or N — defaults to active on a new product' },
-    ],
-    sample: [
-      ['HDH96600060220FS', 'SOCKET BOLT 6X22', 'SOCKET BOLT 6X22', 'HDX Parts', 'Parts', '', 'Pcs.', '90 x 40 x 40 MM', '12', '', '', '', 'Y'],
-      ['22121198900S', 'CENTER CLUTCH', 'CENTER CLUTCH', 'HHML Parts', 'Parts', '', 'Pcs.', '390 x 240 x 330 MM', '223', '', '', '', 'Y'],
-    ],
-  },
 ];
 
 const MONTHS = [

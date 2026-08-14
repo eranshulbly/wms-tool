@@ -766,6 +766,7 @@ def create_all_tables():
     import api.modules.platform.catalog.schema      # noqa: F401
     import api.modules.fulfillment.order.schema        # noqa: F401
     import api.modules.inventory.schema    # noqa: F401
+    import api.modules.inventory.ingestion.schema      # noqa: F401
     import api.modules.fulfillment.assignment.schema   # noqa: F401
     import api.modules.sales.schema                    # noqa: F401
     import api.modules.platform.user_auth.schema       # noqa: F401
@@ -825,6 +826,9 @@ def create_all_tables():
     # After both _migrate_company_id (adds company_id) and _migrate_part_groups_period
     # (renames period -> time_period): the widened key names both of those columns.
     _migrate_part_groups_company_uq()
+    _migrate_transferin_id_varchar()
+    _migrate_fc_entity_stock_company_uq()
+    _migrate_order_product_batch_columns()
     # Restores an index the widened key can no longer serve — see the docstring.
     _migrate_part_groups_join_index()
     # Same class of gap on the sales feed: date-window reads can't use a company-led key.
@@ -975,7 +979,6 @@ def _migrate_product_columns():
     """Add the product columns the admin uploads write (idempotent).
 
       category_id     set by the Product Category upload (Order Uploads -> Product Categories)
-      nickname        set by the Product Nickname admin tab; printed on supply sheet PDFs
       litres_per_unit volume of one selling unit, for targets set in litres
 
     The first two are declared in migration_v2_api.sql, which cannot be applied wholesale
@@ -992,7 +995,6 @@ def _migrate_product_columns():
     """
     wanted = [
         ('category_id',     'INT NULL',            'idx_product_category'),
-        ('nickname',        'VARCHAR(200) NULL',   None),
         ('litres_per_unit', 'DECIMAL(10,4) NULL',  None),
     ]
     for column, ddl, index_name in wanted:
@@ -1403,6 +1405,22 @@ _V2_API_COLUMNS = {
     ],
     'company': [
         ('order_capture_mode', "VARCHAR(20) NOT NULL DEFAULT 'itemised'", None),
+        # Which figures the mobile analytics are built from.
+        #   'targets'  — the Busy feed: month sales measured against dealer_target,
+        #                split by category, scheme and part group.
+        #   'invoices' — companies that upload invoices and set no targets at all:
+        #                a month total summed from `invoice` and nothing to measure
+        #                it against, so the app drops every target/category surface.
+        ('analytics_mode', "VARCHAR(20) NOT NULL DEFAULT 'targets'", None),
+        # How the order picker labels a product.
+        #   'code_first' — the part number leads, product name beneath it. Right
+        #                  where the code is a real identifier a rep reads off a
+        #                  shelf label and searches by (Hero: '22121198900S').
+        #   'name_first' — the product name leads, code demoted to a subtitle.
+        #                  Right where the code is a synthetic slug derived from
+        #                  the name and carries nothing extra
+        #                  (Cadila: 'CADI-ALERTRIZ-5MG-TAB-30X10T').
+        ('catalog_label_mode', "VARCHAR(20) NOT NULL DEFAULT 'code_first'", None),
     ],
     'dealer': [
         ('dealer_code',  'VARCHAR(50) NULL',  None),
@@ -1531,6 +1549,12 @@ _CONVERGE_COLUMNS = [
     # surfaces as `null` in the API response instead of the mode the app expects.
     ('company', 'order_capture_mode',
      ('varchar(20)', 'NO', 'itemised'), "VARCHAR(20) NOT NULL DEFAULT 'itemised'"),
+    # Same reasoning as order_capture_mode above: read straight back to the mobile
+    # client, so a NULL would reach the app as `null` instead of a mode it knows.
+    ('company', 'analytics_mode',
+     ('varchar(20)', 'NO', 'targets'), "VARCHAR(20) NOT NULL DEFAULT 'targets'"),
+    ('company', 'catalog_label_mode',
+     ('varchar(20)', 'NO', 'code_first'), "VARCHAR(20) NOT NULL DEFAULT 'code_first'"),
     ('dealer', 'activated_on',
      ('datetime', 'YES', 'CURRENT_TIMESTAMP'), 'DATETIME NULL DEFAULT CURRENT_TIMESTAMP'),
     ('potential_order_product', 'item_status',
@@ -1654,6 +1678,130 @@ def _migrate_part_groups_period():
             logger.info("%s: renamed column period -> time_period", table)
     except Exception:
         logger.exception("%s: period/month migration failed", table)
+
+
+def _migrate_order_product_batch_columns():
+    """Add batch_id to the order line tables (idempotent).
+
+    Pharma stock is tracked to a batch, and the outbound side has to record WHICH batch
+    went to which customer — that is what a recall or an expiry return is answered from.
+    The order line tables carried product and quantity only, so the batch was being
+    dropped at the last step of an otherwise batch-tracked chain.
+
+    Only the ID. The batch number and expiry live in `sku_batch.batch_params`, populated
+    when inventory ingestion receives the stock; copying them here would be a second copy
+    free to drift from the first.
+
+    Nullable and empty for existing rows: Hero's flow does not populate them, and nothing
+    reads them unless they are set.
+
+    The registry only issues CREATE TABLE IF NOT EXISTS, so a DDL change never reaches a
+    database that already has the table — this is what carries it.
+    """
+    for table in ('potential_order_product', 'order_product'):
+        try:
+            if not mysql_manager.execute_query(
+                    """SELECT 1 FROM information_schema.TABLES
+                        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s""", (table,)):
+                continue
+            if not mysql_manager.execute_query(
+                    """SELECT 1 FROM information_schema.COLUMNS
+                        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                          AND COLUMN_NAME = 'batch_id'""", (table,)):
+                mysql_manager.execute_query(
+                    f"ALTER TABLE `{table}` ADD COLUMN `batch_id` BIGINT UNSIGNED NULL",
+                    fetch=False)
+                logger.info("%s: added column batch_id", table)
+            if not mysql_manager.execute_query(
+                    """SELECT 1 FROM information_schema.STATISTICS
+                        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                          AND INDEX_NAME = 'idx_batch'""", (table,)):
+                mysql_manager.execute_query(
+                    f"ALTER TABLE `{table}` ADD INDEX idx_batch (batch_id)", fetch=False)
+                logger.info("%s: indexed batch_id", table)
+
+            # Denormalised copies briefly added alongside batch_id; sku_batch is the one
+            # source for these, so they are removed where they exist.
+            for stale in ('batch_number', 'expiry_date'):
+                if mysql_manager.execute_query(
+                        """SELECT 1 FROM information_schema.COLUMNS
+                            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                              AND COLUMN_NAME = %s""", (table, stale)):
+                    mysql_manager.execute_query(
+                        f"ALTER TABLE `{table}` DROP COLUMN `{stale}`", fetch=False)
+                    logger.info("%s: dropped redundant column %s", table, stale)
+        except Exception:
+            logger.exception("batch column migration failed for %s", table)
+
+
+def _migrate_fc_entity_stock_company_uq():
+    """Widen fc_entity_stock's unique key onto company_id (idempotent).
+
+    The key was (planogram_id, location_id, bin_id, entity_id, entity_type, batch_id) —
+    the grain stock accumulates at via ON DUPLICATE KEY UPDATE. But a warehouse holds
+    stock for several companies at once (see modules/inventory/service.py), so two tenants
+    with the same SKU and batch in the same bin land on ONE row and pool their quantities,
+    with no error to show for it.
+
+    This is the same shape as part_groups.uq_period_part, fixed above: a key written at a
+    narrower grain than the thing it protects. Adding a column to a unique key only ever
+    relaxes it, so every row the old key accepted is still accepted — this cannot fail on
+    existing data. Requires company_id to exist, which _migrate_company_id adds.
+    """
+    try:
+        if not mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.COLUMNS
+                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'fc_entity_stock'
+                      AND COLUMN_NAME = 'company_id'"""):
+            return   # tenant column has not landed here yet — nothing to widen onto
+        if mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.STATISTICS
+                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'fc_entity_stock'
+                      AND INDEX_NAME = 'planogram_id_new' AND COLUMN_NAME = 'company_id'"""):
+            return   # already widened
+        if mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.STATISTICS
+                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'fc_entity_stock'
+                      AND INDEX_NAME = 'planogram_id_new'"""):
+            mysql_manager.execute_query(
+                "ALTER TABLE fc_entity_stock DROP INDEX planogram_id_new", fetch=False)
+        mysql_manager.execute_query(
+            """ALTER TABLE fc_entity_stock ADD UNIQUE KEY planogram_id_new
+               (planogram_id, location_id, bin_id, entity_id, entity_type, batch_id,
+                company_id)""", fetch=False)
+        logger.info("fc_entity_stock.planogram_id_new widened onto company_id")
+    except Exception:
+        logger.exception("fc_entity_stock unique key migration failed")
+
+
+def _migrate_transferin_id_varchar():
+    """Widen transferin_info.transferin_id from BIGINT to VARCHAR (idempotent).
+
+    It holds the supplier's invoice number, which is alphanumeric ('P000005'). As an
+    integer it could only keep the digits, and the series prefix is meaningful: a receipt
+    and a note can reduce to the same number ('P000002' vs 'PD00002').
+
+    The registry only issues CREATE TABLE IF NOT EXISTS, so a DDL change never reaches a
+    database that already has the table — this is what carries it. Widening an integer to
+    a string cannot lose data: every existing value re-reads as its own digits.
+    """
+    try:
+        if not mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.TABLES
+                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'transferin_info'"""):
+            return
+        rows = mysql_manager.execute_query(
+            """SELECT DATA_TYPE FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'transferin_info'
+                  AND COLUMN_NAME = 'transferin_id'""")
+        if not rows or rows[0]['DATA_TYPE'].lower() == 'varchar':
+            return
+        mysql_manager.execute_query(
+            "ALTER TABLE transferin_info MODIFY COLUMN transferin_id VARCHAR(64) NOT NULL",
+            fetch=False)
+        logger.info("transferin_info.transferin_id widened to VARCHAR(64)")
+    except Exception:
+        logger.exception("transferin_id migration failed")
 
 
 def _migrate_part_groups_company_uq():

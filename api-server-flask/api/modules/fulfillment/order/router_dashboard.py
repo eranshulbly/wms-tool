@@ -873,12 +873,20 @@ class SubmittedOrdersList(Resource):
                            so.company_id, c.name AS company_name,
                            so.warehouse_id, w.name AS warehouse_name,
                            so.notes, so.created_at, so.submitted_at, so.expected_delivery_date,
+                           -- Who raised the order in the app. These are sales executives
+                           -- (every submitted order is created by one), so this answers
+                           -- "whose order is this" without going via the dealer, whose
+                           -- assigned executive can differ from whoever actually raised it.
+                           so.created_by AS created_by_user_id,
+                           su.name AS sales_executive_name,
+                           su.role AS sales_executive_role,
                            (SELECT COUNT(*) FROM submitted_order_products p
                              WHERE p.submitted_order_id = so.submitted_order_id) AS item_count
                     FROM submitted_orders so
                     LEFT JOIN company   c ON c.company_id   = so.company_id
                     LEFT JOIN dealer    d ON d.dealer_id    = so.dealer_id
                     LEFT JOIN warehouse w ON w.warehouse_id = so.warehouse_id
+                    LEFT JOIN users     su ON su.id         = so.created_by
                     {clause}
                     ORDER BY so.created_at DESC""",
                 tuple(params),
@@ -928,6 +936,9 @@ class SubmittedOrdersList(Resource):
                 'warehouse_id':           r['warehouse_id'],
                 'warehouse_name':         r['warehouse_name'],
                 'item_count':             r['item_count'],
+                # The sales executive who raised the order in the app.
+                'created_by_user_id':     r['created_by_user_id'],
+                'sales_executive_name':   r['sales_executive_name'],
                 'notes':                  r['notes'],
                 'created_at':             _iso(r['created_at']),
                 'submitted_at':           _iso(r['submitted_at']),

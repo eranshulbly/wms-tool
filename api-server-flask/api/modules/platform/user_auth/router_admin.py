@@ -550,22 +550,131 @@ def _state_before_invoiced(potential_order_id: int) -> str:
 # Dealer Town Upload — admin only
 # ---------------------------------------------------------------------------
 
+# The dealer master's columns, in template order. Everything here is a real
+# column on `dealer`; the header names ARE the column names, so an admin reading
+# the template and an engineer reading the table see the same words.
+#
+# Only latitude/longitude and dealer_code are optional. The rest are mandatory
+# because a dealer missing them is not usable downstream: reps search by name and
+# town, orders print the address and gstin, and phone is how the office reaches
+# the shop. Coordinates are optional since the app can capture them from the
+# field later (shopfront photo -> admin approval), and dealer_code because not
+# every company issues one.
+DEALER_ALL_COLUMNS = [
+    'name', 'dealer_code', 'town', 'latitude', 'longitude',
+    'phone', 'address', 'gstin',
+]
+DEALER_REQUIRED_COLUMNS = ['name', 'town', 'phone', 'address', 'gstin']
+
+# An invalid file usually has the SAME mistake on every row. Listing all of them
+# makes the message unreadable without telling the admin anything new, so the
+# message shows the first few and counts the rest; `errors` carries the full list.
+_MAX_REPORTED_ROWS = 10
+
+
+def _norm_header(col):
+    """'Dealer Code' / 'DEALER_CODE' / ' dealer code ' -> 'dealer_code'."""
+    return str(col).strip().lower().replace(' ', '_')
+
+
+def _dealer_code_owner(company_id):
+    """Returns f(dealer_code) -> owning company's name, for codes held OUTSIDE
+    this company; None when the code is free or already ours.
+
+    dealer.dealer_code carries a unique index across the whole table, not per
+    company, so a code another company already holds simply cannot be inserted
+    here. Looking it up during validation turns a duplicate-key exception thrown
+    halfway through a write into a named row the admin can go and fix.
+    """
+    def owner(dealer_code):
+        rows = mysql_manager.execute_query(
+            """SELECT c.name AS company_name
+               FROM dealer d LEFT JOIN company c ON c.company_id = d.company_id
+               WHERE d.dealer_code = %s
+                 AND (d.company_id IS NULL OR d.company_id <> %s)""",
+            (dealer_code, company_id))
+        if not rows:
+            return None
+        return rows[0]['company_name'] or 'no company'
+    return owner
+
+
+def _validate_dealer_rows(df, code_owner):
+    """Every problem in the file, as [{row, name, dealer_code, reason}].
+
+    Pure apart from [code_owner], which is injected so this can be exercised
+    without a database. An empty list means the file is safe to write in full.
+
+    Collects ALL of a row's problems rather than stopping at the first, so one
+    upload attempt tells the admin everything that needs fixing instead of
+    revealing the next fault only after they've corrected the last one.
+    """
+    errors = []
+    for idx, row in df.iterrows():
+        problems = [f'{c} is required' for c in DEALER_REQUIRED_COLUMNS if not row[c]]
+
+        for coord, lo, hi in (('latitude', -90, 90), ('longitude', -180, 180)):
+            if not row[coord]:
+                continue
+            try:
+                val = float(row[coord])
+            except ValueError:
+                problems.append(f"{coord} '{row[coord]}' is not a number")
+                continue
+            if not lo <= val <= hi:
+                problems.append(f'{coord} must be between {lo} and {hi}')
+
+        if row['dealer_code']:
+            owner = code_owner(row['dealer_code'])
+            if owner:
+                problems.append(
+                    f"dealer_code '{row['dealer_code']}' already belongs to {owner}")
+
+        if problems:
+            errors.append({
+                'row': idx + 2,  # 1-based, plus the header line
+                'name': row['name'],
+                'dealer_code': row['dealer_code'],
+                'reason': '; '.join(problems),
+            })
+    return errors
+
+
 @rest_api.route('/api/admin/dealer-town')
 class DealerTownUpload(Resource):
     """
     POST /api/admin/dealer-town
-    Upload an Excel/CSV file that maps dealer codes to towns.
+    Upload an Excel/CSV file that maps dealer codes to towns, for ONE company.
 
-    Expected columns:
-      - 'Dealer Code'  (matched against dealer.dealer_code)
-      - 'Town'
+    Form fields:
+      - 'file'        the CSV/XLS/XLSX
+      - 'company_id'  the company every row in this file belongs to
 
-    Rows whose dealer_code does not exist are created as new dealers
-    (name defaults to the dealer code until overridden by an order upload).
-    Existing dealers are updated with the new town value.
+    Expected columns (header names are the dealer column names, matched
+    case-insensitively with spaces treated as underscores):
+
+      name*, dealer_code, town*, latitude, longitude, phone*, address*, gstin*
+
+    * mandatory. The file is validated in full BEFORE anything is written: a
+    missing mandatory column, a missing mandatory value in any row, an
+    unparseable coordinate, or a dealer_code already owned by another company
+    all reject the entire upload with a message naming the rows at fault.
+    Half-importing a dealer master leaves an admin unable to tell which rows
+    landed, which is worse than importing none of it.
+
+    company_id is required, and is what makes both halves of this correct. A
+    dealer code is only unique within a company, so matching on the code alone
+    would update whichever company's row happened to come first; and a dealer
+    created without a company is invisible to the mobile app, since every read
+    path there is company-scoped. The file itself carries no company column —
+    one upload is one company, chosen in the admin UI.
+
+    Rows are matched within that company by dealer_code where the file gives
+    one, else by name. A match is updated; anything else is created there.
 
     Returns:
-      { success, updated, created, skipped, errors: [{row, reason}] }
+      200 { success: true, updated, created, skipped, errors: [{row, reason}] }
+      400 { success: false, msg, errors? }  — nothing was written
     """
 
     @token_required
@@ -578,6 +687,21 @@ class DealerTownUpload(Resource):
         uploaded_file = request.files.get('file')
         if not uploaded_file:
             return {'success': False, 'msg': 'No file uploaded'}, 400
+
+        raw_company = (request.form.get('company_id') or '').strip()
+        if not raw_company:
+            return {'success': False, 'msg': 'Select the company this file is for'}, 400
+        try:
+            company_id = int(raw_company)
+        except (TypeError, ValueError):
+            return {'success': False, 'msg': 'company_id must be a number'}, 400
+
+        # Checked up front: a bad id would otherwise fail once per row, or worse,
+        # write hundreds of dealers onto a company that doesn't exist.
+        if not mysql_manager.execute_query(
+            "SELECT company_id FROM company WHERE company_id = %s", (company_id,)
+        ):
+            return {'success': False, 'msg': f'Company {company_id} not found'}, 400
 
         filename = uploaded_file.filename or ''
         ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
@@ -593,64 +717,104 @@ class DealerTownUpload(Resource):
         except Exception as e:
             return {'success': False, 'msg': f'Could not parse file: {str(e)}'}, 400
 
-        df.columns = [c.strip() for c in df.columns]
+        # Headers are normalised, not matched literally: 'Dealer Code', 'dealer code'
+        # and 'dealer_code' are the same column to anyone filling in the template,
+        # and rejecting a file over capitalisation teaches nothing.
+        df.columns = [_norm_header(c) for c in df.columns]
 
-        required = {'Dealer Code', 'Town'}
-        missing  = required - set(df.columns)
+        missing = [c for c in DEALER_REQUIRED_COLUMNS if c not in df.columns]
         if missing:
             return {
                 'success': False,
-                'msg':     f'Missing required columns: {", ".join(sorted(missing))}',
+                'msg': 'Missing required column(s): ' + ', '.join(missing) +
+                       '. Expected: ' + ', '.join(DEALER_ALL_COLUMNS) +
+                       '. Download the sample template for the exact format.',
             }, 400
 
-        df = df.dropna(subset=['Dealer Code'])
-        df['Dealer Code'] = df['Dealer Code'].str.strip()
-        df['Town']        = df['Town'].fillna('').str.strip()
+        for col in DEALER_ALL_COLUMNS:
+            df[col] = (df[col].fillna('').astype(str).str.strip()
+                       if col in df.columns else '')
 
-        updated  = 0
-        created  = 0
-        skipped  = 0
-        errors   = []
+        # A row with nothing in it is a trailing blank line, not a mistake worth
+        # failing a whole file over.
+        blank = df[DEALER_ALL_COLUMNS].eq('').all(axis=1)
+        df = df[~blank]
+        if df.empty:
+            return {'success': False, 'msg': 'The file has no data rows.'}, 400
+
+        # ── Validate the WHOLE file before writing any of it ──────────────
+        row_errors = _validate_dealer_rows(df, _dealer_code_owner(company_id))
+
+        if row_errors:
+            shown = row_errors[:_MAX_REPORTED_ROWS]
+            more = len(row_errors) - len(shown)
+            msg = f'{len(row_errors)} row(s) are invalid — nothing was uploaded. ' + \
+                  '; '.join(f"row {e['row']}: {e['reason']}" for e in shown)
+            if more:
+                msg += f'; and {more} more row(s).'
+            return {'success': False, 'msg': msg, 'errors': row_errors}, 400
+
+        # ── Write ─────────────────────────────────────────────────────────
+        updated = 0
+        created = 0
+        errors  = []
 
         for idx, row in df.iterrows():
-            dealer_code = row['Dealer Code']
-            town        = row['Town']
-            row_num     = idx + 2  # 1-based + header
-
-            if not dealer_code:
-                skipped += 1
-                continue
+            row_num = idx + 2
+            values = {c: (row[c] or None) for c in DEALER_ALL_COLUMNS}
 
             try:
+                # Matched within the chosen company: by code where the file gives
+                # one, else by name — which is also how the Busy sales feed
+                # attributes a sale, so it is the dealer's other real identifier.
+                if values['dealer_code']:
+                    key_sql, key_args = 'dealer_code = %s', (values['dealer_code'],)
+                else:
+                    key_sql, key_args = 'name = %s', (values['name'],)
+
                 existing = mysql_manager.execute_query(
-                    "SELECT dealer_id FROM dealer WHERE dealer_code = %s",
-                    (dealer_code,)
-                )
+                    f"SELECT dealer_id FROM dealer WHERE {key_sql} AND company_id = %s",
+                    key_args + (company_id,))
+
                 if existing:
+                    # dealer_code is left out of the SET list when the file omits
+                    # it: a blank cell means "not supplied", and clearing a code
+                    # the dealer already has would orphan it from its orders.
+                    fields = ['name', 'town', 'latitude', 'longitude',
+                              'phone', 'address', 'gstin']
+                    if values['dealer_code']:
+                        fields.append('dealer_code')
                     mysql_manager.execute_query(
-                        "UPDATE dealer SET town = %s, updated_at = %s WHERE dealer_code = %s",
-                        (town, datetime.utcnow(), dealer_code),
-                        fetch=False
-                    )
+                        'UPDATE dealer SET ' +
+                        ', '.join(f'{f} = %s' for f in fields) +
+                        ', updated_at = %s WHERE dealer_id = %s',
+                        tuple(values[f] for f in fields) +
+                        (datetime.utcnow(), existing[0]['dealer_id']),
+                        fetch=False)
                     updated += 1
                 else:
-                    # Create dealer with code as placeholder name
                     with mysql_manager.get_cursor() as cursor:
                         cursor.execute(
-                            """INSERT INTO dealer (name, dealer_code, town, created_at, updated_at)
-                               VALUES (%s, %s, %s, %s, %s)""",
-                            (dealer_code, dealer_code, town,
-                             datetime.utcnow(), datetime.utcnow())
-                        )
+                            """INSERT INTO dealer (name, dealer_code, town, latitude,
+                                                   longitude, phone, address, gstin,
+                                                   company_id, created_at, updated_at)
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            (values['name'], values['dealer_code'], values['town'],
+                             values['latitude'], values['longitude'], values['phone'],
+                             values['address'], values['gstin'], company_id,
+                             datetime.utcnow(), datetime.utcnow()))
                     created += 1
             except Exception as e:
-                errors.append({'row': row_num, 'dealer_code': dealer_code, 'reason': str(e)})
+                logger.exception("dealer-town: row %s failed", row_num)
+                errors.append({'row': row_num, 'name': values['name'],
+                               'dealer_code': values['dealer_code'] or '',
+                               'reason': str(e)})
 
         return {
             'success': True,
             'updated': updated,
             'created': created,
-            'skipped': skipped,
+            'skipped': 0,
             'errors':  errors,
         }, 200
 
@@ -663,8 +827,11 @@ class DealerTownUpload(Resource):
 class AdminDealerList(Resource):
     """
     GET /api/admin/dealers
-    Returns all dealers (regardless of order status) with their current town.
-    Used to populate the editable dealer table in the admin panel.
+    Returns all dealers (regardless of order status) with their current town and
+    the company they belong to. A dealer code only has to be unique WITHIN a
+    company, so the company is what tells two same-coded rows apart — and a
+    dealer with no company is invisible to the mobile app, which the blank
+    company here is meant to make obvious.
 
     Query params (all optional):
       search  — filter by dealer name or dealer code (case-insensitive)
@@ -675,27 +842,33 @@ class AdminDealerList(Resource):
     @_admin_required
     def get(self, current_user):
         search = (request.args.get('search') or '').strip()
+        # LEFT JOIN, not JOIN: a dealer with no company is exactly the row an
+        # admin most needs to see here, and an inner join would hide it.
+        base = """
+            SELECT d.dealer_id, d.name, d.dealer_code, d.town,
+                   d.company_id, c.name AS company_name
+            FROM dealer d
+            LEFT JOIN company c ON c.company_id = d.company_id
+        """
         try:
             if search:
                 rows = mysql_manager.execute_query(
-                    """
-                    SELECT dealer_id, name, dealer_code, town
-                    FROM dealer
-                    WHERE LOWER(name) LIKE %s OR LOWER(dealer_code) LIKE %s
-                    ORDER BY name
+                    base + """
+                    WHERE LOWER(d.name) LIKE %s OR LOWER(d.dealer_code) LIKE %s
+                    ORDER BY d.name
                     """,
                     (f'%{search.lower()}%', f'%{search.lower()}%')
                 )
             else:
-                rows = mysql_manager.execute_query(
-                    "SELECT dealer_id, name, dealer_code, town FROM dealer ORDER BY name"
-                )
+                rows = mysql_manager.execute_query(base + " ORDER BY d.name")
             dealers = [
                 {
-                    'dealer_id':   r['dealer_id'],
-                    'name':        r['name'],
-                    'dealer_code': r['dealer_code'] or '',
-                    'town':        r['town'] or '',
+                    'dealer_id':    r['dealer_id'],
+                    'name':         r['name'],
+                    'dealer_code':  r['dealer_code'] or '',
+                    'town':         r['town'] or '',
+                    'company_id':   r['company_id'],
+                    'company_name': r['company_name'] or '',
                 }
                 for r in (rows or [])
             ]
@@ -748,194 +921,79 @@ class AdminDealerTown(Resource):
 
 
 # ---------------------------------------------------------------------------
-# Product Nickname — admin only
+# Product master browser — admin only
 # ---------------------------------------------------------------------------
 
 @rest_api.route('/api/admin/products')
 class AdminProductList(Resource):
     """
     GET /api/admin/products
-    Returns all products with their current nickname.
-    Used to populate the editable product table in the admin panel.
+    The product master for one company, so an admin can confirm what an upload
+    actually loaded.
 
-    Query params (all optional):
-      search  — filter by product name, description, or product_string (case-insensitive)
+    Query params:
+      company_id  — required. Products are per-company, and the master runs to
+                    tens of thousands of rows for a single one; returning every
+                    company's at once is neither useful nor fast.
+      search      — optional. Matches name, product code or description.
+      limit/offset— optional paging (default 200).
     """
 
     @token_required
     @active_required
     @_admin_required
     def get(self, current_user):
-        search = (request.args.get('search') or '').strip()
+        from api.permissions import resolve_company_scope, CompanyAccessDenied
         try:
-            if search:
-                rows = mysql_manager.execute_query(
-                    """
-                    SELECT product_id, product_string, name, description, nickname
-                    FROM product
-                    WHERE LOWER(name) LIKE %s
-                       OR LOWER(description) LIKE %s
-                       OR LOWER(product_string) LIKE %s
-                    ORDER BY name
-                    """,
-                    (f'%{search.lower()}%', f'%{search.lower()}%', f'%{search.lower()}%')
-                )
-            else:
-                rows = mysql_manager.execute_query(
-                    "SELECT product_id, product_string, name, description, nickname FROM product ORDER BY name"
-                )
-            products = [
-                {
-                    'product_id':     r['product_id'],
-                    'product_string': r['product_string'] or '',
-                    'name':           r['name'] or '',
-                    'description':    r['description'] or '',
-                    'nickname':       r['nickname'] or '',
-                }
-                for r in (rows or [])
-            ]
-            return {'success': True, 'products': products}, 200
+            scope = resolve_company_scope(current_user, request.args.get('company_id', type=int))
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
 
+        where, params = ['1=1'], []
+        if scope is not None:
+            if not scope:
+                return {'success': True, 'products': [], 'total': 0}, 200
+            where.append('p.company_id IN (%s)' % ','.join(['%s'] * len(scope)))
+            params += list(scope)
+
+        search = (request.args.get('search') or '').strip()
+        if search:
+            where.append('(LOWER(p.name) LIKE %s OR LOWER(p.product_string) LIKE %s '
+                         'OR LOWER(p.description) LIKE %s)')
+            params += [f'%{search.lower()}%'] * 3
+
+        clause = ' AND '.join(where)
+        try:
+            total = mysql_manager.execute_query(
+                f'SELECT COUNT(*) AS c FROM product p WHERE {clause}', tuple(params))[0]['c']
+            limit = min(int(request.args.get('limit', 200)), 1000)
+            offset = int(request.args.get('offset', 0))
+            rows = mysql_manager.execute_query(
+                f"""SELECT p.product_id, p.product_string, p.name, p.description,
+                           p.uom, p.hsn_code, p.company_id, c.name AS company_name,
+                           p.is_active, p.updated_at
+                      FROM product p
+                      LEFT JOIN company c ON c.company_id = p.company_id
+                     WHERE {clause}
+                     ORDER BY p.product_id DESC
+                     LIMIT %s OFFSET %s""",
+                (*params, limit, offset)) or []
+            products = [{
+                'product_id':     r['product_id'],
+                'product_string': r['product_string'] or '',
+                'name':           r['name'] or '',
+                'description':    r['description'] or '',
+                'uom':            r['uom'] or '',
+                'hsn_code':       r['hsn_code'] or '',
+                'company_id':     r['company_id'],
+                'company_name':   r['company_name'] or '',
+                'is_active':      bool(r['is_active']),
+                'updated_at':     r['updated_at'].isoformat() if r['updated_at'] else None,
+            } for r in rows]
+            return {'success': True, 'products': products, 'total': total}, 200
         except Exception as e:
             logger.exception("Error in GET /api/admin/products")
             return {'success': False, 'msg': f'Error fetching products: {str(e)}'}, 400
-
-
-@rest_api.route('/api/admin/product-nickname')
-class ProductNicknameUpload(Resource):
-    """
-    POST /api/admin/product-nickname
-    Upload an Excel/CSV file that maps product strings to nicknames.
-
-    Expected columns:
-      - 'Product String'  (matched against product.product_string)
-      - 'Nickname'
-
-    Returns:
-      { success, updated, skipped, errors: [{row, product_string, reason}] }
-    """
-
-    @token_required
-    @active_required
-    @_admin_required
-    def post(self, current_user):
-        import pandas as pd
-        from io import BytesIO as _BytesIO
-
-        uploaded_file = request.files.get('file')
-        if not uploaded_file:
-            return {'success': False, 'msg': 'No file uploaded'}, 400
-
-        filename = uploaded_file.filename or ''
-        ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
-        if ext not in ('csv', 'xls', 'xlsx'):
-            return {'success': False, 'msg': 'File must be CSV, XLS, or XLSX'}, 400
-
-        try:
-            raw = uploaded_file.read()
-            if ext == 'csv':
-                df = pd.read_csv(_BytesIO(raw), dtype=str)
-            else:
-                df = pd.read_excel(_BytesIO(raw), dtype=str)
-        except Exception as e:
-            return {'success': False, 'msg': f'Could not parse file: {str(e)}'}, 400
-
-        df.columns = [c.strip() for c in df.columns]
-
-        required = {'Product String', 'Nickname'}
-        missing  = required - set(df.columns)
-        if missing:
-            return {
-                'success': False,
-                'msg':     f'Missing required columns: {", ".join(sorted(missing))}',
-            }, 400
-
-        df = df.dropna(subset=['Product String'])
-        df['Product String'] = df['Product String'].str.strip()
-        df['Nickname']       = df['Nickname'].fillna('').str.strip()
-
-        updated = 0
-        skipped = 0
-        errors  = []
-
-        for idx, row in df.iterrows():
-            product_string = row['Product String']
-            nickname       = row['Nickname']
-            row_num        = idx + 2  # 1-based + header
-
-            if not product_string:
-                skipped += 1
-                continue
-
-            try:
-                existing = mysql_manager.execute_query(
-                    "SELECT product_id FROM product WHERE product_string = %s",
-                    (product_string,)
-                )
-                if existing:
-                    mysql_manager.execute_query(
-                        "UPDATE product SET nickname = %s, updated_at = %s WHERE product_string = %s",
-                        (nickname or None, datetime.utcnow(), product_string),
-                        fetch=False
-                    )
-                    updated += 1
-                else:
-                    skipped += 1
-                    errors.append({
-                        'row':            row_num,
-                        'product_string': product_string,
-                        'reason':         'Product not found',
-                    })
-            except Exception as e:
-                errors.append({'row': row_num, 'product_string': product_string, 'reason': str(e)})
-
-        return {
-            'success': True,
-            'updated': updated,
-            'skipped': skipped,
-            'errors':  errors,
-        }, 200
-
-
-@rest_api.route('/api/admin/products/<int:product_id>/nickname')
-class AdminProductNickname(Resource):
-    """
-    PATCH /api/admin/products/<product_id>/nickname
-    Update the nickname for a single product.
-
-    JSON body:
-      { "nickname": "Short Name" }
-    """
-
-    @token_required
-    @active_required
-    @_admin_required
-    def patch(self, current_user, product_id):
-        data     = request.get_json(force=True) or {}
-        nickname = (data.get('nickname') or '').strip()
-
-        try:
-            existing = mysql_manager.execute_query(
-                "SELECT product_id, name FROM product WHERE product_id = %s",
-                (product_id,)
-            )
-            if not existing:
-                return {'success': False, 'msg': 'Product not found'}, 404
-
-            mysql_manager.execute_query(
-                "UPDATE product SET nickname = %s, updated_at = %s WHERE product_id = %s",
-                (nickname or None, datetime.utcnow(), product_id),
-                fetch=False
-            )
-            return {
-                'success':    True,
-                'product_id': product_id,
-                'nickname':   nickname,
-            }, 200
-
-        except Exception as e:
-            logger.exception("Error in PATCH /api/admin/products/<product_id>/nickname")
-            return {'success': False, 'msg': f'Error updating nickname: {str(e)}'}, 400
 
 
 # ---------------------------------------------------------------------------
@@ -976,19 +1034,34 @@ class AdminUsers(Resource):
                              FROM user_roles ur JOIN roles r2 ON r2.role_id = ur.role_id
                             WHERE ur.user_id = u.id) AS roles,
                           (SELECT COUNT(*) FROM user_warehouse_company uwc
-                            WHERE uwc.user_id = u.id) AS grants
+                            WHERE uwc.user_id = u.id) AS grants,
+                          (SELECT GROUP_CONCAT(DISTINCT co.name ORDER BY co.name SEPARATOR ', ')
+                             FROM user_warehouse_company uwc
+                             JOIN company co ON co.company_id = uwc.company_id
+                            WHERE uwc.user_id = u.id) AS companies,
+                          (SELECT GROUP_CONCAT(DISTINCT uwc.company_id)
+                             FROM user_warehouse_company uwc WHERE uwc.user_id = u.id) AS company_ids,
+                          (SELECT GROUP_CONCAT(DISTINCT uwc.warehouse_id)
+                             FROM user_warehouse_company uwc WHERE uwc.user_id = u.id) AS warehouse_ids
                    FROM users u ORDER BY u.date_joined DESC""") or []
+            # `all_companies` says the ROLE already reaches every company, so per-company
+            # grants are optional for it. resolve_company_scope() keys off all_warehouses,
+            # so that flag — not the company:all permission — is what actually decides.
             roles = mysql_manager.execute_query(
-                "SELECT role_id, name, description FROM roles ORDER BY name") or []
+                "SELECT role_id, name, description, all_warehouses FROM roles ORDER BY name") or []
             return {'success': True,
                     'users': [{
                         'id': r['id'], 'name': r['name'], 'email': r['email'],
                         'status': r['status'], 'role': r['role'],
                         'roles': r['roles'] or r['role'], 'grants': r['grants'],
+                        'companies': r['companies'],
+                        'company_ids': [int(x) for x in (r['company_ids'] or '').split(',') if x],
+                        'warehouse_ids': [int(x) for x in (r['warehouse_ids'] or '').split(',') if x],
                         'date_joined': r['date_joined'].isoformat() if r['date_joined'] else None,
                     } for r in rows],
                     'roles': [{'id': r['role_id'], 'name': r['name'],
-                               'description': r['description']} for r in roles]}, 200
+                               'description': r['description'],
+                               'all_companies': bool(r['all_warehouses'])} for r in roles]}, 200
         except Exception as e:
             logger.exception('Error listing users')
             return {'success': False, 'msg': str(e)}, 400
@@ -1102,12 +1175,35 @@ class AdminUserDetail(Resource):
             sets.append('password = %s'); params.append(generate_password_hash(pw))
             changed.append('password')
 
-        if not sets:
+        # Scope grants are replaced wholesale rather than merged: the editor shows the
+        # full picture, so what it sends IS the intended set. Sending an empty list is a
+        # deliberate "no scope", not a no-op.
+        regrant = None
+        if 'grants' in body or 'warehouse_ids' in body or 'company_ids' in body:
+            regrant = body.get('grants')
+            if regrant is None:
+                wids = body.get('warehouse_ids') or []
+                cids = body.get('company_ids') or []
+                regrant = [{'warehouse_id': w, 'company_id': c} for w in wids for c in cids]
+            changed.append('scope')
+
+        if not sets and regrant is None:
             return {'success': False, 'msg': 'Nothing to update.'}, 422
         try:
-            mysql_manager.execute_query(
-                f"UPDATE users SET {', '.join(sets)} WHERE id = %s",
-                tuple(params + [user_id]), fetch=False)
+            if sets:
+                mysql_manager.execute_query(
+                    f"UPDATE users SET {', '.join(sets)} WHERE id = %s",
+                    tuple(params + [user_id]), fetch=False)
+            if regrant is not None:
+                mysql_manager.execute_query(
+                    "DELETE FROM user_warehouse_company WHERE user_id = %s",
+                    (user_id,), fetch=False)
+                for g in regrant:
+                    if g.get('warehouse_id') and g.get('company_id'):
+                        mysql_manager.execute_query(
+                            """INSERT IGNORE INTO user_warehouse_company
+                                 (user_id, warehouse_id, company_id) VALUES (%s, %s, %s)""",
+                            (user_id, g['warehouse_id'], g['company_id']), fetch=False)
             # Keep user_roles in step with the legacy column, as on create.
             if 'role' in body:
                 roles = _role_map()

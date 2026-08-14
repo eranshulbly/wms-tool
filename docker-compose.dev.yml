@@ -20,7 +20,9 @@ services:
       DEBUG: "True"
       FLASK_ENV: development
     ports:
-      - "5000:5000"               # direct access for debugging
+      # 5002, not 5000: on macOS the AirPlay Receiver binds 5000 and answers every
+      # request with "403 Server: AirTunes", which looks exactly like an auth failure.
+      - "5002:5000"               # direct access for debugging
 
   frontend:
     build:

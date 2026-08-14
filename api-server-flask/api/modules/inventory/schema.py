@@ -364,7 +364,11 @@ register_table("transferin_info", f"""
 CREATE TABLE IF NOT EXISTS transferin_info (
     id                  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     planogram_id        BIGINT UNSIGNED NOT NULL,
-    transferin_id       BIGINT UNSIGNED NOT NULL,
+    -- The supplier's invoice number verbatim ('P000005'). VARCHAR rather than an
+    -- integer because these are alphanumeric and the series prefix is meaningful: a
+    -- receipt and a note can share digits ('P000002' vs 'PD00002'). Zero-padded, so
+    -- ordering by it is still chronological.
+    transferin_id       VARCHAR(64) NOT NULL,
     transferin_type_id  BIGINT UNSIGNED NOT NULL,
     entity_id           BIGINT UNSIGNED NOT NULL,
     entity_type         VARCHAR(32) NOT NULL,
@@ -411,7 +415,10 @@ CREATE TABLE IF NOT EXISTS fc_entity_stock (
     updated_on DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     updated_by VARCHAR(255) NOT NULL DEFAULT 'system',
     PRIMARY KEY (id),
-    UNIQUE KEY planogram_id_new (planogram_id, location_id, bin_id, entity_id, entity_type, batch_id),
+    -- The grain stock accumulates at. company_id is IN the key: a warehouse holds stock
+    -- for several companies at once, so without it two tenants holding the same SKU and
+    -- batch in the same bin would collide on one row and silently pool their quantities.
+    UNIQUE KEY planogram_id_new (planogram_id, location_id, bin_id, entity_id, entity_type, batch_id, company_id),
     KEY planogram_id_2 (planogram_id, location_id, bin_id, entity_id),
     KEY planogram_id_3 (planogram_id, location_id, entity_id),
     KEY planogram_id_4 (planogram_id, entity_id),

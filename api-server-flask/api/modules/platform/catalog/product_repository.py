@@ -78,7 +78,11 @@ class ProductRepository(BaseRepository):
         Args:
             rows: list of tuples —
                   (potential_order_id, product_id, quantity, quantity_packed,
-                   quantity_remaining, mrp, total_price, created_at, updated_at)
+                   quantity_remaining, mrp, total_price, created_at, updated_at,
+                   batch_id)
+
+                  batch_id is NULL for feeds that do not name a batch (Hero's sheets).
+                  It points at sku_batch, which holds the batch number and expiry.
 
         Returns:
             Number of rows inserted.
@@ -89,8 +93,9 @@ class ProductRepository(BaseRepository):
             cursor.executemany(
                 """INSERT INTO potential_order_product
                    (potential_order_id, product_id, quantity, quantity_packed,
-                    quantity_remaining, mrp, total_price, created_at, updated_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    quantity_remaining, mrp, total_price, created_at, updated_at,
+                    batch_id)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 rows
             )
             return cursor.rowcount
