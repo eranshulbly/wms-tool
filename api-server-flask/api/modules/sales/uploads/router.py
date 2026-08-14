@@ -1291,6 +1291,20 @@ def _load_products(df, company_id):
     if category_col and not cmap:
         raise ValueError('No active categories exist yet — seed or create categories first.')
 
+    # A company whose products are packed and priced in a hierarchy (Cadila: tabs in a
+    # strip, strips in a box, boxes in a case, priced per strip) carries extra columns
+    # that belong on child rows rather than on `product`. A company with no profile is
+    # unaffected — `pack_profile` stays None and every branch below is skipped, which is
+    # what keeps the part-numbered masters behaving exactly as before.
+    from api.modules.platform.catalog import product_pack
+    pack_profile = product_pack.profile_for_company_id(company_id)
+    pack_headers, pack_rows = {}, {}
+    if pack_profile:
+        for field, (header, aliases) in product_pack.CADILA_COLUMNS.items():
+            found = _find_header(df, (header,) + aliases)
+            if found:
+                pack_headers[field] = found
+
     # Which of the writable columns this particular file carries.
     present = [(_find_header(df, (header,) + aliases), column, kind, limit)
                for header, column, kind, limit, aliases in _PRODUCT_FIELDS]
@@ -1385,6 +1399,23 @@ def _load_products(df, company_id):
         # product, so they merge into a single write rather than colliding on the index.
         key = _pkey(product_string)
         prior = existing.get(key)
+
+        # Pack and price columns, validated here so a row that cannot describe a NEW
+        # product is reported with its row number and the product is never created
+        # half-defined. An UPDATE stays partial: correcting one price must not require
+        # restating the whole pack.
+        if pack_profile:
+            pack_values = product_pack.read_row(row, pack_headers)
+            absent = product_pack.missing_required(pack_profile, pack_values, prior is None)
+            if absent:
+                labels = ', '.join(product_pack.CADILA_COLUMNS[f][0] for f in absent)
+                errors.append({'row': row_num, 'key': product_string,
+                               'reason': f'New product is missing required column(s): {labels}'})
+                continue
+            # A later row for the same part wins on the fields it supplies.
+            pack_rows.setdefault(key, {}).update(
+                {k: v for k, v in pack_values.items() if v is not None})
+
         if prior:
             # A later row for the same part wins, but its columns merge with the earlier one.
             updates.setdefault(key, {'product_string': prior['product_string']}).update(values)
@@ -1423,8 +1454,36 @@ def _load_products(df, company_id):
             cur.executemany(
                 sql, [(*[v[c] for c in cols], now, v['product_string']) for v in rows])
 
+    # Ladders, prices and attributes go in AFTER the product write, because they are child
+    # rows and a brand-new product has no id until its INSERT has run.
+    pack_summary = None
+    if pack_profile and pack_rows:
+        wanted = list(pack_rows)
+        ids = {}
+        for i in range(0, len(wanted), 500):
+            chunk = wanted[i:i + 500]
+            ph = ','.join(['%s'] * len(chunk))
+            for r in (mysql_manager.execute_query(
+                    f"SELECT product_id, product_string FROM product "
+                    f"WHERE product_string IN ({ph})", tuple(chunk)) or []):
+                ids[_pkey(r['product_string'])] = r['product_id']
+        resolved = {ids[k]: (v, k not in existing)
+                    for k, v in pack_rows.items() if k in ids}
+        pack_summary = product_pack.apply_rows(pack_profile, company_id, resolved)
+
     warnings = []
-    if not present and not category_col:
+    if pack_summary:
+        warnings.append(
+            f"Packaging written for {pack_summary['ladders']} product(s), "
+            f"{pack_summary['prices']} price row(s) and "
+            f"{pack_summary['attributes']} attribute value(s). Prices are dated today — "
+            f"orders already placed keep the rate they were priced at.")
+    if pack_profile and not pack_headers:
+        warnings.append(
+            'This company expects packaging and price columns and the file carried none, '
+            'so only the product names were updated. Expected: '
+            + ', '.join(h for h, _ in product_pack.CADILA_COLUMNS.values()) + '.')
+    if not present and not category_col and not pack_headers:
         warnings.append(
             'The file carried only Part Number, so existing products were left unchanged. '
             'Recognised columns are: '

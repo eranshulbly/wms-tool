@@ -53,3 +53,112 @@ CREATE TABLE IF NOT EXISTS categories (
     INDEX idx_categories_parent (parent_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """, order=11)
+
+
+# ── Packaging, pricing and per-industry attributes ───────────────────────────────
+#
+# Three tables, none of them specific to any company. Between them they replace what
+# would otherwise be a column per industry on `product` — the mistake `litres_per_unit`
+# already represents, sitting empty on 60k parts to serve one oil target.
+#
+# Nothing here changes how an existing product behaves. A product with no product_uom
+# rows is implicitly single-unit (factor 1), which is exactly what every Hero part is,
+# so the readers fall back to today's behaviour without a special case.
+
+# The shared vocabulary of unit names. Deliberately NOT a conversion table: "1 kg =
+# 1000 g" is universal, but "1 box = 30 strips" is true only of one product, so the
+# factors live in product_uom and this table only names the units.
+register_table("uom", """
+CREATE TABLE IF NOT EXISTS uom (
+    uom_code  VARCHAR(16) NOT NULL,
+    name      VARCHAR(64) NOT NULL,
+    uom_type  VARCHAR(16) NOT NULL DEFAULT 'count',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (uom_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""", order=12)
+
+
+# One row per rung of a product's packaging ladder: TAB -> STRIP -> BOX -> CASE for a
+# pharma tablet, a single PCS row for an auto part.
+#
+# `factor_to_base` is ABSOLUTE (a case of 66 boxes of 30 strips of 10 tabs = 19800), not
+# relative to the rung below, so any conversion is one multiply and no code has to walk
+# the ladder. The three flags carry what would otherwise be special-case logic: a rung can
+# be informational (tablets are counted but never ordered), the one the price is quoted
+# against, and the one stock is counted in — and they are independent.
+register_table("product_uom", """
+CREATE TABLE IF NOT EXISTS product_uom (
+    product_uom_id INT AUTO_INCREMENT PRIMARY KEY,
+    product_id     INT NOT NULL,
+    uom_code       VARCHAR(16) NOT NULL,
+    factor_to_base DECIMAL(18,6) NOT NULL DEFAULT 1,
+    level_no       TINYINT NOT NULL DEFAULT 0,
+    label          VARCHAR(64) NULL,
+    is_order_unit  TINYINT(1) NOT NULL DEFAULT 0,
+    is_price_unit  TINYINT(1) NOT NULL DEFAULT 0,
+    is_stock_unit  TINYINT(1) NOT NULL DEFAULT 0,
+    created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_product_uom (product_id, uom_code),
+    INDEX idx_puom_product (product_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""", order=13)
+
+
+# Prices, quoted against a named rung and dated.
+#
+# `price_type` is a ROW, not a column, so a company needing a fifth kind of price adds
+# rows rather than a migration. Dating is not optional: the source file is literally
+# titled "PRICE LIST - JUNE'26", and if prices lived on `product` then uploading July's
+# list would silently re-price every order already placed. effective_to NULL = current.
+register_table("product_price", """
+CREATE TABLE IF NOT EXISTS product_price (
+    product_price_id INT AUTO_INCREMENT PRIMARY KEY,
+    product_id     INT NOT NULL,
+    company_id     INT NOT NULL,
+    price_uom_code VARCHAR(16) NOT NULL,
+    price_type     VARCHAR(16) NOT NULL,
+    amount         DECIMAL(12,4) NOT NULL,
+    price_list     VARCHAR(32) NULL,
+    effective_from DATE NOT NULL,
+    effective_to   DATE NULL,
+    created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_product_price (product_id, company_id, price_uom_code, price_type, effective_from),
+    INDEX idx_pprice_lookup (product_id, effective_from, effective_to)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""", order=14)
+
+
+# Everything that is real for one industry and meaningless for the others — composition
+# and shelf life for pharma, whatever the next supplier brings. An admin defines a new
+# attribute by inserting a row here, not by shipping a migration.
+register_table("attribute_def", """
+CREATE TABLE IF NOT EXISTS attribute_def (
+    attribute_id  INT AUTO_INCREMENT PRIMARY KEY,
+    code          VARCHAR(48) NOT NULL,
+    label         VARCHAR(96) NOT NULL,
+    data_type     VARCHAR(16) NOT NULL DEFAULT 'text',
+    company_id    INT NULL,
+    display_order SMALLINT NOT NULL DEFAULT 0,
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_attribute_def (code, company_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""", order=15)
+
+
+# The values. Typed columns rather than one text blob so a numeric attribute can be
+# filtered and indexed as a number.
+register_table("product_attribute", """
+CREATE TABLE IF NOT EXISTS product_attribute (
+    product_id   INT NOT NULL,
+    attribute_id INT NOT NULL,
+    value_text   VARCHAR(512) NULL,
+    value_num    DECIMAL(18,6) NULL,
+    value_date   DATE NULL,
+    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (product_id, attribute_id),
+    INDEX idx_pattr_attr (attribute_id, value_num)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""", order=16)

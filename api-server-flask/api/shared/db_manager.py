@@ -835,6 +835,10 @@ def create_all_tables():
     _migrate_busy_sales_saledate_index()
     _migrate_dms_quantity_column()
     _migrate_temp_inventory_uploaded_index()
+    # Packaging / pricing model: the tables come from the schema registry, these carry
+    # the column and the reference data the registry cannot.
+    _migrate_product_gst_percent()
+    seed_default_uoms()
     # Runs last: it only adds columns, and several of the migrations above assume the
     # base tables already exist in their pre-v2 shape.
     _migrate_v2_api_columns()
@@ -1851,6 +1855,63 @@ def _migrate_part_groups_company_uq():
         logger.info("%s: widened uq_period_part onto company_id", table)
     except Exception:
         logger.exception("%s: migration failed for uq_period_part", table)
+
+
+def _migrate_product_gst_percent():
+    """Add product.gst_percent (idempotent).
+
+    A core column, not an attribute: every company selling in India has a GST rate, and
+    it sits beside hsn_code which already determines it. Kept on the product rather than
+    on the price because the rate is a property of what the thing IS, not of what a
+    given price list charges for it.
+    """
+    try:
+        if not mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.COLUMNS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product'
+                     AND COLUMN_NAME = 'gst_percent'"""):
+            mysql_manager.execute_query(
+                "ALTER TABLE product ADD COLUMN gst_percent DECIMAL(5,2) NULL "
+                "AFTER hsn_code", fetch=False)
+            logger.info("product: added column gst_percent")
+    except Exception:
+        logger.exception("product: migration failed for column gst_percent")
+
+
+# The unit names the packaging ladder is built from. Seeded rather than hard-coded so an
+# admin can add one (TUBE, AMPOULE, JAR) without a code change.
+_DEFAULT_UOMS = (
+    ('PCS',    'Pieces',  'count'),
+    ('UNIT',   'Unit',    'count'),
+    ('TAB',    'Tablet',  'count'),
+    ('STRIP',  'Strip',   'count'),
+    ('BOX',    'Box',     'count'),
+    ('CASE',   'Case',    'count'),
+    ('BOTTLE', 'Bottle',  'count'),
+    ('VIAL',   'Vial',    'count'),
+    ('TUBE',   'Tube',    'count'),
+    ('SACHET', 'Sachet',  'count'),
+)
+
+
+def seed_default_uoms():
+    """Insert the standard unit codes if absent (idempotent, never overwrites)."""
+    try:
+        if not mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.TABLES
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'uom'"""):
+            return
+        existing = {r['uom_code'] for r in (
+            mysql_manager.execute_query("SELECT uom_code FROM uom") or [])}
+        missing = [u for u in _DEFAULT_UOMS if u[0] not in existing]
+        if not missing:
+            return
+        with mysql_manager.get_cursor() as cursor:
+            cursor.executemany(
+                "INSERT INTO uom (uom_code, name, uom_type) VALUES (%s, %s, %s)", missing)
+        logger.info("uom: seeded %d unit codes", len(missing))
+    except Exception:
+        logger.exception("uom: seeding failed")
 
 
 def _migrate_temp_inventory_uploaded_index():

@@ -74,10 +74,65 @@ const NAME_TEMPLATE = {
   ],
 };
 
+// Cadila's master is packed and priced in a hierarchy: tablets in a strip, strips
+// in a box, boxes in a case — ordered by the box or case, but priced per strip.
+// Those columns do not live on the product row; the backend writes them to the
+// packaging ladder (product_uom) and the dated price table (product_price).
+//
+// The three marked required are the ones a NEW product cannot be created without,
+// because without them an order in boxes cannot be converted to strips and priced.
+// An existing product can still be updated one column at a time — correcting a
+// single price does not mean restating the whole pack.
+const CADILA_TEMPLATE = {
+  id: 'product_master_packaged',
+  label: 'Product Master (packaged & priced)',
+  table: 'product',
+  blurb:
+    'The product master for a supplier that sells in packs. Matched on Part Number: existing ' +
+    'products are updated, new ones are created, nothing is ever deleted. Orders are placed in ' +
+    'boxes or cases and converted to selling units (strips) for pricing, so a new product must ' +
+    'carry its pack sizes and a billing price. Prices are dated on upload — orders already ' +
+    'placed keep the rate they were priced at.',
+  columns: [
+    { name: 'Part Number', required: true, note: 'The key rows are matched on (Cadila: PD. CODE). Also accepted: Part No, Product String' },
+    { name: 'Name', required: true, note: 'Product name, e.g. ALERTRIZ 5MG TAB' },
+    { name: 'Selling Units per Box', required: true, note: 'Strips in one box (Cadila: STRIP). This is what converts a box order into priced units' },
+    { name: 'Boxes per Case', required: true, note: 'Boxes in one case/shipper (Cadila: CASE)' },
+    { name: 'Billing Price', required: true, note: 'Price of ONE selling unit (per strip), not per box. Up to 4 decimals' },
+    { name: 'Base Units per Selling Unit', required: false, note: 'Tablets in one strip (Cadila: TAB). Informational — never ordered or priced. Defaults to 1' },
+    { name: 'Selling Unit', required: false, note: 'STRIP / BOTTLE / VIAL / TUBE / SACHET. Defaults to STRIP; use BOTTLE for liquids so the unit reads correctly' },
+    { name: 'Landing Price', required: false, note: 'Per selling unit, net of scheme. Used for order value when present, else Billing Price' },
+    { name: 'Net Rate', required: false, note: 'Per selling unit, after further scheme discount' },
+    { name: 'MRP', required: false, note: 'Per selling unit' },
+    { name: 'Pack', required: false, note: 'Label for one selling unit, e.g. 10 T or 200 ML' },
+    { name: 'Box Pack', required: false, note: 'Label for one box, e.g. 30X10T' },
+    { name: 'Composition', required: false, note: 'Stored as a product attribute, not a product column' },
+    { name: 'Division', required: false, note: 'e.g. CG / CR — stored as a product attribute' },
+    { name: 'HSN Code', required: false, note: 'Max 20 chars. Also accepted: HSN' },
+    { name: 'Description', required: false, note: 'Longer description. Also accepted: Part Description' },
+    { name: 'is_active', required: false, note: 'Y or N — defaults to active on a new product' },
+  ],
+  sample: [
+    // Real shapes from the June'26 list: a 30x10 tablet box, a 100x1 box, and a
+    // single-bottle liquid where the strip level collapses to 1.
+    ['TBA38AU', 'ALERTRIZ 5MG TAB', '30', '66', '4.14', '10', 'STRIP', '', '', '52.73', '10 T', '30X10T', 'Levocetirizine Dihydrochloride 5mg', 'CG', '30049099', '', 'Y'],
+    ['TBA15BP', 'ALBENDAZOLE TAB', '100', '60', '2.75', '1', 'STRIP', '', '', '7.57', '1 T', '100X1 T', 'Albendazole IP 400mg', 'CG', '30049099', '', 'Y'],
+    ['LQA45AM', 'ADD APP SYRUP', '1', '60', '26.25', '1', 'BOTTLE', '25.48', '', '138.66', '200 ML', '200 ML', 'Cyproheptadine Hcl IP', 'CG', '30049093', '', 'Y'],
+  ],
+};
+
 // Which template a company's master follows. A company not listed gets the
 // name-keyed one, since that is the shape that needs no supplier-issued codes.
-const TEMPLATE_BY_COMPANY = { hero: HERO_TEMPLATE };
-const templateFor = (name) => TEMPLATE_BY_COMPANY[(name || '').trim().toLowerCase()] || NAME_TEMPLATE;
+// Matched on the leading word so a trading name ('Cadila Pharmaceuticals Ltd')
+// resolves the same as the bare brand — the backend profile lookup does likewise.
+const TEMPLATE_BY_COMPANY = { hero: HERO_TEMPLATE, cadila: CADILA_TEMPLATE };
+const templateFor = (name) => {
+  const norm = (name || '').trim().toLowerCase();
+  const hit = Object.keys(TEMPLATE_BY_COMPANY).find(
+    (key) => norm === key || norm.startsWith(`${key} `)
+  );
+  return hit ? TEMPLATE_BY_COMPANY[hit] : NAME_TEMPLATE;
+};
 
 const useStyles = makeStyles((theme) => ({
   section: { marginBottom: theme.spacing(3) },
