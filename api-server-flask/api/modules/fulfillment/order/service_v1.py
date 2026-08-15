@@ -19,7 +19,7 @@ re-architected). There is no approve/reject step. `approved_by` / `approved_at` 
 but no longer exist as columns.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from api.shared.db_manager import mysql_manager
 from api.shared.logging import get_logger
@@ -154,14 +154,80 @@ def list_orders(status=None, dealer_id=None, warehouse_id=None, date_from=None, 
     ) or []
 
 
+# How far a device's clock may disagree with ours before we stop believing its
+# capture time. Generous, because a queued order can legitimately be hours old;
+# bounded, because a phone with a badly wrong clock would otherwise file orders
+# into the wrong month and quietly corrupt target tracking.
+_MAX_CAPTURE_SKEW = timedelta(hours=48)
+
+
+def _location_columns(meta, latitude, received_at):
+    """(captured_at, source, age_s, is_mocked) for the INSERT.
+
+    Orders used to store the server's own clock in `location_captured_at`, which
+    made it a duplicate of created_at and told nobody anything. Now the device
+    says when it took the reading, and the two together show the gap between a rep
+    raising an order and it reaching us — which, with a queue in between, is the
+    only way to know when the order really happened.
+
+    An absent, unparseable or implausible capture time falls back to receipt time.
+    Preferring a slightly wrong timestamp to a null one is deliberate: this column
+    is the order's business date, and a null would drop it out of every dated
+    report.
+    """
+    meta = meta or {}
+
+    captured_at = None
+    raw = meta.get('captured_at')
+    if raw:
+        try:
+            captured_at = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+            if captured_at.tzinfo is not None:
+                captured_at = captured_at.replace(tzinfo=None)
+            # A clock in the future, or absurdly far back, is not evidence.
+            if not (received_at - _MAX_CAPTURE_SKEW <= captured_at
+                    <= received_at + timedelta(minutes=5)):
+                logger.warning(
+                    "implausible capture time; falling back to receipt time",
+                    extra={'captured_at': str(raw)},
+                )
+                captured_at = None
+        except (TypeError, ValueError):
+            captured_at = None
+
+    if captured_at is None:
+        captured_at = received_at if latitude is not None else None
+
+    source = meta.get('location_source')
+    source = str(source)[:16] if source else None
+
+    try:
+        age_s = int(meta['location_age_s']) if meta.get('location_age_s') is not None else None
+    except (TypeError, ValueError):
+        age_s = None
+
+    mocked = meta.get('location_is_mocked')
+    if isinstance(mocked, str):
+        mocked = mocked.strip().lower() in ('1', 'true', 'yes')
+    is_mocked = None if mocked is None else (1 if mocked else 0)
+
+    return captured_at, source, age_s, is_mocked
+
+
 def create_order(dealer_id, items, created_by, warehouse_id=None,
                  expected_delivery_date=None, notes=None, company_id=None,
-                 latitude=None, longitude=None, location_accuracy_m=None):
+                 latitude=None, longitude=None, location_accuracy_m=None,
+                 location_meta=None):
     """Create an app order in `submitted`, snapshotting SKU details onto each line.
 
     `company_id` stamps the owning company. When set, the dealer and every SKU must
     belong to it — otherwise a user could build an order out of another company's
     records, and the resulting order would be invisible to them anyway.
+
+    `location_meta` carries what the device knows about its own fix — see
+    `_location_columns`. It is recorded, never validated against: an order refused
+    in the field because its GPS was rough is worse than an order flagged for
+    review in the office.
     """
     dealer = mysql_manager.execute_query(
         "SELECT dealer_id, status, company_id FROM dealer WHERE dealer_id = %s", (dealer_id,)
@@ -194,12 +260,14 @@ def create_order(dealer_id, items, created_by, warehouse_id=None,
                  (dealer_id, warehouse_id, company_id, status, source, dms_status,
                   requested_by, created_by, submitted_at, expected_delivery_date, notes,
                   latitude, longitude, location_accuracy_m, location_captured_at,
+                  location_source, location_age_s, location_is_mocked,
                   created_at, updated_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (dealer_id, warehouse_id, company_id, OrderStatus.SUBMITTED.value, 'itemised', 'ready',
              created_by, created_by, now, expected_delivery_date, notes,
              latitude, longitude, location_accuracy_m,
-             now if latitude is not None else None, now, now),
+             *_location_columns(location_meta, latitude, now),
+             now, now),
         )
         order_id = cursor.lastrowid
         order_number = f"ORD-{order_id:06d}"
@@ -246,7 +314,7 @@ def _record_status_change(cursor, order_id, from_status, to_status, changed_by, 
 
 def create_photo_order(dealer_id, created_by, company_id, warehouse_id=None,
                        notes=None, latitude=None, longitude=None,
-                       location_accuracy_m=None):
+                       location_accuracy_m=None, location_meta=None):
     """Raise a paper-order capture: a real `submitted` order with a photo but no
     line items. The back office transcribes the photo into lines (via update_order)
     before the order moves on to the warehouse.
@@ -266,12 +334,14 @@ def create_photo_order(dealer_id, created_by, company_id, warehouse_id=None,
                  (dealer_id, warehouse_id, company_id, status, source,
                   requested_by, created_by, submitted_at, notes,
                   latitude, longitude, location_accuracy_m, location_captured_at,
+                  location_source, location_age_s, location_is_mocked,
                   created_at, updated_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (dealer_id, warehouse_id, company_id, OrderStatus.SUBMITTED.value, 'photo',
              created_by, created_by, now, notes,
              latitude, longitude, location_accuracy_m,
-             now if latitude is not None else None, now, now),
+             *_location_columns(location_meta, latitude, now),
+             now, now),
         )
         order_id = cursor.lastrowid
         order_number = f"ORD-{order_id:06d}"

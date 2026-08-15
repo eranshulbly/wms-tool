@@ -7,6 +7,7 @@ A v2 "SKU" is this backend's `product`; `sku_code` is `product.product_string`
 wms-v2-backend exactly — see docs/V2_API_PORT.md.
 """
 
+import hashlib
 from datetime import datetime
 
 from flask import request
@@ -14,10 +15,13 @@ from flask_restx import Resource
 
 from api.extensions import rest_api
 from api.shared.db_manager import mysql_manager
+from api.shared.logging import get_logger
 from api.shared.auth_v1 import v1_require_permission, company_filter, company_scope
 from api.modules.platform.user_auth.rbac import P
 
-SKU_COLS = """product_id, product_string AS sku_code, name, description, category_id,
+logger = get_logger(__name__)
+
+SKU_COLS = """product_string AS sku_code, name, description, nickname, category_id,
               uom, size, weight, barcode, hsn_code, price, is_active, created_at,
               company_id"""
 
@@ -249,6 +253,46 @@ class V1Categories(Resource):
         return _category_out(r), 201
 
 
+def _working_set_etag(current_user, company_params):
+    """A validator for one user's working set, or None if it can't be computed.
+
+    Built from what actually changes the set: the month whose target groups define
+    it, how many products are in it, and the newest change among them. That is one
+    cheap aggregate query against the same rows the real query reads, and it moves
+    exactly when the answer does.
+
+    Scoped to the caller's companies, so two reps in different companies can never
+    share a tag and be served each other's catalog.
+
+    Returning None on any problem is deliberate: a missing ETag costs a full
+    response, which is merely the old behaviour, whereas a wrong one serves a stale
+    catalog that a rep cannot refresh.
+    """
+    try:
+        rows = mysql_manager.execute_query(
+            """SELECT COUNT(*) AS n,
+                      COALESCE(MAX(product.updated_at), '') AS newest
+                 FROM (SELECT item_code AS ps FROM busy_sales_data
+                        WHERE sale_date >= DATE_SUB(DATE_FORMAT(CURDATE(), '%%Y-%%m-01'),
+                                                    INTERVAL 6 MONTH)
+                       UNION
+                       SELECT part_number AS ps FROM part_groups
+                        WHERE time_period = DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
+                      ) ws
+                 STRAIGHT_JOIN product ON product.product_string = ws.ps
+                WHERE product.is_active = 1""",
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        scope = ','.join(str(p) for p in company_params)
+        raw = f"{scope}|{row['n']}|{row['newest']}"
+        return 'W/"%s"' % hashlib.sha256(raw.encode()).hexdigest()[:32]
+    except Exception:  # pragma: no cover - never fail a catalog read over a tag
+        logger.warning("could not compute working-set etag", exc_info=True)
+        return None
+
+
 @rest_api.route('/api/v1/catalog/skus')
 class V1Skus(Resource):
     @v1_require_permission(P.CATALOG_READ)
@@ -303,6 +347,26 @@ class V1Skus(Resource):
             params.extend([f"%{q}%", f"%{q}%"])
 
         where = ("WHERE " + " AND ".join(conds)) if conds else ""
+
+        # The working set is the one response worth validating: it is ~480KB, the
+        # app refetches it on every launch, and it only really turns over when the
+        # month's target groups change. An ETag turns that daily refetch into a
+        # ~200-byte 304 — the single largest saving available on a field link.
+        #
+        # Only for the unfiltered working set. A search is small, and per-query
+        # tags would just fill the client's storage with entries it never reuses.
+        if working_set and not q:
+            etag = _working_set_etag(current_user, params)
+            if etag:
+                if request.headers.get('If-None-Match') == etag:
+                    return '', 304, {'ETag': etag}
+                rows = mysql_manager.execute_query(
+                    f"SELECT {SKU_COLS} FROM {frm}{where} "
+                    f"ORDER BY name LIMIT %s OFFSET %s",
+                    tuple(params + [limit, offset]),
+                ) or []
+                return [_sku_out(r) for r in rows], 200, {'ETag': etag}
+
         rows = mysql_manager.execute_query(
             f"SELECT {SKU_COLS} FROM {frm}{where} "
             f"ORDER BY name LIMIT %s OFFSET %s",

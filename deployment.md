@@ -158,7 +158,19 @@ server {
     # REQUIRED. See §7 — this is what stopped a repeat compromise.
     if ($host != myapp.example.org) { return 444; }
 
-    client_max_body_size 10M;
+    # MUST match MAX_IMAGE_BYTES in api/shared/media.py (12MB). Whichever limit is
+    # lower rejects first, so a mismatch means a rep on a slow uplink waits out the
+    # entire transfer only to be told no.
+    client_max_body_size 12M;
+
+    # Load-bearing for the mobile app, not a nicety: the catalog working set is
+    # ~480KB of JSON that compresses to roughly a tenth of that. Uncompressed it
+    # cannot finish inside the client's timeout on a 2G link.
+    gzip on;
+    gzip_types application/json text/plain text/css application/javascript;
+    gzip_min_length 256;
+    gzip_proxied any;
+    gzip_vary on;
 
     location / {
         proxy_pass http://127.0.0.1:3001;
@@ -175,6 +187,18 @@ server {
     listen 443 ssl;
 }
 ```
+
+Verify gzip is actually applied — a `gzip on` that never fires is the common
+failure, and it is invisible until someone measures it from outside:
+
+```bash
+curl -H 'Accept-Encoding: gzip' -H "Authorization: Bearer $TOKEN" \
+     -so /dev/null -w 'bytes=%{size_download} encoding=%header{content-encoding}\n' \
+     'https://myapp.example.org/api/v1/catalog/skus?working_set=true&limit=5000'
+```
+
+Expect roughly `bytes=60000 encoding=gzip`. If it prints ~480000 with no encoding,
+compression is off and the mobile app is paying 8x for every catalog sync.
 
 ```bash
 sudo ln -sf /etc/nginx/sites-available/myapp /etc/nginx/sites-enabled/myapp

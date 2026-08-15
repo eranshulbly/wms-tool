@@ -9,6 +9,7 @@ the Android app only changes its base host.
   GET  /api/v1/auth            module status
   POST /api/v1/auth/login      username+password -> access+refresh
   POST /api/v1/auth/refresh    rotate refresh token
+  POST /api/v1/auth/logout     revoke a refresh token
   GET  /api/v1/auth/me         current user + effective permissions
   POST /api/v1/auth/users      create user (user:manage)
   GET  /api/v1/auth/dealers    list active dealers (dealer:read)
@@ -28,6 +29,7 @@ from api.shared.logging import get_logger
 from api.shared.timeutil import now_local
 from api.shared.auth_v1 import (v1_auth_required, v1_require_permission,
                                 company_filter, company_scope)
+from api.shared.idempotency import InProgress, idempotent
 from api.modules.platform.user_auth import rbac, tokens
 
 logger = get_logger(__name__)
@@ -85,6 +87,29 @@ class V1Refresh(Resource):
         except ValueError as e:
             return {"detail": str(e)}, 401
         return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}, 200
+
+
+@rest_api.route('/api/v1/auth/logout')
+class V1Logout(Resource):
+    """Revoke a refresh token so signing out actually ends the session.
+
+    Without this a logout only cleared the phone's storage: the refresh token
+    stayed valid for its full 14 days, so anything that had captured it could keep
+    minting access tokens for a user who believed they were signed out.
+
+    Deliberately tolerant. A rep signing out with no signal must still end up
+    signed out locally, so the app treats this as best-effort and never blocks on
+    it — which means the endpoint must not punish a token that is already gone.
+    Always 200: telling a caller *which* unknown token they presented would let
+    the endpoint be used to probe for valid ones.
+    """
+
+    @v1_auth_required
+    def post(self, current_user):
+        raw = (request.get_json(silent=True) or {}).get('refresh_token')
+        if raw:
+            tokens.revoke_refresh_token(raw, current_user['user_id'])
+        return {"detail": "signed out"}, 200
 
 
 @rest_api.route('/api/v1/auth/me')
@@ -389,6 +414,19 @@ class V1CreateDealer(Resource):
 
     @v1_require_permission(rbac.P.DEALER_READ)
     def post(self, current_user):
+        """Idempotent: this carries a shopfront photo, so it is a long request on
+        a poor link and losing the response is likely. A retry without a key would
+        propose the same shop twice and give an admin two identical approvals."""
+        try:
+            with idempotent(current_user['user_id'], 'dealers.propose') as guard:
+                if guard.replayed:
+                    return guard.response
+                body, status = self._propose(current_user)
+                return guard.store(body, status)
+        except InProgress as e:
+            return {"detail": str(e)}, 409
+
+    def _propose(self, current_user):
         form = request.form
         name = (form.get('name') or '').strip()
         if len(name) < 2:

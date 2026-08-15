@@ -54,7 +54,18 @@ ALLOWED_IMAGE_TYPES = {
     'image/webp': '.webp',
 }
 
-MAX_IMAGE_BYTES = 15 * 1024 * 1024  # matches nginx client_max_body_size
+# Deliberately BELOW nginx's client_max_body_size, not equal to it.
+#
+# nginx allows 50M on /api/ because the same prefix carries admin order/invoice
+# spreadsheet uploads, which are legitimately large. Photos are not: 12MB clears a
+# stamped 2400px JPEG several times over, and anything past it is a mistake worth
+# refusing. Raising nginx's limit to match would let a broken client push 50MB of
+# nothing; lowering nginx to match would break the spreadsheet upload.
+#
+# The cost of the gap is that an oversize image is fully transferred before Flask
+# rejects it. Acceptable, because the app now caps its own output at capture — see
+# lib/core/photo.dart — so reaching this limit means something is already wrong.
+MAX_IMAGE_BYTES = 12 * 1024 * 1024
 
 
 class MediaError(Exception):
@@ -224,6 +235,110 @@ def send_media(relative_path, mime=None):
     if not os.path.exists(path):
         return None
     return send_file(path, mimetype=mime)
+
+
+# Longest edge of a generated thumbnail. Enough to fill a list row on a dense
+# screen and to tell one order sheet from another; far too small to read, which is
+# the point — reading is what the full-size view is for.
+THUMB_MAX_EDGE = 320
+THUMB_QUALITY = 70
+
+
+def _thumb_key(relative_path):
+    """Sibling key for the cached thumbnail, e.g. orders/42/ab.jpg -> orders/42/ab.thumb.jpg."""
+    base, _ = os.path.splitext(relative_path)
+    return f"{base}.thumb.jpg"
+
+
+def _render_thumbnail(data):
+    """Bytes of the original -> bytes of a small JPEG, or None if undecodable.
+
+    Pillow is already a dependency (the supply-sheet PNG generator uses it), so
+    this adds no new install.
+    """
+    try:
+        from io import BytesIO
+
+        from PIL import Image, ImageOps
+    except ImportError:  # pragma: no cover - depends on deployment
+        return None
+
+    try:
+        with Image.open(BytesIO(data)) as im:
+            # Phone cameras record orientation in EXIF; without this a portrait
+            # order sheet thumbnails sideways.
+            im = ImageOps.exif_transpose(im)
+            im = im.convert('RGB')
+            im.thumbnail((THUMB_MAX_EDGE, THUMB_MAX_EDGE))
+            out = BytesIO()
+            im.save(out, format='JPEG', quality=THUMB_QUALITY, optimize=True)
+            return out.getvalue()
+    except Exception:  # pragma: no cover - a truncated or exotic upload
+        return None
+
+
+def send_thumbnail(relative_path):
+    """Deliver a small preview of a stored image, generating it on first request.
+
+    Falls back to the original when the image cannot be decoded: a large picture
+    is a poor thumbnail but a much better outcome than a broken one, and the
+    caller has already checked that this requester may see the file.
+
+    Returns None when the original is gone, so the caller can 404 in its own
+    vocabulary.
+    """
+    thumb_key = _thumb_key(relative_path)
+
+    # Already generated — serve it and skip the decode entirely.
+    if exists(thumb_key):
+        return send_media(thumb_key, 'image/jpeg')
+
+    original = _read_bytes(relative_path)
+    if original is None:
+        return None
+
+    thumb = _render_thumbnail(original)
+    if thumb is None:
+        return send_media(relative_path)
+
+    _write_bytes(thumb_key, thumb, 'image/jpeg')
+    return send_media(thumb_key, 'image/jpeg')
+
+
+def _read_bytes(relative_path):
+    """Whole-file read, for the one case that needs the bytes in memory. Returns
+    None when the object is missing."""
+    if using_s3():
+        try:
+            obj = _s3_client().get_object(Bucket=S3_BUCKET, Key=_s3_key(relative_path))
+            return obj['Body'].read()
+        except MediaError:
+            raise
+        except Exception:
+            return None
+    try:
+        path = absolute_path(relative_path)
+        if not os.path.exists(path):
+            return None
+        with open(path, 'rb') as fh:
+            return fh.read()
+    except (MediaError, OSError):
+        return None
+
+
+def _write_bytes(relative_path, data, mime):
+    """Store derived bytes (a thumbnail) under an existing key's sibling."""
+    if using_s3():
+        from io import BytesIO
+        _s3_client().upload_fileobj(
+            BytesIO(data), S3_BUCKET, _s3_key(relative_path),
+            ExtraArgs={'ContentType': mime},
+        )
+        return
+    path = absolute_path(relative_path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'wb') as fh:
+        fh.write(data)
 
 
 def absolute_path(relative_path):
