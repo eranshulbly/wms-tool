@@ -15,6 +15,7 @@ from flask_restx import Resource
 from api.extensions import rest_api
 from api.shared.db_manager import mysql_manager
 from api.shared.auth_v1 import v1_auth_required, company_scope, company_filter
+from api.shared.idempotency import InProgress, idempotent
 from api.shared.timeutil import now_local
 
 
@@ -194,6 +195,24 @@ class V1DealerVisitNotes(Resource):
 class V1CheckIn(Resource):
     @v1_auth_required
     def post(self, current_user):
+        """Start a visit.
+
+        Idempotent because the app queues check-ins: a rep arriving at a shop with
+        no signal checks in locally, and the request goes up later. Without a key,
+        a lost response plus a retry produces a second visit — and since only one
+        visit may be active at a time, the retry would instead hit the 409 below
+        and strand the rep outside the order flow.
+        """
+        try:
+            with idempotent(current_user['user_id'], 'visits.check_in') as guard:
+                if guard.replayed:
+                    return guard.response
+                body, status = self._check_in(current_user)
+                return guard.store(body, status)
+        except InProgress as e:
+            return {"detail": str(e)}, 409
+
+    def _check_in(self, current_user):
         body = request.get_json(silent=True) or {}
         dealer_id = body.get('dealer_id')
         if not dealer_id:

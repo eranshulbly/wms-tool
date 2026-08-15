@@ -15,6 +15,7 @@ from flask_restx import Resource
 from api.extensions import rest_api
 from api.shared import media
 from api.shared.auth_v1 import v1_require_permission
+from api.shared.idempotency import InProgress, idempotent
 from api.modules.platform.user_auth.rbac import P
 from api.modules.fulfillment.order import service_v1 as svc
 
@@ -108,6 +109,21 @@ def _order_out(o):
     }
 
 
+def _location_meta(src):
+    """Pull the fix's provenance out of a JSON body or a multipart form.
+
+    Both shapes reach the same service, and multipart delivers everything as
+    strings, so the values are passed through untouched and normalised in
+    service_v1._location_columns rather than in two places here.
+    """
+    return {
+        'location_source': src.get('location_source'),
+        'location_age_s': src.get('location_age_s'),
+        'location_is_mocked': src.get('location_is_mocked'),
+        'captured_at': src.get('captured_at'),
+    }
+
+
 @rest_api.route('/api/v1/orders')
 class V1Orders(Resource):
     def get(self):
@@ -115,6 +131,25 @@ class V1Orders(Resource):
 
     @v1_require_permission(P.ORDER_WRITE)
     def post(self, current_user):
+        """Raise an order.
+
+        Wrapped in the idempotency guard so the app can retry safely. Without it a
+        response lost on the way back to the phone becomes a duplicate order the
+        moment the rep taps submit again — and the outbox retries automatically,
+        which would make that the normal case rather than the rare one.
+        """
+        try:
+            with idempotent(current_user['user_id'], 'orders.create') as guard:
+                if guard.replayed:
+                    return guard.response
+                body, status = self._create(current_user)
+                return guard.store(body, status)
+        except InProgress as e:
+            # The same key is mid-flight. Not an error the rep should see — the
+            # queue simply tries again shortly.
+            return {"detail": str(e)}, 409
+
+    def _create(self, current_user):
         body = request.get_json(silent=True) or {}
         dealer_id = body.get('dealer_id')
         items = body.get('items') or []
@@ -176,6 +211,7 @@ class V1Orders(Resource):
                 expected_delivery_date=body.get('expected_delivery_date'),
                 notes=body.get('notes'), company_id=company_id,
                 latitude=lat, longitude=lng, location_accuracy_m=accuracy,
+                location_meta=_location_meta(body),
             )
         except svc.ValidationError as e:
             return {"detail": str(e)}, 400
@@ -194,6 +230,19 @@ class V1PhotoOrder(Resource):
 
     @v1_require_permission(P.ORDER_WRITE)
     def post(self, current_user):
+        """Capture a paper order. Idempotent for the same reason as /orders — and
+        more so, since the photo makes the request long enough that losing the
+        response is the common failure, not the rare one."""
+        try:
+            with idempotent(current_user['user_id'], 'orders.photo') as guard:
+                if guard.replayed:
+                    return guard.response
+                body, status = self._create_photo(current_user)
+                return guard.store(body, status)
+        except InProgress as e:
+            return {"detail": str(e)}, 409
+
+    def _create_photo(self, current_user):
         form = request.form
         dealer_id = form.get('dealer_id', type=int)
         if not dealer_id:
@@ -213,9 +262,17 @@ class V1PhotoOrder(Resource):
         except (TypeError, ValueError):
             accuracy = None
 
+        # The photo is optional now.
+        #
+        # It used to be required, which made this one long multipart request: on a
+        # field uplink the image dominates it, so the whole order hung on a
+        # transfer measured in minutes. Splitting them lets the order — a kilobyte
+        # of JSON — land in a second or two on any link, and the image follow
+        # separately via POST /orders/<id>/photo.
+        #
+        # An order with no photo yet cannot be approved (it has no lines either),
+        # so nothing can slip past the warehouse while the image is in flight.
         photo = request.files.get('photo')
-        if photo is None:
-            return {"detail": "a photo of the order is required"}, 422
 
         company_id = form.get('company_id', type=int)
         scoped = _company_scope(current_user)
@@ -241,9 +298,16 @@ class V1PhotoOrder(Resource):
                 company_id=company_id, warehouse_id=warehouse_id,
                 notes=form.get('notes'), latitude=lat, longitude=lng,
                 location_accuracy_m=accuracy,
+                location_meta=_location_meta(form),
             )
         except svc.ValidationError as e:
             return {"detail": str(e)}, 400
+
+        # No image in this request: the client is sending it separately. Return the
+        # order so the rep has their number, and let POST /orders/<id>/photo
+        # attach the bytes when the link allows.
+        if photo is None:
+            return _order_out(svc.get_order(order['order_id'])), 201
 
         try:
             path, mime, size = media.save_order_photo(photo, order['order_id'])
@@ -263,13 +327,25 @@ class V1OrderPhoto(Resource):
 
     @v1_require_permission(P.ORDER_READ)
     def get(self, current_user, order_id, attachment_id):
+        """`?size=thumb` returns a small preview instead of the original.
+
+        The order list renders one image per row. At full size that is ~1MB each,
+        which is unusable on a field connection and wasteful anywhere — nobody can
+        read an order sheet in a 64px row. Thumbnails are generated once and
+        cached beside the original, so the cost is paid on first view only.
+        """
         if not _visible_order(current_user, order_id):
             return {"detail": f"order {order_id} not found"}, 404
         att = svc.get_attachment(attachment_id)
         if not att or att['submitted_order_id'] != order_id:
             return {"detail": "attachment not found"}, 404
+
+        want_thumb = (request.args.get('size') or '').lower() == 'thumb'
         try:
-            resp = media.send_media(att['file_path'], att['mime_type'])
+            if want_thumb:
+                resp = media.send_thumbnail(att['file_path'])
+            else:
+                resp = media.send_media(att['file_path'], att['mime_type'])
         except media.MediaError as e:
             return {"detail": str(e)}, 400
         if resp is None:
