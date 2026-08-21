@@ -46,10 +46,41 @@ from flask import request
 
 from api.shared.db_manager import mysql_manager
 from api.shared.logging import get_logger
+from api.shared.schema_registry import register_table
 
 logger = get_logger(__name__)
 
 HEADER = 'Idempotency-Key'
+
+# This module reads and writes `idempotency_keys` on every guarded write, so it
+# owns the table and declares it here — the own-your-schema rule the modules
+# follow, applied to shared infra.
+#
+# It had no DDL anywhere. The table was never created, so every /api/v1 write
+# carrying the header failed on a missing table — and since the guard runs before
+# the handler, the write it was protecting never ran either. That turned the one
+# mechanism standing between a retried request and a duplicate order into a
+# guaranteed 500 on exactly the requests that carried it.
+#
+# `idem_key` is the PRIMARY KEY on purpose: the INSERT below is what makes two
+# simultaneous attempts safe, and it only works because the key collides.
+# Deliberately unpartitioned — purge_expired() keeps it small, and the lookup is
+# a point read by key.
+register_table("idempotency_keys", """
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+    idem_key     VARCHAR(128) NOT NULL,
+    user_id      INT          NOT NULL,
+    endpoint     VARCHAR(64)  NOT NULL,
+    state        VARCHAR(16)  NOT NULL DEFAULT 'in_progress',
+    status_code  INT          NULL,
+    response     MEDIUMTEXT   NULL,
+    created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME     NULL,
+    PRIMARY KEY (idem_key),
+    KEY idx_idem_user_endpoint (user_id, endpoint),
+    KEY idx_idem_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""", order=20)
 
 # How long a completed key can be replayed. Comfortably longer than any outbox
 # will keep retrying, and short enough that the table stays small.

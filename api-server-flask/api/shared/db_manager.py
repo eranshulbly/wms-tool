@@ -23,6 +23,12 @@ order_box               │ created_at
 box_product             │ created_at
 upload_batches          │ uploaded_at
 jwt_token_blocklist     │ created_at
+entity_movement_request │ created_on
+entity_movement_details │ created_on
+entity_movement_recommendation │ created_on
+fc_entity_stock_ledger  │ created_on
+fc_entity_recommendation│ created_on
+transferin_info         │ created_on
 
 Tables NOT partitioned  (constants / slow-growing reference data)
 ────────────────────────
@@ -49,7 +55,14 @@ pymysql.install_as_MySQLdb()
 
 PARTITION_WINDOW_MONTHS = 4   # how many past months to keep in active partitions
 
-# Map each partitioned table to its partition column
+# Map each partitioned table to its partition column.
+#
+# A table missing from here is not "unpartitioned" — partition_filter simply returns
+# '1=1' for it, so every query on it silently scans all ~13 monthly partitions. The
+# inventory tables below were partitioned by their DDL but never registered, which is
+# exactly that: `partition_filter('entity_movement_details')` pruned nothing, for
+# picking and stacking as much as for packing. Keep this list in step with the
+# PARTITION BY clauses in the module schemas.
 PARTITION_COLUMN: dict = {
     'potential_order':         'created_at',
     'potential_order_product': 'created_at',
@@ -59,6 +72,13 @@ PARTITION_COLUMN: dict = {
     'order_product':           'created_at',
     'upload_batches':          'uploaded_at',
     'jwt_token_blocklist':     'created_at',
+    # inventory: the movement engine and the stock/inbound history it writes
+    'entity_movement_request':        'created_on',
+    'entity_movement_details':        'created_on',
+    'entity_movement_recommendation': 'created_on',
+    'fc_entity_stock_ledger':         'created_on',
+    'fc_entity_recommendation':       'created_on',
+    'transferin_info':                'created_on',
 }
 
 PARTITIONED_TABLES = frozenset(PARTITION_COLUMN.keys())
@@ -798,6 +818,16 @@ def create_all_tables():
             fetch=False,
         )
 
+    # The shared shortfall-reason list, seeded for the same reason and in the same way:
+    # the ids are written onto movement rows, so they are explicit and never reused.
+    from api.modules.inventory.schema import SHORTFALL_REASON_SEED
+    for _id, _reason in SHORTFALL_REASON_SEED:
+        mysql_manager.execute_query(
+            "INSERT IGNORE INTO understack_reason (id, reason, is_active) VALUES (%s, %s, 1)",
+            (_id, _reason),
+            fetch=False,
+        )
+
     # Migrate existing tables
     _migrate_users_table()
     _migrate_potential_order_table()
@@ -838,6 +868,7 @@ def create_all_tables():
     # Packaging / pricing model: the tables come from the schema registry, these carry
     # the column and the reference data the registry cannot.
     _migrate_product_gst_percent()
+    _migrate_packing_columns()
     seed_default_uoms()
     # Runs last: it only adds columns, and several of the migrations above assume the
     # base tables already exist in their pre-v2 shape.
@@ -1808,6 +1839,135 @@ def _migrate_transferin_id_varchar():
         logger.exception("transferin_id migration failed")
 
 
+def _migrate_packing_columns():
+    """Make entity_movement_details and product_uom packing-ready (idempotent).
+
+    The schema registry only issues CREATE TABLE IF NOT EXISTS, so the DDL changes
+    made alongside this in `inventory/schema.py` and `catalog/schema.py` never reach
+    a database that already has those tables. This carries them, so a fresh database
+    and an existing one converge — the same job _migrate_company_id does for the
+    tenant column.
+
+    Three changes, all for the packing module (see PACKING_DESIGN.md §4.6):
+
+    1. `entity_id` BIGINT -> VARCHAR(64). A box's identity is the scanned carton
+       label ('WH1-000148213'), which is alphanumeric; a BIGINT would silently
+       destroy the prefix and any leading zeros. The precedent is in this module
+       already — transferin_info.transferin_id was widened for the same reason.
+       Widening an integer to a string cannot lose data: every existing value
+       re-reads as its own digits.
+
+       **This is ALGORITHM=COPY**: a full rebuild of every partition under a
+       metadata lock. It is effectively instant today because the movement write
+       flows are still NotImplementedError and the table is near-empty. Once picking
+       starts writing, the same statement becomes an outage-shaped migration.
+
+    2. Four weight columns, so a box's weight is a column read rather than a
+       JSON_EXTRACT over a TEXT column — the dispatch check and the fraud report both
+       filter on them, and neither can use an index through JSON. They are NULL for
+       every other movement type, so stacking and picking are untouched.
+
+    3. `product_uom.pack_tare_kg` — the packaging weight per rung of the ladder. It
+       is what lets a sealed supplier carton be weight-checked at all: its tare
+       cannot be measured (you would have to empty it), so it is read from the rung
+       whose factor_to_base matches the scanned quantity.
+    """
+    weight_columns = [
+        ('tare_weight_kg',     'DECIMAL(12,3) NULL', 'picked_quantity'),
+        ('weight_kg',          'DECIMAL(12,3) NULL', 'tare_weight_kg'),
+        ('expected_weight_kg', 'DECIMAL(12,3) NULL', 'weight_kg'),
+        ('variance_g',         'INT NULL',           'expected_weight_kg'),
+    ]
+    indexes = [
+        ('idx_emd_entity',   '(entity_id, entity_type)'),   # the label single-use check
+        ('idx_emd_variance', '(variance_g)'),               # boxes sealed outside tolerance
+    ]
+
+    try:
+        if mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.TABLES
+                   WHERE TABLE_SCHEMA = DATABASE()
+                     AND TABLE_NAME = 'entity_movement_details'"""):
+
+            rows = mysql_manager.execute_query(
+                """SELECT DATA_TYPE FROM information_schema.COLUMNS
+                   WHERE TABLE_SCHEMA = DATABASE()
+                     AND TABLE_NAME = 'entity_movement_details'
+                     AND COLUMN_NAME = 'entity_id'""")
+            if rows and rows[0]['DATA_TYPE'].lower() != 'varchar':
+                mysql_manager.execute_query(
+                    "ALTER TABLE entity_movement_details "
+                    "MODIFY COLUMN entity_id VARCHAR(64) NOT NULL", fetch=False)
+                logger.info("entity_movement_details.entity_id widened to VARCHAR(64)")
+
+            for column, ddl, after in weight_columns:
+                if mysql_manager.execute_query(
+                        """SELECT 1 FROM information_schema.COLUMNS
+                           WHERE TABLE_SCHEMA = DATABASE()
+                             AND TABLE_NAME = 'entity_movement_details'
+                             AND COLUMN_NAME = %s""", (column,)):
+                    continue
+                has_anchor = mysql_manager.execute_query(
+                    """SELECT 1 FROM information_schema.COLUMNS
+                       WHERE TABLE_SCHEMA = DATABASE()
+                         AND TABLE_NAME = 'entity_movement_details'
+                         AND COLUMN_NAME = %s""", (after,))
+                position = f" AFTER `{after}`" if has_anchor else ""
+                mysql_manager.execute_query(
+                    f"ALTER TABLE entity_movement_details "
+                    f"ADD COLUMN `{column}` {ddl}{position}", fetch=False)
+                logger.info("entity_movement_details: added column %s", column)
+
+            for name, cols in indexes:
+                if mysql_manager.execute_query(
+                        """SELECT 1 FROM information_schema.STATISTICS
+                           WHERE TABLE_SCHEMA = DATABASE()
+                             AND TABLE_NAME = 'entity_movement_details'
+                             AND INDEX_NAME = %s""", (name,)):
+                    continue
+                mysql_manager.execute_query(
+                    f"ALTER TABLE entity_movement_details ADD KEY `{name}` {cols}",
+                    fetch=False)
+                logger.info("entity_movement_details: added key %s", name)
+    except Exception:
+        logger.exception("packing: entity_movement_details migration failed")
+
+    try:
+        if mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.TABLES
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product_uom'""") \
+                and not mysql_manager.execute_query(
+                    """SELECT 1 FROM information_schema.COLUMNS
+                       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product_uom'
+                         AND COLUMN_NAME = 'pack_tare_kg'"""):
+            mysql_manager.execute_query(
+                "ALTER TABLE product_uom "
+                "ADD COLUMN pack_tare_kg DECIMAL(12,3) NULL AFTER factor_to_base",
+                fetch=False)
+            logger.info("product_uom: added column pack_tare_kg")
+    except Exception:
+        logger.exception("packing: product_uom.pack_tare_kg migration failed")
+
+    # potential_order.short_pack_reason is where a short-closed order records WHY.
+    # It only ever existed as a standalone migration_*.sql, so a database built from
+    # the DDL alone does not have it — and submit writes it.
+    try:
+        if mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.TABLES
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'potential_order'""") \
+                and not mysql_manager.execute_query(
+                    """SELECT 1 FROM information_schema.COLUMNS
+                       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'potential_order'
+                         AND COLUMN_NAME = 'short_pack_reason'"""):
+            mysql_manager.execute_query(
+                "ALTER TABLE potential_order "
+                "ADD COLUMN short_pack_reason VARCHAR(255) NULL AFTER box_count",
+                fetch=False)
+            logger.info("potential_order: added column short_pack_reason")
+    except Exception:
+        logger.exception("packing: short_pack_reason migration failed")
+
+
 def _migrate_part_groups_company_uq():
     """Widen uq_period_part onto company_id (idempotent).
 
@@ -2341,6 +2501,18 @@ def seed_default_roles():
         # `uploads: []` again governs only the Upload Orders / Invoices / Products screens.
         # This role's two uploads (stock and the manual order's parts sheet) both belong to
         # the DMS screen and are permitted by the scope check in shared/auth.py.
+        # The handheld packing station. `order_states: []` and `uploads: []` because a
+        # packer never opens the web app's order screens or upload tabs — their whole
+        # surface is /api/v1/packing/*, gated on the inventory:pack permission which
+        # migration_packing.sql grants to this role. Not all_warehouses: a packer works
+        # one bench, and their scope comes from user_warehouse_company.
+        {
+            'name': 'packer',
+            'description': 'Handheld packing station. Weight-verified carton packing only.',
+            'all_warehouses': False,
+            'order_states': [],
+            'uploads': [],
+        },
         {
             'name': _DMS_OPERATOR_ROLE_NAME,
             'description': 'Download DMS Input only. Uploads inventory, downloads DMS '

@@ -66,6 +66,38 @@ def _num(v):
     return float(v) if v is not None else None
 
 
+def _as_sku_id(detail):
+    """The numeric sku id of one detail row, or None when the row is not a SKU."""
+    if detail.get('entity_type') != 'sku':
+        return None
+    try:
+        return int(detail['entity_id'])
+    except (TypeError, ValueError):
+        return None
+
+
+def _sku_entity_ids(details):
+    """Numeric sku ids out of a request's detail rows, skipping non-SKU rows.
+
+    `entity_movement_details.entity_id` is a VARCHAR now, because the packing module
+    stores a box's scanned carton label in it ('WH1-000148213'). It is still the
+    numeric product id for `entity_type='sku'` rows, but as a string — and
+    `codes_for_sku_ids` keys its result map on ints, so passing the raw value back
+    would look up nothing and every sku_code in the response would silently be null.
+    Box and container rows have no sku code at all and are dropped rather than
+    coerced.
+    """
+    ids = []
+    for d in details or []:
+        if d.get('entity_type') != 'sku':
+            continue
+        try:
+            ids.append(int(d['entity_id']))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
 def _planogram_arg():
     """Callers pass warehouse_id; planogram is 1:1 with it."""
     wid = request.args.get('warehouse_id', type=int)
@@ -129,7 +161,9 @@ def _request_out(r, with_details=False, sku_map=None):
         sku_map = sku_map or {}
         out['details'] = [{
             "detail_id": d['detail_id'],
-            "sku_code": sku_map.get(d['entity_id'], {}).get('sku_code'),
+            # Same VARCHAR retype as _sku_entity_ids: the map is keyed on ints, and a
+            # box row has no sku code to find at all.
+            "sku_code": sku_map.get(_as_sku_id(d), {}).get('sku_code'),
             "entity_id": d['entity_id'],
             "entity_type": d['entity_type'],
             "source_location_id": d['source_location_id'],
@@ -348,7 +382,7 @@ class V1MovementRequestDetail(Resource):
         req = svc.get_movement_request(request_id, company_ids=company_ids)
         if not req:
             return {"detail": f"movement request {request_id} not found"}, 404
-        sku_map = codes_for_sku_ids([d['entity_id'] for d in req.get('details', [])])
+        sku_map = codes_for_sku_ids(_sku_entity_ids(req.get('details', [])))
         return _request_out(req, with_details=True, sku_map=sku_map), 200
 
 

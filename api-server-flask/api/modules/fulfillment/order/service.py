@@ -135,6 +135,140 @@ def get_upload_statistics(warehouse_id=None, company_ids=None):
         return {'total_orders': 0, 'total_products': 0, 'recent_orders': 0, 'status_breakdown': {}}
 
 
+class PackCompletionError(Exception):
+    """The order cannot be marked packed. Raised for a bad transition or a
+    missing order — callers map it to a 409/404 of their own."""
+
+
+def record_pack_completion(potential_order_id: int, packed_quantities: dict,
+                           box_count: int, user_id: int,
+                           short_pack_reason: str = None, cursor=None) -> dict:
+    """Close a packing job onto the order. The ONLY writer of packed quantities.
+
+    The packing module owns no order tables, so it calls this rather than issuing
+    its own UPDATE against `potential_order*` — the cross-module boundary rule the
+    rest of this codebase follows. Everything a completed pack changes is here, in
+    one place, so a second consumer (a future picking-to-pack handoff, a correction
+    tool) cannot write a different subset and leave the order half-updated.
+
+    Writes, in order:
+      1. `potential_order_product.quantity_packed` / `quantity_remaining` per line
+      2. `potential_order.status = 'Packed'`, `box_count`, `short_pack_reason`
+      3. one `order_state_history` row
+
+    `box_count` is not decoration. It is read when the invoice and the `order` row
+    are created (`invoice/repository.py`), so a count that never reaches the order
+    ships the default of `1` onto every invoice regardless of how many boxes
+    physically exist.
+
+    Args:
+        potential_order_id: the order being closed.
+        packed_quantities: {product_id: packed base units}. Lines absent from the
+            map are set to 0 packed — an order is closed as a whole, and leaving a
+            line at its previous value would record a quantity no box supports.
+        box_count: sealed box rows on the job.
+        user_id: the packer, recorded as `changed_by` on the history row.
+        short_pack_reason: free text; None leaves the column untouched.
+        cursor: an open cursor to join the caller's transaction. Passing one is
+            what makes the movement rows and the order write commit or roll back
+            together; omitting it opens a transaction here.
+
+    Returns:
+        {'potential_order_id', 'status', 'box_count', 'lines_updated'}
+
+    Raises:
+        PackCompletionError: order missing, or not in a state that may go to Packed.
+    """
+    from api.modules.fulfillment.order.constants import OrderStatus
+    from api.modules.fulfillment.order.state_machine import OrderStateMachine
+    from api.shared.db_manager import partition_filter
+    from datetime import datetime
+
+    def _run(cur):
+        pf_sql, pf_params = partition_filter('potential_order')
+        cur.execute(
+            f"""SELECT potential_order_id, status FROM potential_order
+                WHERE {pf_sql} AND potential_order_id = %s""",
+            (*pf_params, potential_order_id))
+        rows = cur.fetchall()
+        if not rows:
+            raise PackCompletionError(f"order {potential_order_id} not found")
+
+        current = rows[0]['status']
+        # Packed -> Packed is not in the state machine but is the normal shape of a
+        # retried submit, and refusing it would turn a lost response into a stuck
+        # order. Every other illegal source is still refused.
+        if current != OrderStatus.PACKED.value and not OrderStateMachine.can_single_transition(
+                OrderStatus(current), OrderStatus.PACKED):
+            raise PackCompletionError(
+                f"order {potential_order_id} is {current}; it cannot be marked Packed")
+
+        pop_pf_sql, pop_pf_params = partition_filter('potential_order_product')
+        cur.execute(
+            f"""SELECT potential_order_product_id, product_id, quantity
+                FROM potential_order_product
+                WHERE {pop_pf_sql} AND potential_order_id = %s""",
+            (*pop_pf_params, potential_order_id))
+        lines = cur.fetchall() or []
+
+        updates = []
+        for line in lines:
+            packed = int(packed_quantities.get(line['product_id'], 0) or 0)
+            required = int(line['quantity'] or 0)
+            # The partition column rides in the WHERE of every row's params: without
+            # it a single-row UPDATE probes every monthly partition, and this runs
+            # once per line.
+            updates.append((packed, max(required - packed, 0),
+                            *pop_pf_params, line['potential_order_product_id']))
+        if updates:
+            # executemany, not a loop of execute: an order with 200 lines would
+            # otherwise be 200 round trips inside a transaction holding row locks.
+            cur.executemany(
+                f"""UPDATE potential_order_product
+                       SET quantity_packed = %s, quantity_remaining = %s,
+                           updated_at = CURRENT_TIMESTAMP
+                     WHERE {pop_pf_sql} AND potential_order_product_id = %s""",
+                updates)
+
+        order_sets = ["status = %s", "box_count = %s", "updated_at = CURRENT_TIMESTAMP"]
+        order_params = [OrderStatus.PACKED.value, int(box_count)]
+        if short_pack_reason is not None:
+            order_sets.append("short_pack_reason = %s")
+            order_params.append(short_pack_reason[:255])
+        cur.execute(
+            f"""UPDATE potential_order SET {', '.join(order_sets)}
+                WHERE {pf_sql} AND potential_order_id = %s""",
+            (*order_params, *pf_params, potential_order_id))
+
+        cur.execute("SELECT state_id FROM order_state WHERE state_name = %s",
+                    (OrderStatus.PACKED.value,))
+        state_rows = cur.fetchall()
+        if state_rows:
+            cur.execute(
+                """INSERT INTO order_state_history
+                     (potential_order_id, state_id, changed_by, changed_at)
+                   VALUES (%s, %s, %s, %s)""",
+                (potential_order_id, state_rows[0]['state_id'], user_id, datetime.utcnow()))
+        else:
+            # The states are seeded at startup, so an absent row means a
+            # misconfigured database. The pack itself is still correct and must not
+            # be lost over a missing audit lookup.
+            logger.error("order_state 'Packed' is missing — no history row written",
+                         extra={'potential_order_id': potential_order_id})
+
+        return {
+            'potential_order_id': potential_order_id,
+            'status': OrderStatus.PACKED.value,
+            'box_count': int(box_count),
+            'lines_updated': len(updates),
+        }
+
+    if cursor is not None:
+        return _run(cursor)
+    with mysql_manager.get_cursor() as cur:
+        return _run(cur)
+
+
 def cleanup_temporary_files():
     """Remove temp files older than 1 hour from the service tmp directory."""
     import time

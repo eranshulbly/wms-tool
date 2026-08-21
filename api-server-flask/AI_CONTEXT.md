@@ -42,6 +42,14 @@ api/
       order/         potential_order(_product), order(_product), order_state(_history),
                      submitted_* (app orders); upload + lifecycle + state_machine +
                      dashboard listing (router_dashboard.py) + DMS-input pipeline
+      packing/       OWNS NO TABLES. Weight-verified carton packing for the Zebra TC21
+                     handheld (/api/v1/packing/*). Rides the inventory-owned movement
+                     engine: a job is entity_movement_request(movement_type='packing',
+                     request_identifier=potential_order_id), and every box / SKU-in-box /
+                     shortfall is an entity_movement_details row (a box's entity_id IS
+                     its scanned carton label; its SKUs point at it via source_bin_id).
+                     No schema.py — see PACKING_DESIGN.md + PACKING_SCREEN_API_CONTRACTS.md.
+                     Writes back to the order through order/service.py, never direct SQL.
       invoice/       invoice, invoice_processing_config; upload/classification/stats
       assignment/    SCAFFOLD: jobs, job_status_history, worker_availability,
                      allocation_policies; events.py + handlers.py (log-only, from v2)
@@ -82,8 +90,17 @@ mounts Flask-Admin. `gunicorn api:app`.
 
 ## Notable 2026 changes
 - **Boxes removed.** The `box` / `order_box` / `box_product` tables and all box-building
-  are gone (`migration_drop_boxes.sql`). Packing is now a pure state transition;
-  `box_count` remains a plain integer on orders. Products live in `catalog`.
+  are gone (`migration_drop_boxes.sql`). Packing on the *web* app is a pure state
+  transition; `box_count` remains a plain integer on orders. Products live in `catalog`.
+- **Packing (handheld) added** as a `fulfillment`-cluster module that **owns no tables**
+  — it reuses `entity_movement_request` / `entity_movement_details` rather than
+  reintroducing box tables. `migration_packing.sql` widens
+  `entity_movement_details.entity_id` to `VARCHAR(64)` (a box's id is its scanned
+  label), adds four weight columns + two indexes, adds `product_uom.pack_tare_kg`, and
+  seeds a `packer` role granted `inventory:pack`. The same changes run at boot via
+  `db_manager._migrate_packing_columns()`. The six inventory tables that were
+  partitioned but unregistered are now in `PARTITION_COLUMN`, so `partition_filter`
+  actually prunes for picking and stacking too.
 - **inventory / assignment scaffolded** from v2 schemas (tables + status endpoints +
   event wiring) — engines not implemented yet.
 - Frontend landing is a **tile launcher** (`react-ui/src/views/launcher/Launcher.js`):

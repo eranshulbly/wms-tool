@@ -93,6 +93,12 @@ CREATE TABLE IF NOT EXISTS product_uom (
     product_id     INT NOT NULL,
     uom_code       VARCHAR(16) NOT NULL,
     factor_to_base DECIMAL(18,6) NOT NULL DEFAULT 1,
+    -- Weight of THIS rung's packaging, excluding the stock inside it. Packing reads it
+    -- to weight-check a sealed supplier carton, whose tare cannot be measured — you
+    -- would have to empty it. The rung is identified by matching the scanned quantity
+    -- against factor_to_base, which works because the printed codes carry no pack-level
+    -- field. See fulfillment/packing/PACKING_DESIGN.md §6.8.1.
+    pack_tare_kg   DECIMAL(12,3) NULL,
     level_no       TINYINT NOT NULL DEFAULT 0,
     label          VARCHAR(64) NULL,
     is_order_unit  TINYINT(1) NOT NULL DEFAULT 0,

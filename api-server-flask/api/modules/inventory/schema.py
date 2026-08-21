@@ -350,6 +350,25 @@ CREATE TABLE IF NOT EXISTS understack_reason (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """, order=33)
 
+# Seeded with explicit ids, like the location master, because a reason id is written
+# onto movement rows and must keep meaning the same thing for the life of the record.
+#
+# The table was registered but never populated, so `GET /packing/short-reasons`
+# answered with an empty list and the packer closing an order short had no reason to
+# pick — the shortfall was recorded with no explanation of itself, which is most of
+# what makes a shortfall actionable afterwards.
+#
+# Note `is_active = 1`: the column defaults to 0, so a row inserted without it is
+# invisible to every reader that filters on active.
+SHORTFALL_REASON_SEED = [
+    (1, 'Stock not found in bin'),
+    (2, 'SKU not in saleable condition'),
+    (3, 'Damaged in handling'),
+    (4, 'Short supplied to packing'),
+    (5, 'Expired or near expiry'),
+    (6, 'Wrong item picked'),
+]
+
 
 # ── Inbound (GRN) ────────────────────────────────────────────────────────────
 # Never deleted. `quantity` is what arrived; `unstacked_quantity` decrements as stacking
@@ -481,15 +500,33 @@ CREATE TABLE IF NOT EXISTS entity_movement_request (
 """, order=43)
 
 # source_stock_info is JSON recording which transferin_info rows / bins the qty came from.
+#
+# The packing module (fulfillment cluster) rides this table and owns none of its own: a
+# box is a row with entity_type='box' whose entity_id IS the scanned carton label, and
+# the SKUs inside it are rows whose source_bin_id points at that box's id — a box is a
+# bin in the movement engine's grammar. See fulfillment/packing/PACKING_DESIGN.md.
 register_table("entity_movement_details", f"""
 CREATE TABLE IF NOT EXISTS entity_movement_details (
     id                  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     request_id          BIGINT UNSIGNED NOT NULL,
-    entity_id           BIGINT UNSIGNED NOT NULL,
+    -- Polymorphic ('sku' | 'CONTAINER' | 'box') and therefore a STRING: a packing box
+    -- carries its scanned label here ('WH1-000148213'), which is alphanumeric and whose
+    -- prefix and leading zeros are meaningful. It holds the numeric product id as text
+    -- for 'sku' rows, so any join to product.product_id must cast explicitly
+    -- (p.product_id = CAST(d.entity_id AS UNSIGNED)) or MySQL abandons the index on the
+    -- other table. The other five entity_id columns in this module stay integers.
+    entity_id           VARCHAR(64) NOT NULL,
     entity_type         VARCHAR(32) NOT NULL,
     source_bin_id       BIGINT UNSIGNED NOT NULL DEFAULT 0,
     source_location_id  BIGINT UNSIGNED NOT NULL,
     picked_quantity     DECIMAL(16,4) NOT NULL,
+    -- Weights are columns, not JSON. A box's sealed weight is what the dispatch gate
+    -- compares against and what fraud reporting filters on; read out of a TEXT JSON
+    -- document both would be unindexable full scans. NULL for every other movement type.
+    tare_weight_kg      DECIMAL(12,3) NULL,
+    weight_kg           DECIMAL(12,3) NULL,
+    expected_weight_kg  DECIMAL(12,3) NULL,
+    variance_g          INT NULL,
     underpick_reason_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
     source_stock_info   TEXT NOT NULL,
     created_by_id       BIGINT UNSIGNED NOT NULL DEFAULT 0,
@@ -499,7 +536,14 @@ CREATE TABLE IF NOT EXISTS entity_movement_details (
     PRIMARY KEY (id, created_on),
     KEY request_id (request_id),
     KEY request_id_2 (request_id, entity_id, entity_type),
-    KEY idx_request_source (request_id, source_bin_id)
+    KEY idx_request_source (request_id, source_bin_id),
+    -- "has this label ever been used?" — the single-use check. It cannot be a UNIQUE
+    -- key: this table is partitioned and MySQL requires the partition column in every
+    -- unique index, so a global UNIQUE(entity_id) is impossible and one including
+    -- created_on would be unique only per month. The rule is an application check over
+    -- this index, which suffices — there is exactly one physical sticker.
+    KEY idx_emd_entity (entity_id, entity_type),
+    KEY idx_emd_variance (variance_g)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 {_PARTS};
 """, order=44)

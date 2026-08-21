@@ -44,6 +44,8 @@ def register_all_routes():
     from ..modules.platform.catalog import router_v1 as _v1_catalog_router       # noqa: F401
     from ..modules.fulfillment.order import router_v1 as _v1_order_router           # noqa: F401
     from ..modules.inventory import router_v1 as _v1_inventory_router   # noqa: F401
+    # Packing owns no tables — it rides the inventory-owned movement engine.
+    from ..modules.fulfillment.packing import router_v1 as _v1_packing_router  # noqa: F401
     from ..modules.fulfillment.assignment import router_v1 as _v1_assignment_router # noqa: F401
     from ..modules.sales.visit import router_v1 as _v1_visit_router           # noqa: F401
     from ..modules.sales.field_sales import router_v1 as _v1_field_sales_router # noqa: F401
