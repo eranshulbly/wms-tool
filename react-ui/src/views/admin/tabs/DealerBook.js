@@ -155,38 +155,14 @@ export default function DealerBook() {
     );
   };
 
+  // Dealer targets were removed: this deployment sets no sales targets (sales arrive
+  // as uploaded invoices), and the backend no longer has a targets endpoint. The editor
+  // is inert — it saves nothing and says so, rather than failing on a dead call. `draft`
+  // is still read here so the dialog's controlled inputs keep working.
   const saveTargets = async () => {
-    setSaving(true);
-    setError('');
-    try {
-      const res = await api.put(`admin/dealers/${editing.dealer_id}/targets`, { targets: draft });
-      const next = {};
-      Object.entries(draft).forEach(([cid, v]) => {
-        const num = v === '' ? 0 : Number(v);
-        if (num > 0) next[cid] = num;
-      });
-      setData((d) => ({
-        ...d,
-        dealers: d.dealers.map((x) =>
-          x.dealer_id === editing.dealer_id
-            ? {
-                ...x,
-                targets: next,
-                target_total: Object.values(next).reduce((a, b) => a + b, 0),
-              }
-            : x
-        ),
-      }));
-      setToast(
-        `${editing.name}: ${res.data.set} target${res.data.set === 1 ? '' : 's'} saved` +
-          (res.data.cleared ? `, ${res.data.cleared} cleared` : '') + '.'
-      );
-      setEditing(null);
-    } catch (e) {
-      setError(e?.response?.data?.msg || e.message || 'Could not save targets');
-    } finally {
-      setSaving(false);
-    }
+    setSaving(false);
+    setError('Targets are not used in this deployment — sales come from uploaded invoices.');
+    setEditing(null);
   };
 
   const monthLabel = data?.period

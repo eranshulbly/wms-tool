@@ -5,11 +5,11 @@ Packaging ladder, prices and per-industry attributes for the product master uplo
 Why this is a separate step rather than more columns in _PRODUCT_FIELDS: those write
 straight onto `product`, and everything here belongs on a child row. A pharma master
 carries a pack hierarchy (tabs in a strip, strips in a box, boxes in a case), four kinds
-of price, and fields like composition that mean nothing to an auto-parts catalogue.
+of price, and fields like composition that mean nothing on a plain product row.
 
-The company's PROFILE decides which columns its master carries. A company with no profile
-is untouched by any of this — the upload behaves exactly as it did before, which is what
-keeps the 60k Hero parts working.
+A PROFILE decides which columns a master carries. This deployment is Cadila-only, so
+`profile_for_company` yields the Cadila profile whatever it is handed; the lookup is kept
+as a seam for the day a second supplier arrives, not because one exists today.
 
 Ordering vs pricing, the thing the whole model exists for:
 
@@ -30,9 +30,8 @@ logger = get_logger(__name__)
 
 # ── Company profiles ─────────────────────────────────────────────────────────────
 #
-# Keyed on the lower-cased company name, matched on the leading word so trading names
-# ('Cadila Pharmaceuticals Ltd') resolve the same as the bare brand — the same rule the
-# DMS layout lookup uses, and for the same reason: the company table holds trading names.
+# The backend is Cadila-only, so there is a single profile (Cadila's) and the
+# resolvers below always return it regardless of the company's stored name.
 
 # header, meaning. Every column is optional on an UPDATE (a blank cell has always meant
 # "not supplied" here); `required_for_new` below is what a NEW product must carry.
@@ -70,25 +69,18 @@ _PROFILES = {'cadila': CADILA_PROFILE}
 
 
 def profile_for_company(company_name):
-    """The upload profile for a company, or None when it has no packaging model.
+    """The upload profile for a company.
 
-    Matched on the leading word, so 'Cadila Pharmaceuticals' resolves; guarded with a
-    trailing space so an unrelated company that merely starts with the same letters does
-    not inherit somebody else's master format.
+    The backend is Cadila-only, so this always yields the Cadila profile regardless of
+    the company's stored name. The `company_name` argument is kept so existing call
+    sites don't have to change.
     """
-    norm = ' '.join(''.join(
-        ch if (ch.isalnum() or ch.isspace()) else ' '
-        for ch in str(company_name or '').lower()).split())
-    for key, profile in _PROFILES.items():
-        if norm == key or norm.startswith(key + ' '):
-            return profile
-    return None
+    return CADILA_PROFILE
 
 
 def profile_for_company_id(company_id):
-    row = mysql_manager.execute_query(
-        "SELECT name FROM company WHERE company_id = %s", (company_id,))
-    return profile_for_company(row[0]['name']) if row else None
+    """The upload profile for a company id. Cadila-only backend: always Cadila."""
+    return CADILA_PROFILE
 
 
 # ── Value coercion ───────────────────────────────────────────────────────────────
@@ -392,22 +384,29 @@ def price_for(product_id, company_id):
 
     The rule, in one query:
 
-        the most recently received batch  ->  else the batch-0 list rate  ->  else None
+        the COSTLIEST received batch  ->  else None
 
-    Received stock outranks the list because it is what was actually paid; the list rate
-    exists so a catalogue can be ordered before anything has been received at all. A
-    caller getting None has a product nobody has priced yet — that is a real state and it
-    is reported rather than defaulted to zero, which would quietly value an order at nil.
+    Costliest, not newest: a product on two batches ships from whichever the warehouse
+    picks, so valuing it at the cheaper one quietly sells the dearer stock below the
+    margin that was quoted. Taking the dearest makes the quoted margin a floor.
+
+    Batch 0 — the RATE LIST, written with quantity_received = 0 — is excluded outright.
+    It prices goods that never arrived, so quoting from it quotes a cost nobody paid. A
+    caller getting None has a product with no received stock and therefore no rate; that
+    is a real state and it is reported rather than defaulted to a list price or to zero,
+    either of which would value an order at a number the business never paid.
 
     Returns {'amount', 'uom', 'gst_rate', 'batch_id', 'is_list_rate'}; `amount` is net of
     any credit note, matching how the ingestion module computes effective cost.
+    `is_list_rate` is now always False and is kept only so callers keep parsing.
     """
     rows = mysql_manager.execute_query(
         """SELECT batch_id, uom, gst_rate, mrp,
                   (landing_price - cn_rate) AS amount
              FROM fc_sku_price_details
             WHERE entity_id = %s AND company_id = %s AND entity_type = 'sku'
-            ORDER BY (batch_id = 0), created_on DESC
+              AND batch_id <> 0
+            ORDER BY (landing_price - cn_rate) DESC, created_on DESC
             LIMIT 1""", (product_id, company_id))
     if not rows:
         return None

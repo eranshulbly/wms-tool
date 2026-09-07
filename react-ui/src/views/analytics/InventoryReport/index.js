@@ -165,7 +165,7 @@ const InventoryReport = () => {
   return (
     <Box>
       <Typography variant="h4" gutterBottom>
-        Inventory Report
+        Batch Costing
       </Typography>
 
       <Paper variant="outlined" className={classes.section} style={{ padding: 12 }}>

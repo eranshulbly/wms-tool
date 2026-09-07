@@ -415,10 +415,12 @@ CREATE TABLE IF NOT EXISTS fc_entity_stock (
     updated_on DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     updated_by VARCHAR(255) NOT NULL DEFAULT 'system',
     PRIMARY KEY (id),
-    -- The grain stock accumulates at. company_id is IN the key: a warehouse holds stock
-    -- for several companies at once, so without it two tenants holding the same SKU and
-    -- batch in the same bin would collide on one row and silently pool their quantities.
-    UNIQUE KEY planogram_id_new (planogram_id, location_id, bin_id, entity_id, entity_type, batch_id, company_id),
+    -- The grain stock accumulates at. company_id is added to this key AFTER the column
+    -- lands (_migrate_company_id then _migrate_fc_entity_stock_company_uq widen it): a
+    -- warehouse holds stock for several companies at once, so without it two tenants
+    -- holding the same SKU and batch in the same bin would collide on one row. The CREATE
+    -- keeps the narrow grain because company_id does not exist yet on a fresh schema.
+    UNIQUE KEY planogram_id_new (planogram_id, location_id, bin_id, entity_id, entity_type, batch_id),
     KEY planogram_id_2 (planogram_id, location_id, bin_id, entity_id),
     KEY planogram_id_3 (planogram_id, location_id, entity_id),
     KEY planogram_id_4 (planogram_id, entity_id),

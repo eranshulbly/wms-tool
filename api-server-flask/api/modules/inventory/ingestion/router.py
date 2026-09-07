@@ -70,21 +70,41 @@ class IngestionUpload(Resource):
         results, failed = [], []
         for f in files:
             try:
-                out = svc.ingest_pdf(f.stream, f.filename, company_id, int(warehouse_id),
-                                     user=current_user.username, movement_effect=effect)
-                results.append({
-                    'filename': f.filename,
-                    'doc_type': out['parsed']['doc_type'],
-                    'doc_number': out['doc_number'],
-                    'lines': len(out['parsed']['lines']),
-                    'duplicate': out['duplicate'],
-                    'total_variance': out['parsed']['total_variance'],
-                    'warnings': out['parsed']['warnings'],
-                    'created_products': out['created_products'],
-                    'received': out['received'],
-                    'adjusted': out['adjusted'],
-                    'moved_stock': out.get('moved_stock', False),
-                })
+                # One file can hold many documents — Cadila batches its credit notes ten
+                # to a PDF — so this returns a list and each document is reported on its
+                # own line rather than the file being summarised as one receipt.
+                ingested, rejected = svc.ingest_pdf(
+                    f.stream, f.filename, company_id, int(warehouse_id),
+                    user=current_user.username, movement_effect=effect)
+
+                # A document refused for unknown products is reported per document, with
+                # the products named, so the operator can fix the master and re-upload the
+                # same file rather than hunting through the PDF.
+                for bad in rejected:
+                    failed.append(dict(bad, filename=f.filename))
+
+                for out in ingested:
+                    parsed = out['parsed']
+                    results.append({
+                        'filename': f.filename,
+                        'doc_type': parsed['doc_type'],
+                        'doc_number': out['doc_number'],
+                        'doc_date': str(parsed['doc_date'] or ''),
+                        'irn': parsed.get('irn'),
+                        'order_number': parsed.get('order_number'),
+                        'delivery_number': parsed.get('delivery_number'),
+                        'buyer_gstin': parsed.get('buyer_gstin'),
+                        'lines': len(parsed['lines']),
+                        'duplicate': out['duplicate'],
+                        'net_value': parsed.get('net_value'),
+                        'total_variance': parsed.get('value_variance'),
+                        'warnings': parsed['warnings'],
+                        'created_products': out['created_products'],
+                        'received': out['received'],
+                        'adjusted': out['adjusted'],
+                        'pending': out.get('pending', 0),
+                        'moved_stock': out.get('moved_stock', False),
+                    })
             except (ParseError, svc.IngestionError) as e:
                 failed.append({'filename': f.filename, 'error': str(e)})
             except Exception:
@@ -111,11 +131,19 @@ class IngestionReceived(Resource):
         except CompanyAccessDenied as e:
             return {'success': False, 'msg': str(e)}, 403
 
+        # `doc` scopes the list to the documents just uploaded. It is REQUIRED: this
+        # view confirms what one upload did rather than reporting stock on hand, so an
+        # unscoped call returns nothing instead of the whole receipt history.
+        docs = []
+        for v in request.args.getlist('doc'):
+            docs.extend([x.strip() for x in str(v).split(',') if x.strip()])
+
         rows = svc.list_received(
             company_ids=scope,
             warehouse_id=request.args.get('warehouse_id'),
             limit=int(request.args.get('limit', 200)),
-            offset=int(request.args.get('offset', 0)))
+            offset=int(request.args.get('offset', 0)),
+            docs=docs)
         return {'success': True, 'received': rows}, 200
 
 

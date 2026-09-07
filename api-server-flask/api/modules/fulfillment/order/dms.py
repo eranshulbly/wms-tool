@@ -11,14 +11,16 @@ submitted_order_products either way:
   - photo orders have no lines until a part_convertor user reads the photo and fills a
     "part convertor" sheet, which parse_part_convertor() turns into those same lines.
 
-The DMS layout is company-specific. Only Hero's is known so far (HERO_DMS below);
-other companies fall back to it until their own sample is provided.
+The DMS layout is company-specific. The backend is now Cadila-only, so the only
+layout is Cadila's (_cadila_dms_rows below).
 """
 
 import csv
 import io
 
 import openpyxl
+
+from api.shared.db_manager import COMPANY_KEY
 
 
 class PartConvertorError(Exception):
@@ -112,22 +114,28 @@ def parse_part_convertor(file_storage):
 # Each builder takes the order's line items and yields rows (header first).
 # `item` is a dict with sku_code / quantity / product_name / mrp.
 
-def _hero_dms_rows(items):
-    # Hero DMS: Part Number, Part Description, Quantity, MOQ. Description comes from the
-    # line (product_name — the DESC. from the part-convertor sheet, or the product name
-    # for itemised orders) when present, else blank. MOQ is left empty for now: the
-    # system has no minimum-order-quantity source (to be defined later).
-    yield ['Part Number', 'Part Description', 'Quantity', 'MOQ']
+def _cadila_dms_rows(items):
+    # Cadila DMS: Product code, productName, Qty, net_rate.
+    #
+    # net_rate is the per-line negotiated rate, which only the packs-priced order flow
+    # captures. It is written blank when absent rather than defaulted to 0 or to the MRP:
+    # a zero rate reads as "free" downstream, and the MRP is a different number entirely.
+    yield ['Product code', 'productName', 'Qty', 'net_rate']
     for it in items:
-        yield [it['sku_code'], it.get('product_name') or '', it['quantity'], '']
+        rate = it.get('net_rate')
+        yield [
+            it['sku_code'],
+            it.get('product_name') or '',
+            it['quantity'],
+            '' if rate is None else rate,
+        ]
 
 
-# Keyed by lower-cased company name. Only companies whose DMS sample we've actually
-# seen get a builder — there is deliberately NO default: the layout is company-specific,
-# so falling back to Hero's format for another company would produce a wrong file. Add a
-# company here when its own sample arrives.
+# The backend is Cadila-only, so there is a single DMS layout: Cadila's. Keyed on the
+# module's COMPANY_KEY so callers that report the configured company name (e.g. the
+# 501 message) still read correctly.
 COMPANY_DMS_BUILDERS = {
-    'hero': _hero_dms_rows,
+    COMPANY_KEY: _cadila_dms_rows,
 }
 
 
@@ -136,30 +144,16 @@ class DMSNotConfiguredError(Exception):
 
 
 def _company_key(company_name):
-    """Map a company's stored name onto its DMS layout key, or None.
+    """Resolve a company's DMS layout key.
 
-    The lookup used to be an exact match on the lower-cased name, which never fired: the
-    company table holds trading names ('Hero Moto Corp Spares'), not the bare brand the
-    builders are keyed on. So every order in the system reported "no DMS layout yet" —
-    the Download button was replaced by "Coming soon" for all of them and the file route
-    answered 501, making the whole download unreachable rather than merely unconfigured.
-
-    Matching is on the leading brand word, so the suffixes a real company name carries
-    are tolerated. It stays deliberate — a brand still has to be listed in
-    COMPANY_DMS_BUILDERS — and the trailing-space test keeps it from reaching a different
-    company that merely starts with the same letters ('Heroic Parts' is not Hero).
+    The backend is Cadila-only, so the layout is always Cadila's regardless of the
+    company row's stored name; this always returns the module's COMPANY_KEY.
     """
-    norm = ' '.join(''.join(
-        ch if (ch.isalnum() or ch.isspace()) else ' '
-        for ch in str(company_name or '').lower()).split())
-    for key in COMPANY_DMS_BUILDERS:
-        if norm == key or norm.startswith(key + ' '):
-            return key
-    return None
+    return COMPANY_KEY
 
 
 def has_dms_format(company_name):
-    """True only when a company's DMS layout is known (so far, just Hero)."""
+    """True only when a company's DMS layout is known."""
     return _company_key(company_name) is not None
 
 

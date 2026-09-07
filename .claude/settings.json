@@ -336,12 +336,29 @@
       "Bash(curl -s -m 25 -w \"\\\\n  HTTP %{http_code}\\\\n\" http://localhost:5001/health)",
       "Bash(python3 -m py_compile api/modules/sales/uploads/router.py)",
       "Bash(git rm *)",
-      "Bash(python3 -m py_compile api/modules/platform/user_auth/router_admin.py)"
+      "Bash(python3 -m py_compile api/modules/platform/user_auth/router_admin.py)",
+      "Bash(curl -s -m 25 -w \"\\\\nHTTP %{http_code}\\\\n\" http://localhost:5001/health)",
+      "Bash(python3 -c \"import sys,json;d=json.load\\(sys.stdin\\);print\\('  ',d.get\\('msg'\\)\\)\")",
+      "Bash(python3 -c \"import sys,json;d=json.load\\(sys.stdin\\);print\\('  grants:',d.get\\('grants'\\)\\)\")",
+      "Bash(python3 -c \"import sys,json;print\\('  ',json.load\\(sys.stdin\\).get\\('msg'\\)\\)\")",
+      "Bash(sed -i '' \"s/title: 'Download DMS Input',/title: 'Download DMS\\\\/Marg Input',/\" react-ui/src/menu-items/warehouse.js)",
+      "Bash(sed -i '' \"s/title: 'Download DMS Input',/title: 'Download DMS\\\\/Marg Input',/\" react-ui/src/utils/roleScope.js)",
+      "Bash(sed -i '' 's/`Download DMS Input\\\\${filteredOrders.length/`Download DMS\\\\/Marg Input${filteredOrders.length/' react-ui/src/views/warehouse/DownloadDmsInput.js)",
+      "Bash(cd /Users/soumyaagarwal/wms-tool; sed -n '/^def allocate/,/^def /p' api-server-flask/api/modules/fulfillment/order/temp_inventory.py | head -45)",
+      "Bash(awk 'NR<=263 && /^def /{d=$0; n=NR} END{}' api-server-flask/api/modules/fulfillment/order/business.py)",
+      "Bash(grep -rnE \"\\\\b[a-z]{1,4}\\\\.username\\\\b\" api-server-flask/api --include='*.py')",
+      "Bash(sed -i '' 's/                    rv\\\\.username  AS reverted_by_name/                    rv.name      AS reverted_by_name/' api-server-flask/api/modules/platform/user_auth/router_admin.py)",
+      "Bash(grep -rnE \"\\(SELECT|,\\)\\\\s*[a-zA-Z_]{1,10}\\\\.username|[^_a-z]username\\\\s*\\(AS|,|$\\)\" api-server-flask/api --include='*.py')",
+      "Bash(grep -rn '\\\\$' react-ui/src/views/warehouse/components/OrderDetailsDialog.js)",
+      "Bash(grep -vE '\\\\$\\\\{|\\\\\\\\\\\\$')",
+      "Bash(awk 'NR>=240 && NR<=320 && /@rest_api.route/{print NR\": \"$0}' api-server-flask/api/modules/fulfillment/order/router.py)",
+      "Bash(awk 'NR>=600 && NR<=660 && /@rest_api.route/{print NR\": \"$0}' api-server-flask/api/modules/fulfillment/order/router.py)"
     ],
     "additionalDirectories": [
       "c:\\Users\\anshu\\OneDrive\\Desktop\\Projects\\wms-tool\\api-server-flask\\api\\shared",
       "/Users/soumyaagarwal/wms-tool/react-ui/src/views/admin/tabs",
-      "/Users/soumyaagarwal/wms-tool/api-server-flask/api/shared"
+      "/Users/soumyaagarwal/wms-tool/api-server-flask/api/shared",
+      "/Users/soumyaagarwal/wms-tool/api-server-flask/api/modules/fulfillment/order"
     ]
   }
 }

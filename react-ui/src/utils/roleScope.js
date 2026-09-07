@@ -10,8 +10,10 @@
 export const SINGLE_SCREEN_ROLES = {
     part_convertor: {
         // Reads paper-order photos and uploads the sheet that turns them into order lines.
-        home: '/warehouse/submitted-orders',
-        menuId: 'submitted-orders',
+        // The standalone review page was merged into Submitted Orders (formerly
+        // "Download DMS/Marg Input"), so this role lands there.
+        home: '/warehouse/download-dms',
+        menuId: 'download-dms',
         title: 'Submitted Orders',
         description: 'Review submitted (photo / app) orders and build part-convertor sheets.'
     },
@@ -19,7 +21,7 @@ export const SINGLE_SCREEN_ROLES = {
         // Uploads stock, downloads DMS files, raises manual orders, rejects bad ones.
         home: '/warehouse/download-dms',
         menuId: 'download-dms',
-        title: 'Download DMS Input',
+        title: 'Submitted Orders',
         description: 'Upload inventory, then generate and download DMS input files.'
     }
 };

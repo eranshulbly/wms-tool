@@ -469,39 +469,10 @@ class AdminDealerManage(Resource):
                 LIMIT %s OFFSET %s""",
             tuple(params + [page_size, offset])) or []
 
-        # Which categories carry a target anywhere in the FILTERED BOOK, not just on this
-        # page. Deriving the columns from the page would make them appear and disappear as
-        # the admin pages through, and a target would look lost when it had only moved.
-        # Category-level rupee rows only. The same table now also holds this dealer's
-        # scheme-level rupee targets (Basket 1, Basket 2) against the same category, and
-        # they are a breakdown INSIDE the category figure — this editor sets the category
-        # number, so it must neither show nor sum the baskets underneath it.
-        used_cats = [r['category_id'] for r in (mysql_manager.execute_query(
-            f"""SELECT DISTINCT mt.category_id
-                FROM dealer d
-                JOIN dealer_target mt ON mt.dealer_id = d.dealer_id
-                {where + (' AND ' if where else 'WHERE ')} mt.target_period = %s
-                  AND mt.target_level = 'category' AND mt.target_type = 'value'""",
-            tuple(params + [period])) or [])]
-
-        # Targets for the whole page in one query, then attached in Python — a per-dealer
-        # query here would be one round trip per row.
-        ids = [r['dealer_id'] for r in rows]
+        # This deployment sets no dealer targets (sales arrive as uploaded invoices),
+        # so the target columns are always empty and there is nothing to attach.
+        used_cats = []
         targets = {}
-        if ids:
-            ph = ",".join(["%s"] * len(ids))
-            trows = mysql_manager.execute_query(
-                f"""SELECT mt.dealer_id, mt.category_id, c.name AS category,
-                           mt.target_value AS value_target
-                    FROM dealer_target mt
-                    JOIN categories c ON c.category_id = mt.category_id
-                    WHERE mt.target_period = %s AND mt.dealer_id IN ({ph})
-                      AND mt.target_level = 'category' AND mt.target_type = 'value'""",
-                (period, *ids)) or []
-            for t in trows:
-                targets.setdefault(t['dealer_id'], {})[t['category_id']] = {
-                    'category': t['category'], 'value_target': float(t['value_target']),
-                }
 
         cats = mysql_manager.execute_query(
             "SELECT category_id, name FROM categories WHERE is_active = 1 ORDER BY name") or []
@@ -582,81 +553,3 @@ class AdminDealerExecutive(Resource):
                     dealer_id, exec_id, current_user.id)
         return {'success': True, 'dealer_id': dealer_id,
                 'sales_executive_id': exec_id, 'sales_executive': exec_name}, 200
-
-
-@rest_api.route('/api/admin/dealers/<int:dealer_id>/targets')
-class AdminDealerTargets(Resource):
-    """Set a dealer's rupee targets for one month, per category.
-
-    A category sent as blank or 0 has its row DELETED rather than stored as zero: the
-    analytics read "no target" and "a target of nothing" very differently — the first
-    renders as '—', the second as a red 0% the dealer can never escape.
-    """
-
-    @token_required
-    @active_required
-    @_admin_required
-    def put(self, current_user, dealer_id):
-        body = request.get_json(silent=True) or {}
-        period = (body.get('period') or '').strip() or _current_period().isoformat()
-        targets = body.get('targets') or {}
-        if not isinstance(targets, dict):
-            return {'success': False, 'msg': 'targets must be an object keyed by category id'}, 422
-
-        drows = mysql_manager.execute_query(
-            "SELECT dealer_id, company_id FROM dealer WHERE dealer_id = %s", (dealer_id,))
-        if not drows:
-            return {'success': False, 'msg': 'dealer not found'}, 404
-        company_id = drows[0]['company_id']
-
-        valid = {c['category_id'] for c in (mysql_manager.execute_query(
-            "SELECT category_id FROM categories WHERE is_active = 1") or [])}
-
-        applied, cleared = 0, 0
-        for raw_cid, raw_val in targets.items():
-            try:
-                cid = int(raw_cid)
-            except (TypeError, ValueError):
-                return {'success': False, 'msg': f'bad category id "{raw_cid}"'}, 422
-            if cid not in valid:
-                return {'success': False, 'msg': f'unknown category id {cid}'}, 422
-
-            if raw_val in (None, ''):
-                amount = 0.0
-            else:
-                try:
-                    amount = float(str(raw_val).replace(',', ''))
-                except (TypeError, ValueError):
-                    return {'success': False,
-                            'msg': f'target for category {cid} must be a number'}, 422
-            if amount < 0:
-                return {'success': False, 'msg': 'a target cannot be negative'}, 422
-
-            if amount == 0:
-                # Only the category-level row. Clearing a dealer's Parts target must not
-                # take the baskets inside it with it — those are set by the target upload
-                # and this editor has no way to put them back.
-                mysql_manager.execute_query(
-                    "DELETE FROM dealer_target "
-                    "WHERE dealer_id = %s AND category_id = %s AND target_period = %s "
-                    "  AND target_level = 'category' AND target_type = 'value'",
-                    (dealer_id, cid, period), fetch=False)
-                cleared += 1
-            else:
-                # uq_dt_grain covers (dealer, category, level, product, scheme,
-                # part_group, type, period); the sentinels below pin every other member,
-                # so this addresses exactly one row and is an upsert.
-                mysql_manager.execute_query(
-                    """INSERT INTO dealer_target
-                         (dealer_id, category_id, company_id, target_period, product_id,
-                          part_group, scheme, target_level, target_type, target_uom,
-                          target_qty, target_value)
-                       VALUES (%s,%s,%s,%s,0,'','','category','value','',0,%s)
-                       ON DUPLICATE KEY UPDATE target_value = VALUES(target_value)""",
-                    (dealer_id, cid, company_id, period, amount), fetch=False)
-                applied += 1
-
-        logger.info('dealer %s targets for %s set by admin %s (%d set, %d cleared)',
-                    dealer_id, period, current_user.id, applied, cleared)
-        return {'success': True, 'dealer_id': dealer_id, 'period': period,
-                'set': applied, 'cleared': cleared}, 200

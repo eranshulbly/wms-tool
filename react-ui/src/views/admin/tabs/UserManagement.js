@@ -51,6 +51,10 @@ const expand = (chosen, all) =>
 // Roles that act in the field and therefore need a warehouse/company grant to function.
 const NEEDS_SCOPE = ['sales_executive', 'warehouse_staff', 'dispatcher', 'manager'];
 
+// A field executive works out of exactly one depot (enforced server-side too). Companies
+// are not limited — one rep may sell several principals from the same warehouse.
+const SINGLE_WAREHOUSE_ROLES = ['sales_executive'];
+
 const UserManagement = () => {
   const [users, setUsers] = useState([]);
   const [roles, setRoles] = useState([]);
@@ -127,6 +131,15 @@ const UserManagement = () => {
 
   const scopeNeeded = NEEDS_SCOPE.includes(form.role);
   const roleHasAllCompanies = Boolean(roles.find((r) => r.name === form.role)?.all_companies);
+  const oneWarehouse = SINGLE_WAREHOUSE_ROLES.includes(form.role);
+  const scopeOneWarehouse = SINGLE_WAREHOUSE_ROLES.includes(scopeUser?.role);
+  // Switching INTO a single-warehouse role must not carry several warehouses across —
+  // the form would look valid and the server would reject it on submit.
+  useEffect(() => {
+    if (oneWarehouse && form.warehouse_ids.length > 1) {
+      setForm((f) => ({ ...f, warehouse_ids: f.warehouse_ids.slice(0, 1) }));
+    }
+  }, [oneWarehouse, form.warehouse_ids]);
   // "All" collapses to one chip rather than listing every name.
   const renderScope = (vals, all) =>
     (vals.includes(ALL_ID) ? 'All' : all.filter((x) => vals.includes(x.id)).map((x) => x.name).join(', '));
@@ -225,7 +238,15 @@ const UserManagement = () => {
                       startIcon={<IconBuildingWarehouse size={14} />}
                       onClick={() => {
                         setScopeUser(u);
-                        setScopeDraft({ warehouse_ids: u.warehouse_ids, company_ids: u.company_ids });
+                        setScopeDraft({
+                          // A single-warehouse role may still be carrying several from
+                          // before the rule existed; show the first rather than a value
+                          // the Save would bounce.
+                          warehouse_ids: SINGLE_WAREHOUSE_ROLES.includes(u.role)
+                            ? u.warehouse_ids.slice(0, 1)
+                            : u.warehouse_ids,
+                          company_ids: u.company_ids
+                        });
                       }}
                     >
                       Scope
@@ -330,19 +351,33 @@ const UserManagement = () => {
               </TextField>
             </Grid>
             <Grid item xs={12} sm={6}>
-              <TextField
-                fullWidth
-                select
-                size="small"
-                label="Warehouses"
-                SelectProps={{ multiple: true, renderValue: (v) => renderScope(v, warehouses) }}
-                value={form.warehouse_ids}
-                onChange={(e) => set({ warehouse_ids: e.target.value })}
-                helperText="A grant is a warehouse + company pair"
-              >
-                <MenuItem value={ALL_ID}>All warehouses</MenuItem>
-                {warehouses.map((w) => <MenuItem key={w.id} value={w.id}>{w.name}</MenuItem>)}
-              </TextField>
+              {oneWarehouse ? (
+                <TextField
+                  fullWidth
+                  select
+                  size="small"
+                  label="Warehouse"
+                  value={form.warehouse_ids[0] ?? ''}
+                  onChange={(e) => set({ warehouse_ids: e.target.value ? [e.target.value] : [] })}
+                  helperText={`A ${form.role} works out of one warehouse`}
+                >
+                  {warehouses.map((w) => <MenuItem key={w.id} value={w.id}>{w.name}</MenuItem>)}
+                </TextField>
+              ) : (
+                <TextField
+                  fullWidth
+                  select
+                  size="small"
+                  label="Warehouses"
+                  SelectProps={{ multiple: true, renderValue: (v) => renderScope(v, warehouses) }}
+                  value={form.warehouse_ids}
+                  onChange={(e) => set({ warehouse_ids: e.target.value })}
+                  helperText="A grant is a warehouse + company pair"
+                >
+                  <MenuItem value={ALL_ID}>All warehouses</MenuItem>
+                  {warehouses.map((w) => <MenuItem key={w.id} value={w.id}>{w.name}</MenuItem>)}
+                </TextField>
+              )}
             </Grid>
 
             {form.status !== 'active' && (
@@ -389,18 +424,34 @@ const UserManagement = () => {
               </TextField>
             </Grid>
             <Grid item xs={12} sm={6}>
-              <TextField
-                fullWidth
-                select
-                size="small"
-                label="Warehouses"
-                SelectProps={{ multiple: true, renderValue: (v) => renderScope(v, warehouses) }}
-                value={scopeDraft.warehouse_ids}
-                onChange={(e) => setScopeDraft((d) => ({ ...d, warehouse_ids: e.target.value }))}
-              >
-                <MenuItem value={ALL_ID}>All warehouses</MenuItem>
-                {warehouses.map((w) => <MenuItem key={w.id} value={w.id}>{w.name}</MenuItem>)}
-              </TextField>
+              {scopeOneWarehouse ? (
+                <TextField
+                  fullWidth
+                  select
+                  size="small"
+                  label="Warehouse"
+                  value={scopeDraft.warehouse_ids[0] ?? ''}
+                  onChange={(e) => setScopeDraft((d) => ({
+                    ...d, warehouse_ids: e.target.value ? [e.target.value] : []
+                  }))}
+                  helperText={`A ${scopeUser?.role} works out of one warehouse`}
+                >
+                  {warehouses.map((w) => <MenuItem key={w.id} value={w.id}>{w.name}</MenuItem>)}
+                </TextField>
+              ) : (
+                <TextField
+                  fullWidth
+                  select
+                  size="small"
+                  label="Warehouses"
+                  SelectProps={{ multiple: true, renderValue: (v) => renderScope(v, warehouses) }}
+                  value={scopeDraft.warehouse_ids}
+                  onChange={(e) => setScopeDraft((d) => ({ ...d, warehouse_ids: e.target.value }))}
+                >
+                  <MenuItem value={ALL_ID}>All warehouses</MenuItem>
+                  {warehouses.map((w) => <MenuItem key={w.id} value={w.id}>{w.name}</MenuItem>)}
+                </TextField>
+              )}
             </Grid>
           </Grid>
         </DialogContent>

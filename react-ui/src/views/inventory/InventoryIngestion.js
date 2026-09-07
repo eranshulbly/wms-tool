@@ -29,6 +29,10 @@ import { useWarehouse } from '../../context/WarehouseContext';
 // otherwise every request goes to '/api/api/...' and 404s.
 const BASE = 'admin/inventory/ingestion';
 
+// The document types the parser reports, named as the paperwork names itself. 'GRN' is
+// the internal type for a goods receipt; on the desk it is a Cadila tax invoice.
+const DOC_LABELS = { GRN: 'Tax invoice', CREDIT_NOTE: 'Credit note', DN: 'Debit note' };
+
 const useStyles = makeStyles((theme) => ({
   section: { marginBottom: theme.spacing(3) },
   dropzone: {
@@ -89,6 +93,9 @@ const InventoryIngestion = () => {
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState(null);
   const [received, setReceived] = useState([]);
+  // The documents currently on show, so Refresh re-reads the same ones rather than
+  // silently widening to every receipt.
+  const [lastDocs, setLastDocs] = useState([]);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
   const [filters, setFilters] = useState({});
@@ -100,17 +107,26 @@ const InventoryIngestion = () => {
     }
   }, [warehouses, warehouseId]);
 
-  // Scoped to the selected company. An unrestricted admin has no implicit company, so
-  // without this the list comes back holding every tenant's stock at once.
-  const loadReceived = useCallback(async () => {
-    if (!selectedCompany) {
+  // Shows the lines of the documents just uploaded, and nothing else.
+  //
+  // This is a confirmation of what one upload did, not a stock report: it is not loaded
+  // on arrival and it is not reloaded when the filters change. Listing every past
+  // receipt made the lines that had just arrived impossible to pick out, which is the
+  // one thing an operator opens this screen to check.
+  const loadReceived = useCallback(async (docs) => {
+    if (!selectedCompany || !docs || !docs.length) {
       setReceived([]);
       return;
     }
     setLoading(true);
     try {
       const { data } = await api.get(`${BASE}/received`, {
-        params: { limit: 200, company_id: selectedCompany, warehouse_id: warehouseId || undefined },
+        params: {
+          limit: 200,
+          company_id: selectedCompany,
+          warehouse_id: warehouseId || undefined,
+          doc: docs.join(','),
+        },
       });
       setReceived(data.received || []);
     } catch (e) {
@@ -120,11 +136,13 @@ const InventoryIngestion = () => {
     }
   }, [selectedCompany, warehouseId]);
 
-  // Reloads whenever the company or warehouse changes, so the table always shows the
-  // selection rather than whatever was loaded first.
+  // Changing company or warehouse clears the table: the rows on screen belong to a
+  // particular upload, and leaving them up under a different selection would attribute
+  // them to the wrong one.
   useEffect(() => {
-    loadReceived();
-  }, [loadReceived]);
+    setReceived([]);
+    setLastDocs([]);
+  }, [selectedCompany, warehouseId]);
 
   // Flatten each row once into the exact strings the table shows, so a search matches
   // what the user can actually see — including the formatted numbers and the values that
@@ -194,7 +212,13 @@ const InventoryIngestion = () => {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       setResult(data);
-      loadReceived();
+      // Only the documents this upload actually produced. A file that failed to parse
+      // contributes no doc_number, so it simply has no rows here.
+      const docs = (data.ingested || [])
+        .map((r) => r.doc_number)
+        .filter(Boolean);
+      setLastDocs(docs);
+      loadReceived(docs);
     } catch (e) {
       setToast({ severity: 'error', msg: e?.response?.data?.msg || 'Upload failed' });
     } finally {
@@ -292,16 +316,22 @@ const InventoryIngestion = () => {
         <Box className={classes.section}>
           {result.ingested?.map((r) => (
             <Alert
-              key={r.filename}
+              key={`${r.filename}:${r.doc_number}`}
               severity={r.duplicate ? 'info' : r.warnings?.length ? 'warning' : 'success'}
               style={{ marginBottom: 6 }}
             >
-              <strong>{r.filename}</strong> — {r.doc_type} {r.doc_number}, {r.lines} line(s)
+              <strong>{r.filename}</strong> — {DOC_LABELS[r.doc_type] || r.doc_type}{' '}
+              {r.doc_number}, {r.lines} line(s)
               {r.duplicate
                 ? ' — already received, nothing changed'
                 : r.moved_stock
                 ? ` — ${r.received} line(s) received into stock`
                 : ` — ${r.adjusted} price adjustment(s), no stock moved`}
+              {/* Held lines are a real outcome, not a warning to skim past: the credit
+                  applies to a batch whose invoice has not been ingested yet. */}
+              {!r.duplicate && r.pending > 0 && (
+                <span> · {r.pending} held until the matching invoice is uploaded</span>
+              )}
               {!r.duplicate && r.created_products?.length > 0 && (
                 <div>
                   New products created: <strong>{r.created_products.join(', ')}</strong>
@@ -320,9 +350,23 @@ const InventoryIngestion = () => {
               ))}
             </Alert>
           ))}
-          {result.failed?.map((r) => (
-            <Alert key={r.filename} severity="error" style={{ marginBottom: 6 }}>
-              <strong>{r.filename}</strong> — {r.error}
+          {result.failed?.map((r, i) => (
+            <Alert key={`${r.filename}:${r.doc_number || i}`} severity="error" style={{ marginBottom: 6 }}>
+              <strong>{r.filename}</strong>
+              {r.doc_number ? ` — ${DOC_LABELS[r.doc_type] || r.doc_type} ${r.doc_number}` : ''} — {r.error}
+              {/* Listed as rows rather than buried in the sentence: this is a worklist —
+                  each one has to be added to the product master before the file will go
+                  in, so it needs to be readable and copyable. */}
+              {r.missing_products?.length > 0 && (
+                <Box component="ul" style={{ margin: '6px 0 0', paddingLeft: 20 }}>
+                  {r.missing_products.map((m) => (
+                    <li key={`${m.product_code}:${m.product_name}`} className={classes.mono}>
+                      {m.product_code || '(no code)'} — {m.product_name}
+                      {m.pack ? ` · ${m.pack}` : ''}
+                    </li>
+                  ))}
+                </Box>
+              )}
             </Alert>
           ))}
         </Box>
@@ -348,7 +392,7 @@ const InventoryIngestion = () => {
           size="small"
           variant="outlined"
           startIcon={<IconRefresh size={16} />}
-          onClick={loadReceived}
+          onClick={() => loadReceived(lastDocs)}
           disabled={loading}
         >
           Refresh
@@ -385,10 +429,13 @@ const InventoryIngestion = () => {
             {visible.length === 0 && !loading && (
               <TableRow>
                 <TableCell colSpan={10} align="center" className={classes.muted}>
+                  {/* "Nothing received yet" was wrong for an upload-scoped view — stock
+                      may well have been received before, just not by this upload. */}
                   {!selectedCompany
-                    ? 'Select a company to see its received stock.'
+                    ? 'Select a company, then upload a file.'
                     : received.length === 0
-                    ? 'Nothing received yet.'
+                    ? 'Upload a file to see what it received. This view shows only the '
+                      + 'lines from the file you upload.'
                     : 'No rows match the current search.'}
                 </TableCell>
               </TableRow>

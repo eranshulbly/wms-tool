@@ -8,11 +8,10 @@ import {
     Paper,
 } from '@material-ui/core';
 import { makeStyles } from '@material-ui/styles';
-import { IconTrash, IconMapPin, IconPackage, IconCurrentLocation, IconUsers } from '@tabler/icons';
+import { IconTrash, IconMapPin, IconCurrentLocation, IconUsers } from '@tabler/icons';
 
 import DeleteUploads from './tabs/DeleteUploads';
 import DealerTownUpload from './tabs/DealerTownUpload';
-import ProductMasterUpload from './tabs/ProductMasterUpload';
 import DealerAdmin from './tabs/DealerAdmin';
 import UserManagement from './tabs/UserManagement';
 
@@ -37,12 +36,6 @@ const TABS = [
         label:     'Dealer Town Master',
         icon:      <IconMapPin size={16} />,
         component: DealerTownUpload,
-    },
-    {
-        id:        'product-master',
-        label:     'Product Master',
-        icon:      <IconPackage size={16} />,
-        component: ProductMasterUpload,
     },
     {
         id:        'dealers',

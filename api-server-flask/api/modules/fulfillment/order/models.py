@@ -317,10 +317,19 @@ class PotentialOrderProduct(MySQLModel):
     def get_products_for_order(cls, potential_order_id):
         """Get all products for an order with product details"""
         pf_sql, pf_params = partition_filter('potential_order_product', alias='pop')
+        # landing_price comes from the GRN that received the batch (fc_sku_price_details),
+        # so it is per product AND per batch — the same SKU received twice at different
+        # costs has two rows. A line with no batch (feeds that do not name one) simply has
+        # no landing price, and the caller reports the margin as unknown rather than
+        # guessing at one.
         results = mysql_manager.execute_query(
-            f"""SELECT pop.*, p.product_string, p.name, p.description, p.price
+            f"""SELECT pop.*, p.product_string, p.name, p.description, p.price,
+                       fsp.landing_price
                FROM potential_order_product pop
                JOIN product p ON pop.product_id = p.product_id
+               LEFT JOIN fc_sku_price_details fsp
+                      ON fsp.entity_id = pop.product_id
+                     AND fsp.batch_id  = pop.batch_id
                WHERE {pf_sql} AND pop.potential_order_id = %s""",
             pf_params + (potential_order_id,)
         )

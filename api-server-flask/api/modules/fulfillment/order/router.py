@@ -18,6 +18,7 @@ from flask import request
 from flask_restx import Resource, fields, reqparse
 
 from api.extensions import rest_api
+from api.modules.fulfillment.order import pricing
 from api.core.auth import token_required, active_required, upload_permission_required
 from api.models import (
     PotentialOrder, PotentialOrderProduct, OrderStateHistory, OrderState,
@@ -299,8 +300,22 @@ class OrderDetailWithProducts(Resource):
                     'quantity_ordered':  product['quantity'],
                     'quantity_available': product['quantity'],
                     'quantity_packed':   product['quantity_packed'] or 0,
-                    'price':             str(product['price']) if product['price'] else '0.00'
+                    # The rate this LINE was priced at, not the catalogue price — the
+                    # catalogue column is empty for every product, which is why every
+                    # order showed 0.00. None (not '0.00') when the feed carries no
+                    # rate, so the UI can leave the cell blank instead of asserting a
+                    # price of zero.
+                    'price':             (str(product.get('net_rate'))
+                                          if product.get('net_rate') is not None else None),
+                    'mrp':               (str(product.get('mrp'))
+                                          if product.get('mrp') is not None else None),
+                    'total_price':       (str(product.get('total_price'))
+                                          if product.get('total_price') is not None else None),
+                    'landing_price':     (str(product.get('landing_price'))
+                                          if product.get('landing_price') is not None else None),
                 })
+
+            order_totals = pricing.order_totals(products)
 
             # Boxes were removed from the packing flow; kept as an empty list
             # for response-shape compatibility with older clients.
@@ -346,6 +361,9 @@ class OrderDetailWithProducts(Resource):
                 'current_state_time': current_state_time.isoformat(),
                 'assigned_to':       f"User {order_data['requested_by']}",
                 'products':          formatted_products,
+                # Order value, landing cost and margin — see _order_totals for why the
+                # margin only covers lines carrying both a rate and a landing price.
+                'totals':            order_totals,
                 'boxes':             formatted_boxes,
                 'state_history':     formatted_history,
                 'final_order':       final_order_info,
@@ -638,7 +656,17 @@ class OrderPackedUpdate(Resource):
                         'quantity_ordered':  product['quantity'],
                         'quantity_available': product['quantity'],
                         'quantity_packed':   product['quantity_packed'] or 0,
-                        'price':             str(product['price']) if product['price'] else '0.00'
+                        # The rate this LINE was priced at, not the catalogue price — the
+                    # catalogue column is empty for every product, which is why every
+                    # order showed 0.00. None (not '0.00') when the feed carries no
+                    # rate, so the UI can leave the cell blank instead of asserting a
+                    # price of zero.
+                    'price':             (str(product.get('net_rate'))
+                                          if product.get('net_rate') is not None else None),
+                    'mrp':               (str(product.get('mrp'))
+                                          if product.get('mrp') is not None else None),
+                    'total_price':       (str(product.get('total_price'))
+                                          if product.get('total_price') is not None else None)
                     })
 
                 formatted_boxes = []

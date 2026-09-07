@@ -132,11 +132,15 @@ def pdf_to_dataframe(path, company_id=None, upload_type=None):
             'Amount': line['amount'],
         })
 
-    # Only the products upload works line by line. The order and invoice uploads each
-    # treat one row as one document, so feeding them a row per line item creates an order
-    # (or an invoice) per line — `invoice` has no unique key on invoice_number, so its
+    # The invoice upload treats one row as one document, so a row per line item would
+    # create an invoice per line — `invoice` has no unique key on invoice_number, so its
     # INSERT IGNORE will not catch the duplicates for you.
-    if upload_type in ('orders', 'invoices') and rows:
+    #
+    # Orders keep every line. The order upload creates ONE order from the first row
+    # carrying a given order number and reads the rest as its line items (see
+    # order/business.py), so truncating here is what left a PDF-sourced order with a
+    # header and nothing in it.
+    if upload_type == 'invoices' and rows:
         rows = rows[:1]
 
     logger.info("PDF rendered to upload rows",

@@ -52,6 +52,10 @@ services:
       DB_HOST: mysql_db
       DB_PORT: ${DB_PORT:-3306}
       DB_NAME: ${DB_NAME:-warehouse_management}
+      # This deployment serves ONE company (Cadila) from its own schema. DB_SCHEMA
+      # overrides DB_NAME as the schema selector; COMPANY_KEY names the tenant.
+      DB_SCHEMA: ${DB_SCHEMA:-warehouse_management_cadila}
+      COMPANY_KEY: ${COMPANY_KEY:-cadila}
       DB_USERNAME: ${DB_USERNAME}
       DB_PASS: ${DB_PASS}
       SECRET_KEY: ${SECRET_KEY}

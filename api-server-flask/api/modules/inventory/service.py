@@ -410,3 +410,109 @@ def adjust_stock(*args, **kwargs):
 def complete_movement_request(*args, **kwargs):
     """Acknowledge recommendations, move stock between bins, sync the order."""
     raise NotImplementedError(_NOT_BUILT)
+
+
+# ── Allocation for DMS / dispatch ────────────────────────────────────────────
+def uses_live_stock(company_id):
+    """True when this company's stock is held in fc_entity_stock.
+
+    Hero's stock arrives as a periodically uploaded sheet (temp_inventory), which is why
+    downloads there are gated on its freshness. A company whose stock comes from goods
+    receipts has no upload step and no staleness to check — the ledger IS current — so
+    the two need different handling rather than one being bent to fit the other.
+    """
+    return bool(mysql_manager.execute_query(
+        "SELECT 1 FROM fc_entity_stock WHERE company_id = %s LIMIT 1", (company_id,)))
+
+
+def allocate_live(order_items, company_id, planogram_id=None, reference_id=0,
+                  reference_type='DMS', user='dms'):
+    """Take `order_items` out of fc_entity_stock, earliest expiry first.
+
+    Returns (allocated, shortfalls), mirroring temp_inventory.allocate so the caller
+    treats both sources the same way.
+
+    FEFO, not FIFO: stock is batch-tracked with an expiry, and shipping a later-expiring
+    batch while an earlier one sits on the shelf is how stock is written off. Batches with
+    no expiry sort last — an unknown date must not jump the queue ahead of a known one.
+
+    Everything happens in ONE transaction with the stock rows locked, so two operators
+    downloading at the same moment cannot both be promised the last pack.
+    """
+    codes = [it['sku_code'] for it in order_items if it.get('sku_code')]
+    if not codes:
+        return [], []
+
+    allocated, shortfalls = [], []
+    with mysql_manager.get_cursor() as cursor:
+        ph = ','.join(['%s'] * len(codes))
+        params = [company_id, *codes]
+        plano_sql = ''
+        if planogram_id is not None:
+            plano_sql = ' AND s.planogram_id = %s'
+            params.append(planogram_id)
+
+        # Ordered by expiry so the loop below can take rows in FEFO order as it walks.
+        cursor.execute(
+            f"""SELECT s.id, s.entity_id, s.batch_id, s.quantity, s.planogram_id,
+                       s.location_id, s.bin_id, s.entity_type, p.product_string,
+                       JSON_UNQUOTE(JSON_EXTRACT(b.batch_params, '$.expiry')) AS expiry
+                  FROM fc_entity_stock s
+                  JOIN product p ON p.product_id = s.entity_id
+                  LEFT JOIN sku_batch b ON b.id = s.batch_id
+                 WHERE s.company_id = %s AND p.product_string IN ({ph}){plano_sql}
+                   AND s.quantity > 0
+                 ORDER BY p.product_string, (expiry IS NULL), expiry, s.id
+                 FOR UPDATE""",
+            tuple(params))
+
+        by_code = {}
+        for r in cursor.fetchall():
+            by_code.setdefault(r['product_string'], []).append(r)
+
+        for it in order_items:
+            code = it.get('sku_code')
+            ordered = int(it.get('quantity') or 0)
+            if not code or ordered <= 0:
+                continue
+
+            remaining = ordered
+            for row in by_code.get(code, []):
+                if remaining <= 0:
+                    break
+                take = min(remaining, int(float(row['quantity'])))
+                if take <= 0:
+                    continue
+                after = float(row['quantity']) - take
+
+                # The row is deleted when it empties: fc_entity_stock is a live working
+                # set, and a zero row is stock that is not there.
+                if after <= 0:
+                    cursor.execute("DELETE FROM fc_entity_stock WHERE id = %s", (row['id'],))
+                else:
+                    cursor.execute(
+                        "UPDATE fc_entity_stock SET quantity = %s WHERE id = %s",
+                        (after, row['id']))
+
+                cursor.execute(
+                    """INSERT INTO fc_entity_stock_ledger
+                         (planogram_id, location_id, bin_id, entity_id, entity_type,
+                          batch_id, quantity_changed, quantity_after_change, reference_id,
+                          reference_type, company_id, created_by, updated_by)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (row['planogram_id'], row['location_id'], row['bin_id'],
+                     row['entity_id'], row['entity_type'], row['batch_id'],
+                     -take, after, reference_id, reference_type, company_id, user, user))
+                remaining -= take
+
+            supplied = ordered - remaining
+            if supplied < ordered:
+                shortfalls.append({'part_number': code, 'ordered': ordered,
+                                   'supplied': supplied})
+            if supplied > 0:
+                allocated.append(dict(it, quantity=supplied))
+
+    logger.info("live stock allocated", extra={'company_id': company_id,
+                                               'lines': len(allocated),
+                                               'shortfalls': len(shortfalls)})
+    return allocated, shortfalls

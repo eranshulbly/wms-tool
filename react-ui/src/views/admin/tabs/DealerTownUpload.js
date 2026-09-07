@@ -61,11 +61,14 @@ const FORMAT_SPEC = {
     { name: 'address', required: true, note: 'Full postal address' },
     { name: 'gstin', required: true, note: '15-character GSTIN' },
   ],
+  // Shaped on real rows from the pharma dealer master. The second leaves dealer_code and
+  // the coordinates blank, because those are optional and a template that fills every
+  // column teaches the operator that all of them are required.
   sample: [
-    ['Aakash Auto Service', 'D-1042', 'Meerganj', '28.3670', '79.4304', '9805426558',
-     'A-4 Rampur Garden, Civil Lines', '09AAKFA2952M1Z2'],
-    ['Aban Auto Parts', 'D-1043', 'Bareilly', '28.3441', '79.4200', '9319620865',
-     'Vinod Complex, Dispensary Road', '09ATAPS3130Q1ZA'],
+    ['CHIKITSA 24.', 'D-1042', 'Bareilly', '28.3670', '79.4304', '6398296265',
+     'Basement H No-7/124 Nawada Jogiyan', '09GAXPD0902H1ZK'],
+    ['ANAND MEDICAL AGENCY', '', 'Puranpur', '', '', '9759010188',
+     'Near Charlie Tailors Mohall Chowk', '09AHUPG0097L1ZP'],
   ],
   info: (
     <>

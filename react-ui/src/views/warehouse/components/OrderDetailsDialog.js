@@ -46,6 +46,14 @@ import StatusChip from './StatusChip';
  *   allowedStatuses — string[] | null
  *   classes         — makeStyles classes from the parent page
  */
+// Indian rupees, to two decimals. An unpriced line shows an em-dash rather than 0.
+const money = (v) => {
+  if (v === null || v === undefined || v === '') return '—';
+  const n = Number(v);
+  if (Number.isNaN(n)) return '—';
+  return `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+
 const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) => {
   const [activeStep, setActiveStep] = useState(0);
   const [numberOfBoxes, setNumberOfBoxes] = useState(1);
@@ -195,7 +203,9 @@ const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) =
                     <TableCell>Product</TableCell>
                     <TableCell>Description</TableCell>
                     <TableCell>Quantity</TableCell>
-                    <TableCell>Price</TableCell>
+                    <TableCell>Rate</TableCell>
+                    <TableCell>Landing</TableCell>
+                    <TableCell>Line total</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -207,12 +217,59 @@ const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) =
                       </TableCell>
                       <TableCell>{product.description}</TableCell>
                       <TableCell>{product.quantity_ordered}</TableCell>
-                      <TableCell>${product.price}</TableCell>
+                      {/* Rupees, and an em-dash when the feed carried no rate — a bare
+                          "$0" asserted both a wrong currency and a price never given. */}
+                      <TableCell>{money(product.price)}</TableCell>
+                      <TableCell>{money(product.landing_price)}</TableCell>
+                      <TableCell>{money(product.total_price)}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
             </TableContainer>
+
+            {order.totals && (
+              <Box
+                style={{
+                  display: 'flex', flexWrap: 'wrap', gap: 24, marginTop: 16,
+                  padding: '12px 16px', borderRadius: 8, background: '#f6f8fa'
+                }}
+              >
+                <Box>
+                  <Typography variant="body2" color="textSecondary">Order total</Typography>
+                  <Typography variant="h4">{money(order.totals.order_total)}</Typography>
+                </Box>
+                <Box>
+                  <Typography variant="body2" color="textSecondary">Landing cost</Typography>
+                  <Typography variant="h4">{money(order.totals.landing_cost)}</Typography>
+                </Box>
+                <Box>
+                  <Typography variant="body2" color="textSecondary">Margin</Typography>
+                  <Typography
+                    variant="h4"
+                    style={{ color: order.totals.margin > 0 ? '#12805c' : order.totals.margin < 0 ? '#e5372e' : undefined }}
+                  >
+                    {money(order.totals.margin)}
+                    {order.totals.margin_pct != null && (
+                      <Typography component="span" variant="body1" style={{ marginLeft: 6 }}>
+                        ({order.totals.margin_pct}%)
+                      </Typography>
+                    )}
+                  </Typography>
+                </Box>
+                {/* The margin only covers lines carrying BOTH a rate and a landing cost.
+                    Saying so is the difference between a partial figure and a wrong one. */}
+                {order.totals.costed_lines < order.totals.lines && (
+                  <Box style={{ alignSelf: 'center' }}>
+                    <Typography variant="caption" color="textSecondary">
+                      Margin covers {order.totals.costed_lines} of {order.totals.lines} lines
+                      {order.totals.priced_lines < order.totals.lines
+                        && ` · ${order.totals.lines - order.totals.priced_lines} unpriced`}
+                    </Typography>
+                  </Box>
+                )}
+              </Box>
+            )}
 
             <Divider style={{ margin: '16px 0' }} />
             <Typography variant="h6" gutterBottom>Order Timeline</Typography>

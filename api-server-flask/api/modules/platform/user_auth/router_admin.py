@@ -113,7 +113,7 @@ class UploadBatchList(Resource):
                     w.name       AS warehouse_name,
                     c.name       AS company_name,
                     u.name   AS uploaded_by_name,
-                    rv.username  AS reverted_by_name
+                    rv.name      AS reverted_by_name
                 FROM upload_batches ub
                 LEFT JOIN warehouse w  ON ub.warehouse_id = w.warehouse_id
                 LEFT JOIN company   c  ON ub.company_id   = c.company_id
@@ -421,6 +421,10 @@ def _delete_order_batch(batch_id: int) -> None:
     pf_po_sql,  pf_po_params  = partition_filter('potential_order', alias='po')
     pf_osh_sql, pf_osh_params = partition_filter('order_state_history', alias='osh')
     pf_pop_sql, pf_pop_params = partition_filter('potential_order_product', alias='pop')
+    # The final DELETE names no alias — a single-table DELETE cannot carry one — so it
+    # needs the bare form of the same filter. Using the aliased fragment there is what
+    # raised "Unknown column 'po.created_at'".
+    pf_po_bare_sql, pf_po_bare_params = partition_filter('potential_order')
 
     blocking = mysql_manager.execute_query(
         f"""
@@ -462,8 +466,8 @@ def _delete_order_batch(batch_id: int) -> None:
             (batch_id, *pf_pop_params, *pf_po_params),
         )
         cursor.execute(
-            f"DELETE FROM potential_order WHERE upload_batch_id = %s AND {pf_po_sql}",
-            (batch_id, *pf_po_params),
+            f"DELETE FROM potential_order WHERE upload_batch_id = %s AND {pf_po_bare_sql}",
+            (batch_id, *pf_po_bare_params),
         )
 
 
@@ -1012,6 +1016,26 @@ class AdminProductList(Resource):
 
 VALID_STATUSES = ('active', 'pending', 'blocked')
 
+# Roles that may hold at most ONE warehouse. A field executive works out of a single
+# depot: their orders, their stock view and their supply sheet all resolve against it, so
+# a second warehouse makes "which one did this come from" unanswerable rather than
+# giving them more reach. Companies are NOT limited — one rep can sell several
+# principals out of the same depot, which is why the pair is (1 warehouse x N companies).
+SINGLE_WAREHOUSE_ROLES = ('sales_executive',)
+
+
+def _check_single_warehouse(role, grants):
+    """Return an error string if `role` may hold only one warehouse and `grants` name
+    more than one. Counts DISTINCT warehouses — several companies in the same depot is
+    several grants but still one warehouse, and must be allowed."""
+    if role not in SINGLE_WAREHOUSE_ROLES:
+        return None
+    wids = {g.get('warehouse_id') for g in grants if g.get('warehouse_id')}
+    if len(wids) > 1:
+        return (f'A {role} can be mapped to only one warehouse — '
+                f'{len(wids)} were selected.')
+    return None
+
 
 def _role_map():
     return {r['name']: r['role_id'] for r in
@@ -1097,6 +1121,16 @@ class AdminUsers(Resource):
             return {'success': False, 'msg': f'Unknown role "{role}".'}, 422
         if mysql_manager.execute_query("SELECT id FROM users WHERE email = %s", (email,)):
             return {'success': False, 'msg': f'Email "{email}" already has an account.'}, 409
+
+        # Validate the scope before creating anything — a rejected request must not
+        # leave a half-made user behind.
+        pre_grants = body.get('grants') or [
+            {'warehouse_id': w, 'company_id': c}
+            for w in (body.get('warehouse_ids') or [])
+            for c in (body.get('company_ids') or [])]
+        err = _check_single_warehouse(role, pre_grants)
+        if err:
+            return {'success': False, 'msg': err}, 422
 
         try:
             mysql_manager.execute_query(
@@ -1186,6 +1220,14 @@ class AdminUserDetail(Resource):
                 cids = body.get('company_ids') or []
                 regrant = [{'warehouse_id': w, 'company_id': c} for w in wids for c in cids]
             changed.append('scope')
+
+        # Check against the role the user will hold AFTER this request: changing role and
+        # scope in one call must be judged on the outcome, not the previous role.
+        if regrant is not None:
+            effective_role = (body.get('role') or row[0]['role'] or '').strip()
+            err = _check_single_warehouse(effective_role, regrant)
+            if err:
+                return {'success': False, 'msg': err}, 422
 
         if not sets and regrant is None:
             return {'success': False, 'msg': 'Nothing to update.'}, 422

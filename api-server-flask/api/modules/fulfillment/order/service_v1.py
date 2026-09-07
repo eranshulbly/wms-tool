@@ -123,7 +123,19 @@ def list_orders(status=None, dealer_id=None, warehouse_id=None, date_from=None, 
         # Scoped user: an empty list legitimately matches nothing.
         if not warehouse_ids:
             return []
-        where.append("so.warehouse_id IN (%s)" % ",".join(["%s"] * len(warehouse_ids)))
+        # NULL warehouse passes the scope.
+        #
+        # An order raised in the field carries no warehouse — the rep is standing
+        # in a shop and never picks one; the back office assigns it later. But
+        # `NULL IN (1,2,3)` is NULL, not true, so a plain IN filtered out every
+        # order the mobile app has ever created, INCLUDING FROM THE REP WHO RAISED
+        # IT. The order was saved correctly and simply could not be seen.
+        #
+        # Safe to admit: company scoping is applied separately below, so this
+        # widens the view to unassigned orders of the caller's own companies and
+        # nothing further.
+        where.append("(so.warehouse_id IN (%s) OR so.warehouse_id IS NULL)"
+                     % ",".join(["%s"] * len(warehouse_ids)))
         params.extend(warehouse_ids)
     if company_ids is not None:
         # Same convention as warehouse_ids: None => unscoped, [] => matches nothing.
@@ -214,6 +226,45 @@ def _location_columns(meta, latitude, received_at):
     return captured_at, source, age_s, is_mocked
 
 
+def _warehouse_for(user_id, company_id):
+    """The warehouse a rep's orders belong to, or None when it cannot be decided.
+
+    An order raised in the field carries no warehouse of its own, and until now it
+    stayed NULL forever: the fulfilment screen could not check stock ("no warehouse
+    set"), and the scoped order list filtered it out of the rep's own history,
+    because `NULL IN (...)` is never true.
+
+    A sales executive is granted exactly one warehouse per company, so that grant
+    is the answer. Scoped BY COMPANY deliberately — a user working two companies
+    has a different warehouse in each, and ignoring the company would pick one of
+    them at random.
+
+    Several grants in the same company has no single answer, so it stays NULL
+    rather than guessing: a wrong warehouse means stock is checked against the
+    wrong building, which is worse than no answer at all. Logged, because it means
+    someone's grants need looking at.
+    """
+    if user_id is None:
+        return None
+    params = [user_id]
+    scope = ""
+    if company_id is not None:
+        scope = " AND company_id = %s"
+        params.append(company_id)
+    rows = mysql_manager.execute_query(
+        "SELECT DISTINCT warehouse_id FROM user_warehouse_company "
+        "WHERE user_id = %s AND warehouse_id IS NOT NULL" + scope, tuple(params))
+    if not rows:
+        return None
+    if len(rows) > 1:
+        logger.warning(
+            "cannot derive a warehouse: user has several in this company",
+            extra={'user_id': user_id, 'company_id': company_id,
+                   'warehouses': [r['warehouse_id'] for r in rows]})
+        return None
+    return rows[0]['warehouse_id']
+
+
 def create_order(dealer_id, items, created_by, warehouse_id=None,
                  expected_delivery_date=None, notes=None, company_id=None,
                  latitude=None, longitude=None, location_accuracy_m=None,
@@ -228,7 +279,14 @@ def create_order(dealer_id, items, created_by, warehouse_id=None,
     `_location_columns`. It is recorded, never validated against: an order refused
     in the field because its GPS was rough is worse than an order flagged for
     review in the office.
+
+    `warehouse_id` is derived from the rep's own mapping when the caller does not
+    supply one — see `_warehouse_for`. The app never sends it: a rep standing in a
+    shop has no idea which warehouse will serve the order, and asking them would
+    be asking the wrong person.
     """
+    if warehouse_id is None:
+        warehouse_id = _warehouse_for(created_by, company_id)
     dealer = mysql_manager.execute_query(
         "SELECT dealer_id, status, company_id FROM dealer WHERE dealer_id = %s", (dealer_id,)
     )
@@ -280,12 +338,16 @@ def create_order(dealer_id, items, created_by, warehouse_id=None,
             cursor.execute(
                 """INSERT INTO submitted_order_products
                      (submitted_order_id, product_id, sku_code, product_name, uom, quantity,
-                      mrp, created_at, updated_at)
+                      mrp, net_rate, created_at, updated_at)
                    VALUES (%s,
                            (SELECT product_id FROM product WHERE product_string = %s),
-                           %s,%s,%s,%s,%s,%s,%s)""",
+                           %s,%s,%s,%s,%s,%s,%s,%s)""",
+                # net_rate is stored as given or not at all. The flows that quote a
+                # rate send one; the standard flow does not, and NULL there is the
+                # honest record of "nobody priced this line" — a zero would read as
+                # a line given away free.
                 (order_id, sku['sku_code'], sku['sku_code'], sku['name'], sku['uom'],
-                 it['quantity_requested'], sku['price'], now, now),
+                 it['quantity_requested'], sku['price'], it.get('net_rate'), now, now),
             )
 
         _record_status_change(cursor, order_id, None, OrderStatus.SUBMITTED.value,

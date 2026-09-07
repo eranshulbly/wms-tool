@@ -26,6 +26,24 @@ from api.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _money(value):
+    """A price cell as a float, or None when absent/unparseable.
+
+    None, not 0: a line that simply was not priced must stay distinguishable from one
+    priced at nothing, because the UI shows the first as blank and the second as a real
+    zero.
+    """
+    if value is None:
+        return None
+    s = str(value).replace(',', '').replace('\u20b9', '').strip()
+    if not s or s.lower() in ('nan', 'none', '-'):
+        return None
+    try:
+        return round(float(s), 4)
+    except ValueError:
+        return None
+
+
 def _batch_key(product_id, batch_number, expiry_date):
     """Identity of a batch, matching how inventory ingestion hashes it."""
     from api.modules.inventory.ingestion.service import batch_hash
@@ -41,7 +59,7 @@ def _resolve_batch_ids(order_products, products_map):
     """
     hashes = set()
     for lines in order_products.values():
-        for part_no, _desc, _qty, batch_number, expiry_date in lines:
+        for part_no, _desc, _qty, batch_number, expiry_date, _mrp, _rate in lines:
             product = products_map.get(part_no)
             if product and batch_number:
                 hashes.add(_batch_key(product['product_id'], batch_number, expiry_date))
@@ -96,7 +114,10 @@ def process_product_upload_dataframe(df, company_id, _user_id, _upload_batch_id=
                  extra={'fetched': len(products_map), 'requested': len(unique_part_numbers)})
 
     # ── Phase 2: classify rows in memory (zero DB calls) ─────────────────────
-    # order_products: potential_order_id → list of (part_no, description, qty)
+    # order_products: potential_order_id → list of
+    #   (part_no, description, qty, batch_number, expiry_date, mrp, rate)
+    # The price travels WITH the line. Reading it back in phase 3 from the loop variable
+    # would take the last row of this loop for every line of every order.
     order_products = {}
     new_products = {}           # part_no → description (to be created)
     error_rows = []
@@ -154,6 +175,8 @@ def process_product_upload_dataframe(df, company_id, _user_id, _upload_batch_id=
                 part_no, description, qty,
                 str(row.get('Batch #', '') or '').strip() or None,
                 row.get('Expiry') if str(row.get('Expiry', '') or '').strip() else None,
+                _money(row.get('MRP')),
+                _money(row.get('Rate')),
             ))
 
         except Exception as e:
@@ -192,7 +215,7 @@ def process_product_upload_dataframe(df, company_id, _user_id, _upload_batch_id=
 
     pop_rows = []
     for pot_id, lines in order_products.items():
-        for part_no, _description, qty, batch_number, expiry_date in lines:
+        for part_no, _description, qty, batch_number, expiry_date, mrp, rate in lines:
             product = products_map.get(part_no)
             if not product:
                 error_rows.append({
@@ -212,14 +235,20 @@ def process_product_upload_dataframe(df, company_id, _user_id, _upload_batch_id=
                                    f"— receive it before selling it"),
                     })
 
+            # Price, when the file carries it. Feeds that do not price their lines
+            # (Hero's order sheets) leave these NULL rather than 0 — a zero rate reads
+            # as "free", which is a different claim from "not priced here".
+            total = round(rate * qty, 2) if rate is not None else None
+
             pop_rows.append((
                 pot_id,
                 product['product_id'],
                 qty,
                 0,          # quantity_packed
                 qty,        # quantity_remaining
-                None,       # mrp
-                None,       # total_price
+                mrp,
+                rate,       # net_rate — per unit, what this line is billed at
+                total,      # total_price = rate x quantity
                 current_time,
                 current_time,
                 batch_id,

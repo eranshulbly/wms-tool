@@ -19,7 +19,6 @@ const Launcher = Loadable(lazy(() => import('../views/launcher/Launcher')));
 const OrderUpload = Loadable(lazy(() => import('../views/warehouse/OrderUpload')));
 const WarehouseDashboard = Loadable(lazy(() => import('../views/warehouse/WarehouseDashboard')));
 const OrderManagement = Loadable(lazy(() => import('../views/warehouse/OrderManagement')));
-const SubmittedOrders = Loadable(lazy(() => import('../views/warehouse/SubmittedOrders')));
 const DownloadDmsInput = Loadable(lazy(() => import('../views/warehouse/DownloadDmsInput')));
 const SupplySheetDownload = Loadable(lazy(() => import('../views/warehouse/SupplySheetDownload')));
 const InvoiceUpload = Loadable(lazy(() => import('../views/warehouse/InvoiceUpload')));
@@ -27,14 +26,12 @@ const ProductUpload = Loadable(lazy(() => import('../views/warehouse/ProductUplo
 const EwayBillGenerator = Loadable(lazy(() => import('../views/warehouse/EwayBillGenerator')));
 
 // analytics routing
-const TargetTracker = Loadable(lazy(() => import('../views/analytics/TargetTracker')));
 const InventoryReport = Loadable(lazy(() => import('../views/analytics/InventoryReport')));
+const StockMovement = Loadable(lazy(() => import('../views/analytics/StockMovement')));
+const SalesExecutives = Loadable(lazy(() => import('../views/analytics/SalesExecutives')));
 
 // admin routing
 const AdminControls = Loadable(lazy(() => import('../views/admin/AdminControls')));
-
-// monthly data upload (top-level, admin only)
-const MonthlyDataUpload = Loadable(lazy(() => import('../views/monthly/MonthlyDataUpload')));
 
 // supplier document ingestion (top-level, admin only)
 const InventoryIngestion = Loadable(lazy(() => import('../views/inventory/InventoryIngestion')));
@@ -49,7 +46,6 @@ const MainRoutes = () => {
             path={[
                 '/home',
                 '/dashboard/default',
-                '/warehouse/submitted-orders',
                 '/warehouse/download-dms',
                 '/warehouse/upload-orders',
                 '/warehouse/manage-orders',
@@ -58,12 +54,11 @@ const MainRoutes = () => {
                 '/warehouse/supply-sheet',
                 '/warehouse/eway-bill',
                 '/analytics',
-                '/analytics/target-tracker',
                 '/analytics/inventory-report',
+                '/analytics/stock-movement',
+                '/analytics/sales-executives',
                 // Admin routes
                 '/admin-controls',
-                // Monthly data upload (top-level, admin only)
-                '/monthly-data-upload',
                 // Supplier document ingestion (top-level, admin only)
                 '/inventory-ingestion',
             ]}
@@ -75,7 +70,6 @@ const MainRoutes = () => {
                     <Route path="/dashboard/default" render={() => <AuthGuard><WarehouseDashboard /></AuthGuard>} />
 
                     {/* Warehouse Management Routes */}
-                    <Route path="/warehouse/submitted-orders" render={() => <AuthGuard><SubmittedOrders /></AuthGuard>} />
                     <Route path="/warehouse/download-dms" render={() => <AuthGuard><DownloadDmsInput /></AuthGuard>} />
                     <Route path="/warehouse/upload-orders" render={() => <AuthGuard><OrderUpload /></AuthGuard>} />
                     <Route path="/warehouse/manage-orders" render={() => <AuthGuard><OrderManagement /></AuthGuard>} />
@@ -111,10 +105,12 @@ const MainRoutes = () => {
                         )}
                     />
 
-                    {/* Analytics — /analytics lands on Target Tracker */}
-                    <Route path="/analytics/target-tracker" render={() => <AuthGuard><TargetTracker /></AuthGuard>} />
+                    {/* Analytics — /analytics lands on Batch Costing. Target Tracker
+                        was removed (this deployment sets no targets). */}
                     <Route path="/analytics/inventory-report" render={() => <AuthGuard><InventoryReport /></AuthGuard>} />
-                    <Route exact path="/analytics" render={() => <Redirect to="/analytics/target-tracker" />} />
+                    <Route path="/analytics/stock-movement" render={() => <AuthGuard><StockMovement /></AuthGuard>} />
+                    <Route path="/analytics/sales-executives" render={() => <AuthGuard><SalesExecutives /></AuthGuard>} />
+                    <Route exact path="/analytics" render={() => <Redirect to="/analytics/inventory-report" />} />
 
                     {/* Admin routes */}
                     <Route
@@ -123,18 +119,6 @@ const MainRoutes = () => {
                             <AuthGuard>
                                 <AdminGuard>
                                     <AdminControls />
-                                </AdminGuard>
-                            </AuthGuard>
-                        )}
-                    />
-
-                    {/* Monthly Data Upload — top-level, admin only */}
-                    <Route
-                        path="/monthly-data-upload"
-                        render={() => (
-                            <AuthGuard>
-                                <AdminGuard>
-                                    <MonthlyDataUpload />
                                 </AdminGuard>
                             </AuthGuard>
                         )}

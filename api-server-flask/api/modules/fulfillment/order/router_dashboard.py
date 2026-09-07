@@ -24,6 +24,7 @@ from api.shared import media
 from flask_restx import Resource, fields
 
 from api.extensions import rest_api
+from api.modules.fulfillment.order import pricing
 from api.core.auth import token_required, active_required
 from api.models import (
     Users, Warehouse, Company, PotentialOrder,
@@ -169,10 +170,10 @@ def _ensure_state(name, description):
 @rest_api.route('/api/warehouses')
 class WarehouseList(Resource):
 
-    @rest_api.marshal_with(warehouses_response)
-    @rest_api.response(400, 'Error', dash_error_response)
     @token_required
     @active_required
+    @rest_api.marshal_with(warehouses_response)
+    @rest_api.response(400, 'Error', dash_error_response)
     def get(self, current_user):
         try:
             warehouses = Warehouse.get_all()
@@ -186,10 +187,10 @@ class WarehouseList(Resource):
 @rest_api.route('/api/companies')
 class CompanyList(Resource):
 
-    @rest_api.marshal_with(companies_response)
-    @rest_api.response(400, 'Error', dash_error_response)
     @token_required
     @active_required
+    @rest_api.marshal_with(companies_response)
+    @rest_api.response(400, 'Error', dash_error_response)
     def get(self, current_user):
         try:
             from api.db_manager import mysql_manager as _db
@@ -220,10 +221,10 @@ class OrderStatusCount(Resource):
     """MySQL endpoint for retrieving order status counts."""
 
     @rest_api.doc(params={'warehouse_id': 'Warehouse ID', 'company_id': 'Company ID'})
-    @rest_api.marshal_with(status_response)
-    @rest_api.response(400, 'Error', dash_error_response)
     @token_required
     @active_required
+    @rest_api.marshal_with(status_response)
+    @rest_api.response(400, 'Error', dash_error_response)
     def get(self, current_user):
         try:
             warehouse_id = request.args.get('warehouse_id', type=int)
@@ -284,10 +285,10 @@ class OrdersList(Resource):
         'company_id':   'Company ID',
         'limit':        'Limit number of results (default 100)',
     })
-    @rest_api.marshal_with(orders_response)
-    @rest_api.response(400, 'Error', dash_error_response)
     @token_required
     @active_required
+    @rest_api.marshal_with(orders_response)
+    @rest_api.response(400, 'Error', dash_error_response)
     def get(self, current_user):
         try:
             status       = request.args.get('status', '')
@@ -740,10 +741,10 @@ class RecentOrders(Resource):
         'company_id':   'Company ID',
         'limit':        'Maximum number of orders to return (default 10)',
     })
-    @rest_api.marshal_with(recent_orders_response)
-    @rest_api.response(400, 'Error', dash_error_response)
     @token_required
     @active_required
+    @rest_api.marshal_with(recent_orders_response)
+    @rest_api.response(400, 'Error', dash_error_response)
     def get(self, current_user):
         try:
             warehouse_id = request.args.get('warehouse_id', type=int)
@@ -983,6 +984,88 @@ class SubmittedOrderPhoto(Resource):
         if resp is None:
             return {'success': False, 'msg': 'attachment file is missing'}, 404
         return resp
+
+
+@rest_api.route('/api/orders/submitted/<int:order_id>/items')
+class SubmittedOrderItems(Resource):
+    """The line items of one app-submitted order, for the expandable row.
+
+    Mirrors what Manage Orders shows for an uploaded order, with one difference that is
+    structural rather than an omission: submitted_order_products carries no batch, and
+    landing price is recorded per BATCH (fc_sku_price_details), so there is no cost to
+    measure these lines against. Landing and margin therefore come back null and the UI
+    says why, instead of quoting a list price as if it were the cost of what was sold.
+    """
+
+    @token_required
+    @active_required
+    def get(self, current_user, order_id):
+        try:
+            head = mysql_manager.execute_query(
+                """SELECT so.submitted_order_id, so.order_number, so.company_id,
+                          c.name AS company_name, so.dms_status
+                   FROM submitted_orders so
+                   LEFT JOIN company c ON c.company_id = so.company_id
+                   WHERE so.submitted_order_id = %s""", (order_id,))
+            if not head:
+                return {'success': False, 'msg': 'Order not found'}, 404
+            try:
+                company_ids = resolve_company_scope(current_user, head[0]['company_id'])
+            except CompanyAccessDenied as e:
+                return {'success': False, 'msg': str(e)}, 403
+            if company_ids is not None and head[0]['company_id'] not in company_ids:
+                return {'success': False, 'msg': 'Not your company'}, 403
+
+            rows = mysql_manager.execute_query(
+                """SELECT sop.submitted_order_product_id, sop.product_id, sop.sku_code,
+                          sop.product_name, sop.uom, sop.quantity, sop.order_quantity,
+                          sop.order_uom, sop.mrp, sop.net_rate, sop.dms_quantity
+                   FROM submitted_order_products sop
+                   WHERE sop.submitted_order_id = %s
+                   ORDER BY sop.submitted_order_product_id""", (order_id,)) or []
+
+            items = [{
+                'id': r['submitted_order_product_id'],
+                'product_id': r['product_id'],
+                'sku_code': r['sku_code'],
+                'product_name': r['product_name'],
+                'uom': r['order_uom'] or r['uom'],
+                'quantity': r['quantity'],
+                'order_quantity': (float(r['order_quantity'])
+                                   if r['order_quantity'] is not None else None),
+                'mrp': float(r['mrp']) if r['mrp'] is not None else None,
+                'net_rate': float(r['net_rate']) if r['net_rate'] is not None else None,
+                # What stock could actually cover, stamped at download time. None until
+                # the file is generated.
+                'dms_quantity': r['dms_quantity'],
+                'line_total': (round(float(r['net_rate']) * float(r['quantity'] or 0), 2)
+                               if r['net_rate'] is not None else None),
+                'landing_price': None,
+            } for r in rows]
+
+            # These lines carry no batch, so the batch to cost against is inferred:
+            # earliest expiry first, consuming live stock (see pricing.apply_fefo_landing).
+            pricing.apply_fefo_landing(items, head[0]['company_id'])
+            totals = pricing.order_totals(items)
+            costed_any = any(i.get('landing_price') is not None for i in items)
+            return {
+                'success': True,
+                'order_number': head[0]['order_number'],
+                'company_name': head[0]['company_name'],
+                'items': items,
+                'totals': totals,
+                # Told to the UI rather than inferred there, so the reason travels with
+                # the data instead of being re-guessed on screen.
+                'landing_available': costed_any,
+                'landing_note': ('Landing cost is allocated first-expiry-first across the '
+                                 'batches in stock, because these lines do not name one.'
+                                 if costed_any else
+                                 'No batch in stock carries a landing price for these '
+                                 'products, so margin cannot be computed.'),
+            }, 200
+        except Exception as e:
+            logger.exception("Error in /api/orders/submitted/<id>/items")
+            return {'success': False, 'msg': str(e)}, 400
 
 
 @rest_api.route('/api/orders/submitted/<int:order_id>/part-convertor')
@@ -1272,7 +1355,8 @@ class SubmittedOrderDmsFile(Resource):
         from api.modules.fulfillment.order import dms
 
         head = mysql_manager.execute_query(
-            """SELECT so.submitted_order_id, so.order_number, c.name AS company_name
+            """SELECT so.submitted_order_id, so.order_number, so.company_id,
+                      so.warehouse_id, c.name AS company_name
                FROM submitted_orders so
                LEFT JOIN company c ON c.company_id = so.company_id
                WHERE so.submitted_order_id = %s""",
@@ -1288,12 +1372,13 @@ class SubmittedOrderDmsFile(Resource):
             return {
                 'success': False,
                 'msg': f"DMS file for {head['company_name'] or 'this company'} "
-                       f"isn't available yet — only Hero is configured so far.",
+                       f"isn't available yet — configured so far: "
+                       f"{', '.join(sorted(dms.COMPANY_DMS_BUILDERS)).title()}.",
             }, 501
 
         items = mysql_manager.execute_query(
             """SELECT submitted_order_product_id, sku_code, product_name, quantity, mrp,
-                      dms_quantity
+                      dms_quantity, net_rate
                FROM submitted_order_products
                WHERE submitted_order_id = %s
                ORDER BY submitted_order_product_id""",
@@ -1319,20 +1404,37 @@ class SubmittedOrderDmsFile(Resource):
             lines = [dict(i, quantity=i['dms_quantity']) for i in items
                      if (i['dms_quantity'] or 0) > 0]
         else:
-            # Stock older than the freshness window cannot be allocated against — someone
-            # has probably picked from it since, so the file would promise parts that are
-            # no longer on the shelf.
-            stale = temp_inventory.staleness_error()
-            if stale:
-                return {'success': False, 'msg': stale}, 409
+            # Where this company's stock lives decides how it is allocated. Stock received
+            # through goods receipts is held in fc_entity_stock and is current by
+            # construction — there is no sheet to upload and therefore no staleness to
+            # check. temp_inventory has no company column at all, so applying its
+            # freshness rule to such a company refuses every download with a message about
+            # an upload that company never does.
+            from api.modules.inventory import service as inventory_service
+            live_stock = inventory_service.uses_live_stock(head['company_id'])
 
-            lines, shortfalls = temp_inventory.allocate(items)
+            if live_stock:
+                lines, shortfalls = inventory_service.allocate_live(
+                    items, head['company_id'],
+                    planogram_id=head.get('warehouse_id'),
+                    reference_id=order_id, reference_type='DMS',
+                    user=getattr(current_user, 'username', 'dms'))
+                out_of_stock_msg = ('none of the parts on this order are in stock — '
+                                    'receive stock against a GRN, or reject the order.')
+            else:
+                # Stock older than the freshness window cannot be allocated against —
+                # someone has probably picked from it since, so the file would promise
+                # parts that are no longer on the shelf.
+                stale = temp_inventory.staleness_error()
+                if stale:
+                    return {'success': False, 'msg': stale}, 409
+
+                lines, shortfalls = temp_inventory.allocate(items)
+                out_of_stock_msg = ('none of the parts on this order are in stock — '
+                                    'upload current inventory, or reject the order.')
+
             if not lines:
-                return {
-                    'success': False,
-                    'msg': 'none of the parts on this order are in stock — '
-                           'upload current inventory, or reject the order.',
-                }, 409
+                return {'success': False, 'msg': out_of_stock_msg}, 409
 
             supplied = {ln['submitted_order_product_id']: ln['quantity'] for ln in lines}
             now = datetime.utcnow()

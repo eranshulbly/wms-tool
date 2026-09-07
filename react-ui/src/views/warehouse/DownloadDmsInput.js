@@ -30,7 +30,11 @@ import {
   Snackbar,
   Alert
 } from '@material-ui/core';
-import { IconPhoto, IconX, IconDownload, IconBan, IconPlus, IconUpload, IconBuildingWarehouse } from '@tabler/icons';
+import {
+  IconPhoto, IconX, IconDownload, IconBan, IconPlus, IconUpload, IconBuildingWarehouse,
+  IconChevronRight
+} from '@tabler/icons';
+import SubmittedOrderItems from './components/SubmittedOrderItems';
 
 import MainCard from '../../ui-component/cards/MainCard';
 import { gridSpacing } from '../../store/constant';
@@ -82,6 +86,9 @@ const DownloadDmsInput = () => {
 
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
   const [busyId, setBusyId] = useState(null);
+  // Clicking a row opens that order's line items in a modal (the order object, or
+  // null when closed).
+  const [detailOrder, setDetailOrder] = useState(null);
   const notify = (message, severity = 'success') => setSnackbar({ open: true, message, severity });
 
   // Photo viewer.
@@ -412,7 +419,7 @@ const DownloadDmsInput = () => {
         <MainCard
           title={
             <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ width: '100%' }}>
-              <span>{`Download DMS Input${filteredOrders.length ? ` (${filteredOrders.length})` : ''}`}</span>
+              <span>{`Submitted Orders${filteredOrders.length ? ` (${filteredOrders.length})` : ''}`}</span>
               <Stack direction="row" spacing={1}>
                 {/* Stock the DMS files are allocated against. Same operator as the
                     download, so it lives on the same screen. */}
@@ -488,8 +495,10 @@ const DownloadDmsInput = () => {
                 <Table>
                   <TableHead>
                     <TableRow>
+                      <TableCell sx={{ width: 48 }} />
                       <TableCell>Order #</TableCell>
                       <TableCell>Dealer</TableCell>
+                      <TableCell>Submitted by</TableCell>
                       <TableCell>Company</TableCell>
                       <TableCell>Warehouse</TableCell>
                       <TableCell align="right">Parts</TableCell>
@@ -500,9 +509,21 @@ const DownloadDmsInput = () => {
                   </TableHead>
                   <TableBody>
                     {pagedOrders.map((o) => (
-                      <TableRow key={o.order_id} hover>
+                      <TableRow
+                        key={o.order_id}
+                        hover
+                        sx={{ cursor: 'pointer' }}
+                        onClick={() => setDetailOrder(o)}
+                      >
+                        <TableCell sx={{ width: 48 }}>
+                          {/* Affordance only — the whole row opens the items modal. */}
+                          <IconChevronRight size={18} style={{ color: '#9e9e9e' }} />
+                        </TableCell>
                         <TableCell>{o.order_number || `#${o.order_id}`}</TableCell>
                         <TableCell>{o.dealer_name}</TableCell>
+                        {/* Who raised it in the app. Not the dealer's assigned executive —
+                            that can be a different person from whoever actually placed it. */}
+                        <TableCell>{o.sales_executive_name || '—'}</TableCell>
                         <TableCell>{o.company_name || '—'}</TableCell>
                         <TableCell>{o.warehouse_name || '—'}</TableCell>
                         <TableCell align="right">{o.item_count}</TableCell>
@@ -519,7 +540,7 @@ const DownloadDmsInput = () => {
                               size="small"
                               variant="outlined"
                               startIcon={<IconPhoto size={16} />}
-                              onClick={() => openPhoto(o)}
+                              onClick={(e) => { e.stopPropagation(); openPhoto(o); }}
                             >
                               View
                             </Button>
@@ -537,7 +558,7 @@ const DownloadDmsInput = () => {
                                 variant="contained"
                                 disabled={busyId === o.order_id}
                                 startIcon={<IconDownload size={16} />}
-                                onClick={() => handleDownload(o)}
+                                onClick={(e) => { e.stopPropagation(); handleDownload(o); }}
                               >
                                 {o.dms_status === 'done' ? 'Re-download' : 'Download'}
                               </Button>
@@ -552,7 +573,8 @@ const DownloadDmsInput = () => {
                               color="error"
                               disabled={busyId === o.order_id}
                               startIcon={<IconBan size={16} />}
-                              onClick={() => {
+                              onClick={(e) => {
+                                e.stopPropagation();
                                 setRejectOrder(o);
                                 setRejectNote('');
                               }}
@@ -583,6 +605,31 @@ const DownloadDmsInput = () => {
           )}
         </MainCard>
       </Grid>
+
+      {/* Order line items — opened by clicking a row. Replaces the inline expander so
+          several orders aren't unrolled into a wall of items at once. */}
+      <Dialog
+        open={Boolean(detailOrder)}
+        onClose={() => setDetailOrder(null)}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span>
+            {detailOrder && (detailOrder.order_number || `#${detailOrder.order_id}`)}
+            {detailOrder && detailOrder.dealer_name ? ` · ${detailOrder.dealer_name}` : ''}
+          </span>
+          <IconButton size="small" onClick={() => setDetailOrder(null)} aria-label="Close">
+            <IconX size={18} />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent dividers sx={{ p: 0 }}>
+          {detailOrder && <SubmittedOrderItems orderId={detailOrder.order_id} />}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDetailOrder(null)}>Close</Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Upload Inventory — a full stock snapshot (PART# | QTY). Deliberately spells out
           that omitted parts go to 0, because that is the surprising part of a snapshot. */}

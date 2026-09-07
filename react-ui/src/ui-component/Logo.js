@@ -17,7 +17,7 @@ const Logo = () => {
     const theme = useTheme();
     return (
     <div style={{ fontSize: '24px', fontWeight: 'bold', color: theme.palette.primary.main }}>
-        Warehub
+        Warehub-Pharma
     </div>
 );
 

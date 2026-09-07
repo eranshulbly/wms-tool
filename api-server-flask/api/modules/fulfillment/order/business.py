@@ -30,6 +30,7 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
         dict: Processing results
     """
     orders_processed = 0
+    repeated_lines = 0     # further rows of an order already created from this file
     error_rows = []
 
     logger.debug("Processing DataFrame", extra={'row_count': len(df), 'columns': df.columns.tolist()})
@@ -62,10 +63,19 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
                 error_rows.append(_make_error_row('', purchaser_name, f"Row {index}: Missing Sales Order #"))
                 continue
 
-            if sales_order_id in existing_orders or sales_order_id in seen:
+            # A number already in the DB is a genuine re-upload — refused, and reported.
+            if sales_order_id in existing_orders:
                 error_rows.append(_make_error_row(
                     sales_order_id, purchaser_name,
                     f"Order {sales_order_id} already exists — skipped, nothing changed"))
+                continue
+
+            # A number repeated WITHIN this file is the same document's next line item,
+            # not a duplicate order. One order is created from the first such row and the
+            # rest are left for the line-item pass; counting them as errors is what made a
+            # multi-line file look half-failed.
+            if sales_order_id in seen:
+                repeated_lines += 1
                 continue
             seen.add(sales_order_id)
 
@@ -127,10 +137,16 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
             logger.exception("Unexpected error processing row", extra={'row': index})
             continue
 
-    logger.info("Order processing complete", extra={'orders_processed': orders_processed, 'error_count': len(error_rows)})
+    logger.info("Order processing complete",
+                extra={'orders_processed': orders_processed,
+                       'repeated_lines': repeated_lines,
+                       'error_count': len(error_rows)})
 
     return {
         'orders_processed': orders_processed,
+        # Rows that belonged to an order this file already created. They are not errors;
+        # the caller feeds them to the line-item pass.
+        'repeated_lines': repeated_lines,
         'error_rows': error_rows,
     }
 

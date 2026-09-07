@@ -40,6 +40,12 @@ from datetime import datetime, date
 
 logger = logging.getLogger(__name__)
 
+# The company this deployment serves. One backend instance ⇄ one company ⇄ one
+# schema (see docs/schema-per-company.md). Names the tenant for the few code
+# paths that used to dispatch by matching the company row's name (product packs,
+# DMS builders). Defaults to this build's company.
+COMPANY_KEY = (os.getenv('COMPANY_KEY') or 'cadila').strip().lower()
+
 # Install PyMySQL as MySQLdb for compatibility
 pymysql.install_as_MySQLdb()
 
@@ -157,15 +163,46 @@ class MySQLManager:
         self.pool_lock = threading.Lock()
         self.config = self._get_db_config()
         self._initialize_pool()
+        self._verify_schema()
+
+    def _verify_schema(self):
+        """Log the schema this instance is bound to, and refuse an empty one.
+
+        One deployment serves one company; a misconfigured instance connecting to
+        the wrong (or no) schema would silently read and write another company's
+        data. This surfaces the binding at boot so that can't pass unnoticed.
+        """
+        want = self.config['database']
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT DATABASE() AS db")
+                    have = (cur.fetchone() or {}).get('db')
+        except Exception as e:
+            logger.warning("Could not verify DB schema at startup", extra={'error': str(e)})
+            return
+        if not have:
+            raise RuntimeError("No database selected — set DB_SCHEMA (or DB_NAME).")
+        if have != want:
+            logger.error("DB schema mismatch: configured %s, connected to %s", want, have)
+        logger.info("DB ready: schema=%s company=%s", have, COMPANY_KEY)
 
     def _get_db_config(self):
-        """Get database configuration from environment variables"""
+        """Get database configuration from environment variables.
+
+        Per-company schema routing: one deployment serves one company, and its
+        schema (database) is chosen here at boot. `DB_SCHEMA` is the canonical
+        selector; `DB_NAME` is accepted as the legacy alias. Everything else —
+        host, credentials — is shared across the per-company deployments on the
+        one MySQL server. All SQL in this codebase is schema-implicit, so binding
+        the schema in the connection is the whole of the routing.
+        """
         return {
             'host': os.getenv('DB_HOST', 'localhost'),
             'port': int(os.getenv('DB_PORT', '3306')),
             'user': os.getenv('DB_USERNAME', 'root'),
             'password': os.getenv('DB_PASS', 'root-pw'),
-            'database': os.getenv('DB_NAME', 'warehouse_management'),
+            'database': os.getenv('DB_SCHEMA') or os.getenv('DB_NAME', 'warehouse_management'),
             'charset': os.getenv('MYSQL_CHARSET', 'utf8mb4'),
             'autocommit': False,
             'cursorclass': pymysql.cursors.DictCursor,
@@ -747,7 +784,33 @@ def create_all_tables():
     """
 
     # Execute all table creation queries
+    # Idempotency claims for retryable writes. shared/idempotency.py reads and
+    # writes this table on every guarded endpoint but nothing ever created it, so
+    # POST /api/v1/orders raised 1146 "table doesn't exist" before a single line of
+    # order logic ran — and because the app queues first and retries, the order sat
+    # on the phone reporting "waiting for a connection" forever.
+    #
+    # idem_key is the PRIMARY KEY on purpose: it is what makes two simultaneous
+    # retries safe, since exactly one INSERT can win and the loser is handled as an
+    # in-flight duplicate. `response` holds the original reply so a retry whose
+    # answer was lost replays instead of creating a second order.
+    idempotency_keys_sql = """
+    CREATE TABLE IF NOT EXISTS idempotency_keys (
+        idem_key     VARCHAR(100) NOT NULL,
+        user_id      INT          NOT NULL,
+        endpoint     VARCHAR(100) NOT NULL,
+        state        VARCHAR(20)  NOT NULL DEFAULT 'in_progress',
+        status_code  INT          NULL,
+        response     LONGTEXT     NULL,
+        created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at DATETIME     NULL,
+        PRIMARY KEY (idem_key),
+        INDEX idx_idem_created (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+
     tables = [
+        idempotency_keys_sql,
         users_sql, jwt_blocklist_sql, warehouse_sql, company_sql,
         dealer_sql, product_sql, order_state_sql,
         potential_order_sql, potential_order_product_sql, order_sql,
@@ -780,8 +843,6 @@ def create_all_tables():
     # running afterwards finds both names present, has no safe way to tell which holds the
     # truth, and leaves the data stranded in the old one while the app writes to the new.
     # Renaming first means the DDL below finds the table already there and does nothing.
-    _migrate_dealer_target_rename()
-
     for _t in schema_registry.registered_tables():
         mysql_manager.execute_query(_t.ddl, fetch=False)
 
@@ -807,32 +868,11 @@ def create_all_tables():
     _migrate_dealer_columns()
     _migrate_product_columns()
     _migrate_invoice_columns()
-    # _migrate_dealer_target_rename() is NOT called here — it runs before the registry
-    # DDL above, because CREATE TABLE IF NOT EXISTS would otherwise create the new name
-    # first and strand the old table's rows. Every target migration below locates the
-    # table as `dealer_target` and depends on that having already happened.
     _migrate_company_id()
-    _migrate_target_grain()
-    # After _migrate_target_grain: that one creates the table's category-level shape on an
-    # old database, and product_id is added relative to category_id.
-    _migrate_dt_product_id()
-    # After _migrate_dt_product_id: both rebuild uq_dt_grain, and this one must have
-    # the last word on it — it widens the key onto target_level and target_type, which
-    # product_id's version of the key knows nothing about.
-    _migrate_target_type()
     _migrate_dealer_visits_columns()
-    _migrate_busy_sales_gst()
-    _migrate_part_groups_period()
-    # After both _migrate_company_id (adds company_id) and _migrate_part_groups_period
-    # (renames period -> time_period): the widened key names both of those columns.
-    _migrate_part_groups_company_uq()
     _migrate_transferin_id_varchar()
     _migrate_fc_entity_stock_company_uq()
     _migrate_order_product_batch_columns()
-    # Restores an index the widened key can no longer serve — see the docstring.
-    _migrate_part_groups_join_index()
-    # Same class of gap on the sales feed: date-window reads can't use a company-led key.
-    _migrate_busy_sales_saledate_index()
     _migrate_dms_quantity_column()
     _migrate_temp_inventory_uploaded_index()
     # Packaging / pricing model: the tables come from the schema registry, these carry
@@ -938,7 +978,7 @@ def _migrate_dealer_columns():
     live code and its absence is a hard 'Unknown column' failure, not a degraded feature:
 
       company_id         sales/uploads — _dealer_map() scopes dealers to Hero
-      sales_executive_id sales/field_sales, sales/target_tracker — how a sale is attributed
+      sales_executive_id sales/field_sales — how a sale is attributed
       town               logistics/supply_sheet — printed on the supply sheet
       latitude/longitude platform/user_auth — set when a location submission is approved
 
@@ -983,11 +1023,14 @@ def _migrate_product_columns():
     """Add the product columns the admin uploads write (idempotent).
 
       category_id     set by the Product Category upload (Order Uploads -> Product Categories)
+      nickname        set by the Product Nickname admin tab; read by the catalog SKU list
+                      and printed on supply-sheet PDFs
       litres_per_unit volume of one selling unit, for targets set in litres
 
-    The first two are declared in migration_v2_api.sql, which cannot be applied wholesale
-    to a freshly-created schema (it carries ALTERs written against production's older
-    lineage). Without them the corresponding admin upload fails with 'Unknown column'.
+    These are declared in migration_v2_api.sql, which cannot be applied wholesale to a
+    freshly-created schema (it carries ALTERs written against production's older lineage).
+    Without them the catalog read and the corresponding admin uploads fail with
+    'Unknown column'.
 
     litres_per_unit exists because Oil targets are set in LITRES while Busy bills oil in
     Pcs. — every row of the feed carries unit 'Pcs.', and the product master has no volume
@@ -999,6 +1042,7 @@ def _migrate_product_columns():
     """
     wanted = [
         ('category_id',     'INT NULL',            'idx_product_category'),
+        ('nickname',        'VARCHAR(200) NULL',   None),
         ('litres_per_unit', 'DECIMAL(10,4) NULL',  None),
     ]
     for column, ddl, index_name in wanted:
@@ -1060,304 +1104,10 @@ _COMPANY_ID_TABLES = [
     ('submitted_order_products',        'submitted_order_id', 'idx_sop_company'),
     ('submitted_order_attachments',     'submitted_order_id', 'idx_soa_company'),
     ('submitted_order_status_history',  'submitted_order_id', 'idx_sosh_company'),
-    # sales feeds (busy_sales_data declares its own composite index in the DDL)
     ('dealer_visits',                   'dealer_id',          'idx_dv_company'),
     ('upload_batches',                  'warehouse_id',       'idx_ub_company'),
-    ('part_groups',                     'part_number',        'idx_pg_company'),
-    # dealer_money_target is no longer registered and is dropped on migrated databases.
-    # Its entry stays because every migration here is guarded on the table existing (a
-    # no-op once it is gone) and because _migrate_target_type's import SELECTs
-    # mt.company_id — on a legacy database this is what guarantees the column is there
-    # to read.
-    ('dealer_money_target',             'dealer_id',          'idx_dmt_company'),
-    ('dealer_target',                   'dealer_id',          'idx_dt_company'),
     ('dealer_location_submissions',     'dealer_id',          'idx_dls_company'),
 ]
-
-
-def _migrate_dealer_target_rename():
-    """dealer_part_group_target -> dealer_target, with its indexes (idempotent).
-
-    The old name described the table's first job — part-group quantity targets — and
-    stopped being true once it also carried category- and scheme-level targets in rupees.
-
-    This has to run BEFORE every other migration that touches the table. All of them
-    locate it by name in information_schema and return early when it is absent, so a
-    database renamed after they ran would look fully migrated to them while a database
-    renamed before they ran gets migrated normally. Ordering it first is what makes the
-    two cases the same case.
-
-    Renaming the INDEXES too is not cosmetic: _migrate_dt_product_id and
-    _migrate_target_type both find, drop and re-add the unique key BY NAME. If the table
-    arrived carrying uq_dpgt_grain while they looked for uq_dt_grain, they would not find
-    it, would not drop it, and would add a SECOND unique key over almost the same columns
-    — leaving the table with two keys and no obvious sign of which one rejected a row.
-
-    A database that already has dealer_target (fresh install — the registry DDL creates it
-    directly) does nothing here.
-    """
-    try:
-        has_new = mysql_manager.execute_query(
-            """SELECT 1 FROM information_schema.TABLES
-               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'dealer_target'""")
-        has_old = mysql_manager.execute_query(
-            """SELECT 1 FROM information_schema.TABLES
-               WHERE TABLE_SCHEMA = DATABASE()
-                 AND TABLE_NAME = 'dealer_part_group_target'""")
-        if has_old and not has_new:
-            mysql_manager.execute_query(
-                "RENAME TABLE dealer_part_group_target TO dealer_target", fetch=False)
-            logger.info("renamed dealer_part_group_target -> dealer_target")
-        elif has_old and has_new:
-            # Both present: the rename already happened and something re-created the old
-            # name, or a half-finished manual migration. Refuse to guess which holds the
-            # truth — merging them wrongly would double or drop targets.
-            logger.error(
-                "both dealer_target and dealer_part_group_target exist. dealer_target is "
-                "the live table; the old one is being ignored. Drop it once you have "
-                "confirmed it holds nothing you need.")
-
-        if not (has_old or has_new):
-            return
-
-        for old, new in (('uq_dpgt_grain', 'uq_dt_grain'),
-                         ('idx_dpgt_category', 'idx_dt_category'),
-                         ('idx_dpgt_product', 'idx_dt_product'),
-                         ('idx_dpgt_level', 'idx_dt_level'),
-                         ('idx_dpgt_company', 'idx_dt_company')):
-            present = mysql_manager.execute_query(
-                """SELECT INDEX_NAME FROM information_schema.STATISTICS
-                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'dealer_target'
-                     AND INDEX_NAME IN (%s, %s)""", (old, new))
-            names = {r['INDEX_NAME'] for r in (present or [])}
-            if old in names and new not in names:
-                mysql_manager.execute_query(
-                    f"ALTER TABLE dealer_target RENAME INDEX `{old}` TO `{new}`",
-                    fetch=False)
-                logger.info("dealer_target: renamed index %s -> %s", old, new)
-            elif old in names and new in names:
-                # Both exist — the duplicate-key case the docstring warns about, from a
-                # database migrated by an earlier build. The old one is redundant.
-                mysql_manager.execute_query(
-                    f"ALTER TABLE dealer_target DROP INDEX `{old}`", fetch=False)
-                logger.info("dealer_target: dropped superseded index %s", old)
-    except Exception:
-        logger.exception("dealer_target: rename migration failed")
-
-
-def _migrate_dt_product_id():
-    """Add dealer_target.product_id and widen uq_dt_grain onto it (idempotent).
-
-    product_id is a target set against ONE product instead of a part group. Nothing writes
-    it yet, so every existing target carries the 0 sentinel meaning "no single product".
-
-    It is NOT NULL DEFAULT 0 rather than nullable, for exactly the reason _migrate_target_grain
-    made `scheme` NOT NULL DEFAULT '': the column is part of the unique key, and MySQL treats
-    every NULL in a UNIQUE index as distinct. A nullable product_id sitting in uq_dt_grain
-    would make every row unique on sight and quietly retire the key — which exists to stop a
-    malformed file double-loading a period and inflating every target it feeds.
-
-    The key has to carry product_id before per-product targets can be written at all: two of
-    them for the same dealer and category would share a blank part_group and scheme, so the
-    old key would reject the second as a duplicate of the first.
-    """
-    table = 'dealer_target'
-    try:
-        if not mysql_manager.execute_query(
-                """SELECT 1 FROM information_schema.TABLES
-                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s""", (table,)):
-            return  # fresh install — the registry DDL already has the new shape
-
-        col = mysql_manager.execute_query(
-            """SELECT IS_NULLABLE FROM information_schema.COLUMNS
-               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                 AND COLUMN_NAME = 'product_id'""", (table,))
-        if not col:
-            mysql_manager.execute_query(
-                f"ALTER TABLE {table} "
-                "ADD COLUMN product_id INT NOT NULL DEFAULT 0 AFTER category_id", fetch=False)
-            mysql_manager.execute_query(
-                f"ALTER TABLE {table} ADD INDEX idx_dt_product (product_id)", fetch=False)
-            logger.info("%s: added column product_id", table)
-        elif col[0]['IS_NULLABLE'] == 'YES':
-            # Carried the nullable first cut of this column — settle the NULLs on the
-            # sentinel before the key starts depending on the value being present.
-            mysql_manager.execute_query(
-                f"UPDATE {table} SET product_id = 0 WHERE product_id IS NULL", fetch=False)
-            mysql_manager.execute_query(
-                f"ALTER TABLE {table} MODIFY product_id INT NOT NULL DEFAULT 0", fetch=False)
-            logger.info("%s: product_id is now NOT NULL DEFAULT 0", table)
-
-        # Rebuild the unique key only if it isn't already keyed on product_id. Dropping and
-        # re-adding is safe in either order here: 0 is constant across every existing row,
-        # so the widened key is exactly as strict as the one it replaces and cannot fail on
-        # duplicates that the old key already permitted.
-        keyed = mysql_manager.execute_query(
-            """SELECT 1 FROM information_schema.STATISTICS
-               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                 AND INDEX_NAME = 'uq_dt_grain' AND COLUMN_NAME = 'product_id'""", (table,))
-        if not keyed:
-            if mysql_manager.execute_query(
-                    """SELECT 1 FROM information_schema.STATISTICS
-                       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                         AND INDEX_NAME = 'uq_dt_grain'""", (table,)):
-                mysql_manager.execute_query(
-                    f"ALTER TABLE {table} DROP INDEX uq_dt_grain", fetch=False)
-            mysql_manager.execute_query(
-                f"ALTER TABLE {table} ADD UNIQUE KEY uq_dt_grain "
-                "(dealer_id, category_id, product_id, scheme, part_group, target_period)",
-                fetch=False)
-            logger.info("%s: widened uq_dt_grain onto product_id", table)
-    except Exception:
-        logger.exception("%s: migration failed for product_id", table)
-
-
-def _migrate_target_type():
-    """Unify every dealer target into dealer_target (idempotent).
-
-    Before this, a target's meaning came from WHICH TABLE it sat in: rupees in
-    dealer_money_target, units in dealer_target. That worked only while rupee
-    targets existed at category grain alone. Scheme targets (Basket 1, Basket 2) are set
-    in rupees, and dealer_money_target has no scheme column to put them in — so the
-    discriminator has to move out of the table name and into the row.
-
-    Three things happen here, once, on an existing database:
-
-      1. target_level / target_type / target_uom / target_value are added.
-
-      2. target_level is BACKFILLED from what the old rows leave blank — part_group set
-         means part-group level, scheme-only means scheme level, neither means category.
-         That inference is correct for the historical rows because the only loader that
-         ever wrote them filled exactly one of those columns. It is not correct in
-         general, which is why the column is stored from here on rather than re-derived:
-         _load_part_groups writes `part_group = group or scheme`, so a basket that is not
-         broken into groups produces rows whose scheme and part_group are the same text.
-
-      3. dealer_money_target is COPIED IN as category-level value targets. Its grain
-         (dealer, category, period) is a strict subset of this table's, so nothing is
-         lost. The copy is guarded on target_level having been absent — i.e. it runs on
-         the single boot that introduces the column — and is INSERT IGNORE besides, so a
-         partially-completed run cannot double the rupee targets on the next one.
-
-    dealer_money_target itself is never dropped here. Doing so would make this migration
-    one-way, and would mean a migration destroying the only copy of a table it had just
-    finished reading — one bug in the import above and the data is gone with it. It is no
-    longer registered in sales/schema.py, so it is not recreated where it has already been
-    dropped; where it still exists it simply stops being read, and an operator drops it by
-    hand once the import has been confirmed.
-
-    target_type joins uq_dt_grain because a dealer may legitimately carry both a unit
-    and a rupee target on the same scheme. target_level joins it because a category-level
-    and a scheme-level row can otherwise collide: an unbroken basket's scheme-level target
-    and a part-group target on the group of the same name agree on every other key column.
-    """
-    table = 'dealer_target'
-
-    def _has_column(col):
-        return bool(mysql_manager.execute_query(
-            """SELECT 1 FROM information_schema.COLUMNS
-               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                 AND COLUMN_NAME = %s""", (table, col)))
-
-    try:
-        if not mysql_manager.execute_query(
-                """SELECT 1 FROM information_schema.TABLES
-                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s""", (table,)):
-            return  # fresh install — the registry DDL already has the new shape
-
-        # Whether THIS boot is the one introducing the level column decides whether the
-        # backfill and the money-target import run. Read before anything is added.
-        first_run = not _has_column('target_level')
-
-        for column, ddl, after in (
-                ('target_level', "VARCHAR(20) NOT NULL DEFAULT 'part_group'", 'scheme'),
-                ('target_type',  "VARCHAR(10) NOT NULL DEFAULT 'qty'",        'target_level'),
-                ('target_uom',   "VARCHAR(20) NOT NULL DEFAULT ''",           'target_type'),
-                ('target_value', "DECIMAL(16,4) NOT NULL DEFAULT 0",          'target_qty')):
-            if not _has_column(column):
-                anchor = f" AFTER `{after}`" if _has_column(after) else ""
-                mysql_manager.execute_query(
-                    f"ALTER TABLE `{table}` ADD COLUMN `{column}` {ddl}{anchor}", fetch=False)
-                logger.info("%s: added column %s", table, column)
-
-        if not mysql_manager.execute_query(
-                """SELECT 1 FROM information_schema.STATISTICS
-                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                     AND INDEX_NAME = 'idx_dt_level'""", (table,)):
-            mysql_manager.execute_query(
-                f"ALTER TABLE `{table}` ADD INDEX idx_dt_level (target_level)", fetch=False)
-
-        if first_run:
-            # Every pre-existing row is a quantity target; only its level is in doubt.
-            mysql_manager.execute_query(
-                f"""UPDATE `{table}`
-                       SET target_level = CASE
-                               WHEN COALESCE(part_group, '') <> '' THEN 'part_group'
-                               WHEN COALESCE(scheme, '')     <> '' THEN 'scheme'
-                               ELSE 'category' END,
-                           target_type  = 'qty'""", fetch=False)
-            logger.info("%s: backfilled target_level for existing quantity targets", table)
-
-        # Rebuild the unique key onto the two new discriminators. Safe in either order:
-        # every existing row now carries a level derived from columns the old key already
-        # covered and the single type 'qty', so the widened key is no looser on the data
-        # that exists than the one it replaces.
-        #
-        # This MUST happen before the money-target import below. A category-level quantity
-        # target has a blank scheme and a blank part_group — exactly the sentinels a
-        # category-level rupee target carries — so under the OLD key the two are the same
-        # row. The INSERT IGNORE would skip the rupee target as a duplicate and it would
-        # vanish, silently, with the count reporting success.
-        keyed = mysql_manager.execute_query(
-            """SELECT 1 FROM information_schema.STATISTICS
-               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                 AND INDEX_NAME = 'uq_dt_grain' AND COLUMN_NAME = 'target_type'""", (table,))
-        if not keyed:
-            if mysql_manager.execute_query(
-                    """SELECT 1 FROM information_schema.STATISTICS
-                       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                         AND INDEX_NAME = 'uq_dt_grain'""", (table,)):
-                mysql_manager.execute_query(
-                    f"ALTER TABLE `{table}` DROP INDEX uq_dt_grain", fetch=False)
-            mysql_manager.execute_query(
-                f"ALTER TABLE `{table}` ADD UNIQUE KEY uq_dt_grain "
-                "(dealer_id, category_id, target_level, product_id, scheme, part_group, "
-                " target_type, target_period)", fetch=False)
-            logger.info("%s: widened uq_dt_grain onto target_level + target_type", table)
-
-        if first_run and mysql_manager.execute_query(
-                """SELECT 1 FROM information_schema.TABLES
-                   WHERE TABLE_SCHEMA = DATABASE()
-                     AND TABLE_NAME = 'dealer_money_target'"""):
-            before = (mysql_manager.execute_query(
-                f"SELECT COUNT(*) AS n FROM `{table}`") or [{'n': 0}])[0]['n']
-            mysql_manager.execute_query(
-                f"""INSERT IGNORE INTO `{table}`
-                      (dealer_id, category_id, product_id, part_group, scheme,
-                       target_level, target_type, target_uom, target_qty, target_value,
-                       target_period, company_id, created_at, updated_at)
-                    SELECT mt.dealer_id, mt.category_id, 0, '', '',
-                           'category', 'value', '', 0, mt.value_target,
-                           mt.target_period, mt.company_id, NOW(), NOW()
-                      FROM dealer_money_target mt
-                     WHERE mt.category_id IS NOT NULL""", fetch=False)
-            after = (mysql_manager.execute_query(
-                f"SELECT COUNT(*) AS n FROM `{table}`") or [{'n': 0}])[0]['n']
-            source = (mysql_manager.execute_query(
-                "SELECT COUNT(*) AS n FROM dealer_money_target "
-                "WHERE category_id IS NOT NULL") or [{'n': 0}])[0]['n']
-            logger.info("%s: imported %s of %s rupee target(s) from dealer_money_target",
-                        table, after - before, source)
-            if after - before != source:
-                # IGNORE swallowed something. The old table is still there and still
-                # holds the truth, so this is recoverable — but only if someone knows.
-                logger.error(
-                    "%s: %s rupee target(s) from dealer_money_target were NOT imported "
-                    "(duplicate key or bad dealer/category). dealer_money_target is "
-                    "unchanged; reconcile it before relying on rupee targets.",
-                    table, source - (after - before))
-    except Exception:
-        logger.exception("%s: migration failed for target level/type", table)
 
 
 def _migrate_invoice_columns():
@@ -1407,25 +1157,6 @@ _V2_API_COLUMNS = {
         ('code',      'VARCHAR(20) NULL',              None),
         ('is_active', 'TINYINT(1) NOT NULL DEFAULT 1', None),
     ],
-    'company': [
-        ('order_capture_mode', "VARCHAR(20) NOT NULL DEFAULT 'itemised'", None),
-        # Which figures the mobile analytics are built from.
-        #   'targets'  — the Busy feed: month sales measured against dealer_target,
-        #                split by category, scheme and part group.
-        #   'invoices' — companies that upload invoices and set no targets at all:
-        #                a month total summed from `invoice` and nothing to measure
-        #                it against, so the app drops every target/category surface.
-        ('analytics_mode', "VARCHAR(20) NOT NULL DEFAULT 'targets'", None),
-        # How the order picker labels a product.
-        #   'code_first' — the part number leads, product name beneath it. Right
-        #                  where the code is a real identifier a rep reads off a
-        #                  shelf label and searches by (Hero: '22121198900S').
-        #   'name_first' — the product name leads, code demoted to a subtitle.
-        #                  Right where the code is a synthetic slug derived from
-        #                  the name and carries nothing extra
-        #                  (Cadila: 'CADI-ALERTRIZ-5MG-TAB-30X10T').
-        ('catalog_label_mode', "VARCHAR(20) NOT NULL DEFAULT 'code_first'", None),
-    ],
     'dealer': [
         ('dealer_code',  'VARCHAR(50) NULL',  None),
         ('email',        'VARCHAR(255) NULL', None),
@@ -1448,11 +1179,53 @@ _V2_API_COLUMNS = {
         ('location_captured_at',    'DATETIME NULL',      None),
     ],
     'potential_order_product': [
+        # The per-unit rate an order line was priced at, mirroring
+        # submitted_order_products.net_rate. Distinct from `mrp`: MRP is the printed
+        # maximum, net_rate is what this line is actually billed at.
+        ('net_rate',           'DECIMAL(12,4) NULL', None),
         ('sku_code',           'VARCHAR(100) NULL', None),
         ('product_name',       'VARCHAR(255) NULL', None),
         ('uom',                'VARCHAR(20) NULL',  None),
         ('quantity_fulfilled', 'INT NULL',          None),
         ('item_status',        "VARCHAR(30) NOT NULL DEFAULT 'pending'", None),
+    ],
+    'submitted_orders': [
+        # Location provenance. service_v1.create_order writes all three on every
+        # order — _location_columns() builds them — but the columns were never
+        # added, so the INSERT died with 1054 "Unknown column 'location_source'"
+        # and no order raised from the app could be saved at all.
+        #
+        # They are what separates a live GPS fix from a cached one or a mocked
+        # one, which is the whole point of auditing an order against where it was
+        # raised. Nullable: an order queued by an older build carries no meta, and
+        # that is missing information rather than a broken order.
+        #
+        # source is VARCHAR(16) to match _location_columns' own str(source)[:16].
+        ('location_source',    'VARCHAR(16) NULL', None),
+        ('location_age_s',     'INT NULL',         None),
+        ('location_is_mocked', 'TINYINT(1) NULL',  None),
+    ],
+    'submitted_order_products': [
+        # The rate the rep actually agreed with the dealer, per PRICED unit — the
+        # same unit `quantity` is in, so the line is worth net_rate x quantity.
+        #
+        # Nullable because it is genuinely absent on most lines: every order from
+        # the standard flow is captured without a price at all, and those are not
+        # broken orders. NULL means "nobody quoted a rate", which a zero would
+        # misreport as "quoted free".
+        #
+        # DECIMAL, not FLOAT: this is money and it gets multiplied by a quantity.
+        # 4dp because a rate per strip runs to fractions of a paisa on the cost
+        # side (2.9363), and rounding it at capture would make the line total
+        # disagree with what the rep was shown.
+        ('net_rate', 'DECIMAL(12,4) NULL', None),
+        # What the rep actually ORDERED, before it was converted to the priced unit:
+        # e.g. 2 CASE (order_quantity 2, order_uom 'CASE') that becomes `quantity`
+        # strips. The order-detail / DMS read selects both, so a schema without them
+        # fails with 1054 "Unknown column 'order_quantity'". Nullable: a line from the
+        # standard flow is captured directly in the priced unit and has no pack level.
+        ('order_quantity', 'DECIMAL(18,4) NULL', None),
+        ('order_uom',      'VARCHAR(16) NULL',   None),
     ],
 }
 
@@ -1519,57 +1292,16 @@ def _migrate_v2_api_columns():
             logger.exception("%s: could not add unique key %s (duplicate rows?)", table, key)
 
 
-def _migrate_busy_sales_gst():
-    """Add the generated GST columns to busy_sales_data (idempotent).
-
-    GST is a flat 18% of the line amount. Generated columns rather than loader-written
-    values, so they can never drift from `amount`; STORED because analytics SUMs them
-    over the whole feed. Existing rows are back-filled by the ALTER itself.
-    """
-    wanted = [
-        ('gst',             'DECIMAL(16,4) AS (ROUND(amount * 0.18, 4)) STORED'),
-        ('amount_with_gst', 'DECIMAL(16,4) AS (ROUND(amount * 1.18, 4)) STORED'),
-    ]
-    for column, ddl in wanted:
-        try:
-            if not mysql_manager.execute_query(
-                    """SELECT 1 FROM information_schema.COLUMNS
-                       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'busy_sales_data'
-                         AND COLUMN_NAME = %s""", (column,)):
-                mysql_manager.execute_query(
-                    f"ALTER TABLE busy_sales_data ADD COLUMN `{column}` {ddl}", fetch=False)
-                logger.info("busy_sales_data: added generated column %s", column)
-        except Exception:
-            logger.exception("busy_sales_data: migration failed for column %s", column)
-
-
 # Columns that create-vs-migrate left in two different shapes: the CREATE TABLE path and
 # the ADD COLUMN path disagreed, so a database built fresh and one grown by migration ended
 # up differing. Each entry pins ONE canonical definition, as (type, nullable, default)
 # exactly as information_schema reports it once correct, plus the DDL that gets it there.
 # Where the two shapes differed, the stricter one wins.
 _CONVERGE_COLUMNS = [
-    # Read straight back to the mobile client by user_auth/router_v1.py — a NULL here
-    # surfaces as `null` in the API response instead of the mode the app expects.
-    ('company', 'order_capture_mode',
-     ('varchar(20)', 'NO', 'itemised'), "VARCHAR(20) NOT NULL DEFAULT 'itemised'"),
-    # Same reasoning as order_capture_mode above: read straight back to the mobile
-    # client, so a NULL would reach the app as `null` instead of a mode it knows.
-    ('company', 'analytics_mode',
-     ('varchar(20)', 'NO', 'targets'), "VARCHAR(20) NOT NULL DEFAULT 'targets'"),
-    ('company', 'catalog_label_mode',
-     ('varchar(20)', 'NO', 'code_first'), "VARCHAR(20) NOT NULL DEFAULT 'code_first'"),
     ('dealer', 'activated_on',
      ('datetime', 'YES', 'CURRENT_TIMESTAMP'), 'DATETIME NULL DEFAULT CURRENT_TIMESTAMP'),
     ('potential_order_product', 'item_status',
      ('varchar(30)', 'NO', 'pending'), "VARCHAR(30) NOT NULL DEFAULT 'pending'"),
-    # These two matter most: category_id is part of uq_dmt_grain / uq_dt_grain, and
-    # MySQL counts every NULL in a unique index as distinct. Left nullable, the key stops
-    # blocking the duplicate loads it exists to block — on one database but not the other.
-    # dealer_money_target stays listed for the legacy case only: its import filters on
-    # `category_id IS NOT NULL`, so the column has to exist before the copy can run.
-    ('dealer_money_target', 'category_id', ('int', 'NO', None), 'INT NOT NULL'),
-    ('dealer_target', 'category_id', ('int', 'NO', None), 'INT NOT NULL'),
 ]
 
 
@@ -1643,45 +1375,6 @@ def _migrate_schema_convergence():
                 logger.info("%s: renamed index %s -> %s", table, legacy, canonical)
         except Exception:
             logger.exception("%s.%s: index convergence failed", table, legacy)
-
-
-def _migrate_part_groups_period():
-    """part_groups: drop `month`, rename `period` -> `time_period` (idempotent).
-
-    `month` held the period's name ('July') alongside `period` = 2026-07-01, so it was
-    pure duplication of a value the date already carries and nothing read it back.
-
-    The rename is a plain RENAME COLUMN: MySQL rewrites uq_period_part and idx_period to
-    point at the new name by itself, so the index *names* are deliberately left as they
-    are — that keeps a migrated database byte-identical to what the registry DDL builds
-    on a fresh install.
-    """
-    table = 'part_groups'
-
-    def _column(name):
-        return mysql_manager.execute_query(
-            """SELECT 1 FROM information_schema.COLUMNS
-               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                 AND COLUMN_NAME = %s""", (table, name))
-
-    try:
-        if not mysql_manager.execute_query(
-                """SELECT 1 FROM information_schema.TABLES
-                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s""", (table,)):
-            return  # fresh install — the registry DDL already has the new shape
-
-        if _column('month'):
-            mysql_manager.execute_query(
-                f"ALTER TABLE {table} DROP COLUMN `month`", fetch=False)
-            logger.info("%s: dropped column month", table)
-
-        # Guard on both names so a half-applied run, or a re-run, is a no-op.
-        if _column('period') and not _column('time_period'):
-            mysql_manager.execute_query(
-                f"ALTER TABLE {table} RENAME COLUMN `period` TO `time_period`", fetch=False)
-            logger.info("%s: renamed column period -> time_period", table)
-    except Exception:
-        logger.exception("%s: period/month migration failed", table)
 
 
 def _migrate_order_product_batch_columns():
@@ -1808,55 +1501,6 @@ def _migrate_transferin_id_varchar():
         logger.exception("transferin_id migration failed")
 
 
-def _migrate_part_groups_company_uq():
-    """Widen uq_period_part onto company_id (idempotent).
-
-    The key was (time_period, part_number) while the upload clears a period with
-    `DELETE FROM part_groups WHERE time_period=%s AND company_id=%s`. Those two grains
-    disagree, and the gap is reachable: a company loading a period it has never loaded
-    before still collides with *another* company's rows for the same period and part, and
-    its own scoped delete cannot clear them because they are not its rows. The operator
-    sees "Duplicate entry '<period>-<part>' for key 'part_groups.uq_period_part'" on a
-    period they have never uploaded. Keying on company_id puts the constraint at the same
-    grain the loader replaces at.
-
-    Rows predating the tenant column keep company_id NULL, and MySQL treats every NULL in a
-    unique index as distinct — so those legacy rows fall out of this key. They are equally
-    invisible to the company-scoped delete, so leaving them unconstrained is consistent
-    with how the loader already treats them; they want a one-off cleanup, not a key.
-    """
-    table = 'part_groups'
-    try:
-        if not mysql_manager.execute_query(
-                """SELECT 1 FROM information_schema.COLUMNS
-                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                     AND COLUMN_NAME = 'company_id'""", (table,)):
-            return  # _migrate_company_id has not landed here — nothing to widen onto
-
-        keyed = mysql_manager.execute_query(
-            """SELECT 1 FROM information_schema.STATISTICS
-               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                 AND INDEX_NAME = 'uq_period_part' AND COLUMN_NAME = 'company_id'""",
-            (table,))
-        if keyed:
-            return
-
-        if mysql_manager.execute_query(
-                """SELECT 1 FROM information_schema.STATISTICS
-                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                     AND INDEX_NAME = 'uq_period_part'""", (table,)):
-            mysql_manager.execute_query(
-                f"ALTER TABLE {table} DROP INDEX uq_period_part", fetch=False)
-        # Adding a column to a unique key only ever relaxes it, so every row the old key
-        # accepted is still accepted and this cannot fail on existing data.
-        mysql_manager.execute_query(
-            f"ALTER TABLE {table} ADD UNIQUE KEY uq_period_part "
-            "(company_id, time_period, part_number)", fetch=False)
-        logger.info("%s: widened uq_period_part onto company_id", table)
-    except Exception:
-        logger.exception("%s: migration failed for uq_period_part", table)
-
-
 def _migrate_product_gst_percent():
     """Add product.gst_percent (idempotent).
 
@@ -1870,9 +1514,11 @@ def _migrate_product_gst_percent():
                 """SELECT 1 FROM information_schema.COLUMNS
                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product'
                      AND COLUMN_NAME = 'gst_percent'"""):
+            # No positional AFTER: hsn_code is added by _migrate_v2_api_columns, which
+            # runs after this, so a fresh schema has no hsn_code to sit beside yet. Column
+            # order is cosmetic and not something convergence checks, so this is dropped.
             mysql_manager.execute_query(
-                "ALTER TABLE product ADD COLUMN gst_percent DECIMAL(5,2) NULL "
-                "AFTER hsn_code", fetch=False)
+                "ALTER TABLE product ADD COLUMN gst_percent DECIMAL(5,2) NULL", fetch=False)
             logger.info("product: added column gst_percent")
     except Exception:
         logger.exception("product: migration failed for column gst_percent")
@@ -1963,68 +1609,6 @@ def _migrate_dms_quantity_column():
             "submitted_order_products: migration failed for column dms_quantity")
 
 
-def _migrate_busy_sales_saledate_index():
-    """Add idx_bsd_saledate_item (sale_date, item_code) — idempotent.
-
-    Same shape of problem as _migrate_part_groups_join_index: the table's own DDL declares
-    idx_company_sale_date (company_id, sale_date), but the reads that scan a date WINDOW
-    rather than one company's rows — the catalog working set being the hot one — filter on
-    sale_date alone. company_id leading means that is not a prefix, so those queries fell
-    back to a full scan of every row in the table.
-
-    (sale_date, item_code) rather than (sale_date) alone so the working-set subquery is
-    answered from the index without touching the rows at all ("Using index"): 504ms -> 120ms
-    on ~159k rows, and it degrades gracefully as history accumulates.
-    """
-    table = 'busy_sales_data'
-    try:
-        if mysql_manager.execute_query(
-                """SELECT 1 FROM information_schema.STATISTICS
-                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                     AND INDEX_NAME = 'idx_bsd_saledate_item'""", (table,)):
-            return
-        mysql_manager.execute_query(
-            f"ALTER TABLE {table} ADD INDEX idx_bsd_saledate_item "
-            "(sale_date, item_code)", fetch=False)
-        logger.info("%s: added idx_bsd_saledate_item", table)
-    except Exception:
-        logger.exception("%s: migration failed for idx_bsd_saledate_item", table)
-
-
-def _migrate_part_groups_join_index():
-    """Add idx_pg_part_period (part_number, time_period) — idempotent.
-
-    The companion to _migrate_part_groups_company_uq, and the reason it is needed: putting
-    company_id FIRST in uq_period_part made that key unusable for the analytics joins,
-    which every read in field_sales/service.py spells as
-
-        JOIN part_groups pg ON pg.part_number = b.item_code AND pg.time_period = <period>
-
-    with no company_id predicate (attribution goes through `dealer`, so the mapping is not
-    company-filtered here). company_id being the leading column means that is not an index
-    prefix, so MySQL fell back to idx_period — time_period alone — and re-scanned every
-    row of the period for each candidate sales row. On ~1.3k mapping rows that was ~676
-    row reads per outer row: the mobile dealer payload's peer-opportunity query took 3.6s
-    of a 4.9s response, and it grows with each period loaded. With this index the join is a
-    single lookup — 88ms and 659ms respectively, same rows.
-
-    Deliberately NOT unique: uq_period_part is the constraint, this is only an access path.
-    """
-    table = 'part_groups'
-    try:
-        if mysql_manager.execute_query(
-                """SELECT 1 FROM information_schema.STATISTICS
-                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                     AND INDEX_NAME = 'idx_pg_part_period'""", (table,)):
-            return
-        mysql_manager.execute_query(
-            f"ALTER TABLE {table} ADD INDEX idx_pg_part_period "
-            "(part_number, time_period)", fetch=False)
-        logger.info("%s: added idx_pg_part_period", table)
-    except Exception:
-        logger.exception("%s: migration failed for idx_pg_part_period", table)
-
-
 def _migrate_dealer_visits_columns():
     """Add the free-text visit note (idempotent).
 
@@ -2042,85 +1626,6 @@ def _migrate_dealer_visits_columns():
             logger.info("dealer_visits: added column notes")
     except Exception:
         logger.exception("dealer_visits: migration failed for column notes")
-
-
-def _migrate_target_grain():
-    """Move the two target tables onto the category-level grain (idempotent).
-
-    Money targets are set per (category, dealer, period) and quantity targets per
-    (category, scheme, part_group, dealer, period). The tables predate the category
-    dimension, so an existing database still carries the old dealer-level unique keys —
-    and those actively block the new grain: uq_dealer_period allows a dealer only ONE
-    money target per month, whatever its category. They have to go before the new keys
-    can do their job (the upload replaces per category and relies on the key to stop a
-    re-upload doubling a target instead of updating it).
-
-    scheme becomes NOT NULL DEFAULT '' because it is part of the replacement key, and
-    MySQL treats every NULL in a UNIQUE index as distinct — a NULL scheme would slip
-    past the key on every upload.
-    """
-    # dealer_money_target appears here only for a database old enough to still have it —
-    # the entry is a no-op everywhere else, and _migrate_target_type reads the table once
-    # before it is dropped by hand.
-    tables = {
-        'dealer_money_target': {
-            'drop_keys': ['uq_dealer_period'],
-            'unique': ('uq_dmt_grain', '(dealer_id, category_id, target_period)'),
-            'cat_index': 'idx_dmt_category',
-        },
-        'dealer_target': {
-            'drop_keys': ['uq_dealer_group_period'],
-            'unique': ('uq_dt_grain',
-                       '(dealer_id, category_id, scheme, part_group, target_period)'),
-            'cat_index': 'idx_dt_category',
-        },
-    }
-    for table, spec in tables.items():
-        try:
-            if not mysql_manager.execute_query(
-                    """SELECT 1 FROM information_schema.TABLES
-                       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s""", (table,)):
-                continue  # fresh install — the registry DDL already has the new shape
-
-            if not mysql_manager.execute_query(
-                    """SELECT 1 FROM information_schema.COLUMNS
-                       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                         AND COLUMN_NAME = 'category_id'""", (table,)):
-                mysql_manager.execute_query(
-                    f"ALTER TABLE `{table}` ADD COLUMN category_id INT NULL AFTER dealer_id",
-                    fetch=False)
-                mysql_manager.execute_query(
-                    f"ALTER TABLE `{table}` ADD INDEX {spec['cat_index']} (category_id)",
-                    fetch=False)
-                logger.info("%s: added column category_id", table)
-
-            if table == 'dealer_target':
-                mysql_manager.execute_query(
-                    "UPDATE dealer_target SET scheme = '' WHERE scheme IS NULL",
-                    fetch=False)
-                mysql_manager.execute_query(
-                    "ALTER TABLE dealer_target "
-                    "MODIFY scheme VARCHAR(150) NOT NULL DEFAULT ''", fetch=False)
-
-            for old in spec['drop_keys']:
-                if mysql_manager.execute_query(
-                        """SELECT 1 FROM information_schema.STATISTICS
-                           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                             AND INDEX_NAME = %s""", (table, old)):
-                    mysql_manager.execute_query(
-                        f"ALTER TABLE `{table}` DROP INDEX `{old}`", fetch=False)
-                    logger.info("%s: dropped stale unique key %s", table, old)
-
-            name, cols = spec['unique']
-            if not mysql_manager.execute_query(
-                    """SELECT 1 FROM information_schema.STATISTICS
-                       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-                         AND INDEX_NAME = %s""", (table, name)):
-                mysql_manager.execute_query(
-                    f"ALTER TABLE `{table}` ADD UNIQUE KEY `{name}` {cols}", fetch=False)
-                logger.info("%s: added unique key %s", table, name)
-        except Exception:
-            logger.exception("%s: target-grain migration failed", table)
 
 
 def _migrate_company_id():

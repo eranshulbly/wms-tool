@@ -19,24 +19,36 @@ adjustment lands on the right one, then write to `fc_sku_price_details` alone.
 
 import hashlib
 import json
+import os
 import re
 from datetime import date, datetime
 from decimal import Decimal
 
 from api.core.logging import get_logger
 from api.shared.db_manager import mysql_manager
-from api.modules.inventory.ingestion import parser
+from api.modules.inventory.ingestion import parser_cadila as parser
 
 logger = get_logger(__name__)
 
 UNSTACKED_LOCATION_ID = 8      # planogram_locations: 'unstacked', picking enabled
 DEFAULT_BIN_ID = 0
 ENTITY_TYPE = 'sku'
-DEFAULT_UOM = 'strip'          # the supplier bills in strips, not tablets or packs
+DEFAULT_UOM = 'strip'          # what Qty (STP) counts, and what the catalogue holds
+
+# The invoice's UOM code mapped onto the catalogue's vocabulary. Only consulted when the
+# line has no Qty (STP): where STP is given it is the basis, and the basis is strips.
+UOM_CODES = {'STP': 'strip', 'BOX': 'box', 'BT': 'bottle', 'VIA': 'vial', 'TUB': 'tube',
+             'NOS': 'nos', 'JAR': 'jar', 'KIT': 'kit', 'AMP': 'ampoule', 'PCS': 'pcs'}
 
 # One transferin_type per document kind, so a receipt and a note are distinguishable even
 # where their numbering overlaps.
-TRANSFERIN_TYPES = {'GRN': 'CADILA_GRN', 'CN': 'CADILA_CN', 'DN': 'CADILA_DN'}
+TRANSFERIN_TYPES = {'GRN': 'CADILA_GRN', 'CREDIT_NOTE': 'CADILA_CN', 'DN': 'CADILA_DN'}
+
+# Optional guard against posting another distributor's invoice into this tenant's stock.
+# Cadila prints the buyer's GSTIN on every document; set CADILA_BUYER_GSTIN to have a
+# mismatch refused. Left unset the buyer is reported but not enforced, because there is
+# no GSTIN on the company record to check against.
+EXPECTED_BUYER_GSTIN = (os.environ.get('CADILA_BUYER_GSTIN') or '').strip().upper()
 
 # The effective cost is computed where it is read, not stored:
 #
@@ -49,6 +61,27 @@ TRANSFERIN_TYPES = {'GRN': 'CADILA_GRN', 'CN': 'CADILA_CN', 'DN': 'CADILA_DN'}
 
 class IngestionError(ValueError):
     """Refused: bad input, or a state that must not be written."""
+
+
+class MissingProductsError(IngestionError):
+    """Refused because the catalogue does not have every product on the document.
+
+    Carries the offending lines so the screen can list exactly what to add to the master,
+    rather than making the operator open the PDF and compare it by eye.
+    """
+
+    def __init__(self, message, missing=None, doc_number=None, doc_type=None):
+        super().__init__(message)
+        self.missing = missing or []
+        self.doc_number = doc_number
+        self.doc_type = doc_type
+
+
+DOC_TYPE_LABELS = {'GRN': 'Tax invoice', 'CREDIT_NOTE': 'Credit note', 'DN': 'Debit note'}
+
+
+def doc_type_label(doc_type):
+    return DOC_TYPE_LABELS.get(doc_type, doc_type)
 
 
 # ── Batch identity ───────────────────────────────────────────────────────────
@@ -112,32 +145,118 @@ def _unique_product_string(cursor, prefix, name, pack):
 def resolve_or_create_product(cursor, company_id, prefix, line):
     """The SKU this line refers to, creating it when the catalogue has no such product.
 
-    The supplier prints a name and pack rather than a code, so the name within the company
-    is the identity. Matching is exact and company-scoped: a loose match would silently
-    attach pharma stock to another tenant's SKU, and the resolved id looks just as
-    confident either way.
+    Cadila prints its own product code on every line (CHC143V, ILD21AB), and the catalogue
+    already stores those codes in product_string — they came in with the product master.
+    So the code is the identity, matched exactly.
+
+    That is a real improvement over matching on the printed name, which is what the
+    previous supplier document forced. The names do not agree between systems
+    ("CAMPICILLIN CAPSULES IP (250 mg)" against "CAMPICILLIN 250 CAP"), so name matching
+    quietly created a second product for goods that were already in the catalogue.
+
+    Name matching is kept only as a fallback for a line whose code is not yet in the
+    master, and creating a product is the last resort.
     """
+    product_id = _lookup_product(cursor, company_id, prefix, line)
+    if product_id is not None:
+        return product_id, 'existing'
+
+    code = (line.get('product_code') or '').strip().upper()
     name = (line['raw_product_name'] or '').strip()
-    if not name:
-        raise IngestionError('line has no printed product name')
-
-    cursor.execute(
-        "SELECT product_id FROM product WHERE company_id = %s AND name = %s LIMIT 1",
-        (company_id, name))
-    row = cursor.fetchone()
-    if row:
-        return (row['product_id'] if isinstance(row, dict) else row[0]), 'existing'
-
-    code = _unique_product_string(cursor, prefix, name, line['raw_pack'])
+    new_code = code or _unique_product_string(cursor, prefix, name, line['raw_pack'])
+    uom = _line_uom(line)
     cursor.execute(
         """INSERT INTO product
              (company_id, product_string, name, description, hsn_code, uom, is_active)
            VALUES (%s, %s, %s, %s, %s, %s, 1)""",
-        (company_id, code, name,
-         f"{line['raw_pack']} · {line['raw_mfr']}".strip(' ·'),
-         line['raw_hsn'] or None, DEFAULT_UOM))
-    logger.info("created product %s for company %s", code, company_id)
+        (company_id, new_code, name or new_code,
+         f"{line.get('raw_pack') or ''} · {line.get('manufacturer') or ''}".strip(' ·'),
+         line.get('hsn') or None, uom))
+    logger.info("created product %s for company %s", new_code, company_id)
     return cursor.lastrowid, 'created'
+
+
+def _lookup_product(cursor, company_id, prefix, line):
+    """The product this line refers to, or None if the master does not have it.
+
+    Pure lookup apart from stamping a code onto a row that was found by name — that write
+    only ever fills a slot the master left empty, so it cannot change what the catalogue
+    means.
+    """
+    code = (line.get('product_code') or '').strip().upper()
+    name = (line.get('raw_product_name') or '').strip()
+    if not code and not name:
+        raise IngestionError('line has neither a product code nor a name')
+
+    if code:
+        cursor.execute(
+            "SELECT product_id FROM product WHERE company_id = %s AND product_string = %s"
+            " LIMIT 1", (company_id, code))
+        row = cursor.fetchone()
+        if row:
+            return row['product_id'] if isinstance(row, dict) else row[0]
+
+    if name:
+        # Compared with spaces and full stops stripped, because the master's names carry
+        # double spaces ('CAMPICILLIN 250  CAP') that the invoice prints singly. Exact
+        # matching missed by that one character and created a second product for goods
+        # already in the catalogue — the cause of every orphaned CADI- row in the table.
+        #
+        # A master row wins over a generated one when both somehow match, so this can only
+        # ever converge on the catalogue's own entry.
+        cursor.execute(
+            "SELECT product_id FROM product"
+            " WHERE company_id = %s"
+            "   AND REPLACE(REPLACE(UPPER(name), ' ', ''), '.', '') = %s"
+            " ORDER BY product_string LIKE %s, product_id LIMIT 1",
+            (company_id, name.upper().replace(' ', '').replace('.', ''), f'{prefix}-%'))
+        row = cursor.fetchone()
+        if row:
+            product_id = row['product_id'] if isinstance(row, dict) else row[0]
+            # Found by name because the code was missing from the master. Stamp the code
+            # on so the next document matches on it directly — but only into an empty or
+            # generated slot, never over a code the master already set.
+            if code:
+                cursor.execute(
+                    "UPDATE product SET product_string = %s WHERE product_id = %s"
+                    "   AND (product_string IS NULL OR product_string LIKE %s)",
+                    (code, product_id, f'{prefix}-%'))
+            return product_id
+
+    return None
+
+
+def missing_from_master(cursor, company_id, prefix, lines):
+    """The lines whose product the catalogue does not have.
+
+    Run before anything is written. A receipt for a product nobody has set up carries no
+    category, no pack and no UOM beyond what one invoice happened to print, and it lands
+    in the catalogue looking exactly like a real entry — so the master is corrected first
+    and the document re-uploaded, rather than the document quietly extending the master.
+    """
+    missing, seen = [], set()
+    for line in lines:
+        code = (line.get('product_code') or '').strip().upper()
+        name = (line.get('raw_product_name') or '').strip()
+        if (code, name) in seen:
+            continue
+        seen.add((code, name))
+        if _lookup_product(cursor, company_id, prefix, line) is None:
+            missing.append({'product_code': code, 'product_name': name,
+                            'pack': line.get('raw_pack') or ''})
+    return missing
+
+
+def _line_uom(line):
+    """What one unit of this line's quantity is.
+
+    Qty (STP) counts strips, so wherever it is given the unit is a strip regardless of the
+    UOM code printed beside the trade pack. Only lines billed in the unit itself — bottles,
+    vials, jars — take their UOM from the document.
+    """
+    if line.get('stp_basis'):
+        return DEFAULT_UOM
+    return UOM_CODES.get((line.get('uom') or '').strip().upper(), DEFAULT_UOM)
 
 
 def _transferin_type_id(cursor, doc_type):
@@ -170,18 +289,59 @@ def _already_received(planogram_id, type_id, transferin_id, company_id):
 # ── Ingest ───────────────────────────────────────────────────────────────────
 def ingest_pdf(stream, filename, company_id, warehouse_id, user='system',
                movement_effect=None):
-    """Parse one PDF and carry it through to stock and price details.
+    """Parse one PDF and carry every document in it through to stock and price details.
 
-    Everything runs in ONE transaction. A GRN that created a product and a batch but
-    failed before writing stock would leave catalogue entries for goods that never
-    arrived, so the whole invoice commits or none of it does.
+    Returns a LIST. Cadila batches its credit notes — a single file routinely holds ten
+    unrelated notes, each with its own number and IRN — so treating a file as one document
+    would silently discard nine real cost adjustments.
+
+    Each document commits in its own transaction. One malformed note therefore cannot
+    roll back nine good ones, and a file that fails halfway reports exactly which
+    documents landed rather than leaving the caller to guess.
     """
-    doc = parser.parse_pdf(stream, filename)
+    docs = parser.parse_documents(stream, filename)
+    if not docs:
+        raise IngestionError('no Cadila document found in this file')
+
+    results, rejected = [], []
+    for doc in docs:
+        try:
+            results.append(_ingest_document(doc, company_id, warehouse_id, user,
+                                            movement_effect))
+        except IngestionError as e:
+            # One refused document does not condemn the rest of the file. Ten credit notes
+            # arrive together and only one may name an unknown product; ingesting the nine
+            # and naming the tenth is more useful than refusing all ten. Re-uploading the
+            # file after the master is fixed is safe — the nine come back as duplicates.
+            rejected.append({
+                'doc_number': getattr(e, 'doc_number', None) or doc.get('doc_number'),
+                'doc_type': getattr(e, 'doc_type', None) or doc.get('doc_type'),
+                'error': str(e),
+                'missing_products': getattr(e, 'missing', []),
+            })
+    return results, rejected
+
+
+def _ingest_document(doc, company_id, warehouse_id, user='system', movement_effect=None):
+    """One parsed document -> stock and price details, in ONE transaction.
+
+    A receipt that created a product and a batch but failed before writing stock would
+    leave catalogue entries for goods that never arrived, so it all commits or none does.
+    """
     if not doc['doc_number']:
-        raise IngestionError('invoice number not found on the file')
+        raise IngestionError('document number not found on the file')
+
+    # Cadila prints the buyer on every document. Enforced only when the tenant's GSTIN has
+    # been configured — without it there is nothing to compare against, and refusing on a
+    # guess would block legitimate receipts.
+    buyer = (doc.get('buyer_gstin') or '').strip().upper()
+    if EXPECTED_BUYER_GSTIN and buyer and buyer != EXPECTED_BUYER_GSTIN:
+        raise IngestionError(
+            f"this document is billed to {buyer}, not to this business "
+            f"({EXPECTED_BUYER_GSTIN}) — it belongs to another distributor")
 
     doc_type = doc['doc_type']
-    transferin_id = doc['doc_number']          # the invoice number, verbatim
+    transferin_id = doc['doc_number']          # the invoice / credit note number, verbatim
     effect = movement_effect or ('IN' if doc_type == 'GRN' else 'NONE')
     moves_stock = effect in ('IN', 'OUT')
     direction = -1 if effect == 'OUT' else 1
@@ -191,9 +351,25 @@ def ingest_pdf(stream, filename, company_id, warehouse_id, user='system',
         "SELECT name FROM company WHERE company_id = %s", (company_id,))
     prefix = _slug(companies[0]['name'], 4) if companies else 'PROD'
 
-    created_products, received, adjusted = [], 0, 0
+    created_products, received, adjusted, pending = [], 0, 0, 0
 
     with mysql_manager.get_cursor() as cur:
+        # Nothing is written until every line is known to the catalogue. Raising here
+        # rolls the transaction back, so a refused document leaves no product, no batch
+        # and no stock behind — the operator fixes the master and uploads the same file
+        # again, which is why this must come before the first insert rather than after.
+        unknown = missing_from_master(cur, company_id, prefix, doc['lines'])
+        if unknown:
+            listed = '; '.join(
+                f"{u['product_code'] or '(no code)'} {u['product_name']}".strip()
+                for u in unknown[:8])
+            more = f" and {len(unknown) - 8} more" if len(unknown) > 8 else ''
+            raise MissingProductsError(
+                f"{doc_type_label(doc_type)} {doc['doc_number']} was not ingested: "
+                f"{len(unknown)} product(s) are not in the product master — {listed}"
+                f"{more}. Add them to the master, then upload this file again.",
+                missing=unknown, doc_number=doc['doc_number'], doc_type=doc_type)
+
         type_id = _transferin_type_id(cur, doc_type)
 
         # A re-upload must not add stock twice, but it SHOULD still refresh the price
@@ -217,19 +393,55 @@ def ingest_pdf(stream, filename, company_id, warehouse_id, user='system',
                                   transferin_id, sku_id, batch_id, direction)
                     received += 1
             else:
-                if _apply_note(cur, doc, line, company_id, planogram_id, sku_id, batch_id):
+                state = _apply_note(cur, doc, line, company_id, planogram_id, sku_id,
+                                    batch_id)
+                if state == 'pending':
+                    pending += 1
+                    doc['warnings'].append(
+                        f"{line['raw_product_name']} batch {line['raw_batch']}: no receipt "
+                        "for this batch yet, so the price difference is held and will "
+                        "apply when its invoice is ingested")
+                else:
                     adjusted += 1
                 continue
 
             _upsert_price_from_receipt(cur, company_id, planogram_id, sku_id, batch_id,
                                        line, doc['doc_number'], count_qty=not duplicate)
 
-    logger.info("ingested %s %s: %d lines, %d products created, %d received, %d adjusted",
-                doc_type, doc['doc_number'], len(doc['lines']), len(created_products),
-                received, adjusted)
+    logger.info("ingested %s %s: %d lines, %d products created, %d received, %d adjusted,"
+                " %d pending", doc_type, doc['doc_number'], len(doc['lines']),
+                len(created_products), received, adjusted, pending)
     return {'duplicate': duplicate, 'doc_number': doc['doc_number'], 'parsed': doc,
             'created_products': created_products, 'received': received,
-            'adjusted': adjusted, 'moved_stock': moves_stock and not duplicate}
+            'adjusted': adjusted, 'pending': pending,
+            'moved_stock': moves_stock and not duplicate}
+
+
+def _meta_json(doc, line):
+    """The document's identifiers, stored beside the line, as JSON that fits the column.
+
+    meta_info is VARCHAR(500) and the IRN alone is 64 characters, so an unusually long
+    pack or product name could overflow. Truncating the string would produce invalid JSON
+    and the screen parses this field to show the invoice and batch — so the optional keys
+    are dropped one at a time instead, leaving a shorter document that still parses.
+
+    The IRN is kept where it fits: it is the government-registered hash of the invoice,
+    unique by construction, so a receipt can be traced to the exact paper that created it
+    even after the file itself is gone.
+    """
+    meta = {'invoice': doc['doc_number'], 'date': str(doc['doc_date'] or ''),
+            'pack': line.get('raw_pack') or '', 'batch': line.get('raw_batch') or '',
+            'code': line.get('product_code') or '',
+            'order': doc.get('order_number') or '',
+            'delivery': doc.get('delivery_number') or '',
+            'irn': doc.get('irn') or ''}
+    for optional in ('irn', 'delivery', 'order', 'code', 'pack'):
+        blob = json.dumps(meta)
+        if len(blob) <= 500:
+            return blob
+        meta.pop(optional, None)
+    return json.dumps(meta)[:500] if len(json.dumps(meta)) <= 500 else json.dumps(
+        {'invoice': doc['doc_number'], 'batch': line.get('raw_batch') or ''})
 
 
 def _receive_line(cur, doc, line, company_id, planogram_id, type_id, transferin_id,
@@ -249,8 +461,7 @@ def _receive_line(cur, doc, line, company_id, planogram_id, type_id, transferin_
            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,0,%s,%s,'received',%s,%s)""",
         (planogram_id, transferin_id, type_id, sku_id, ENTITY_TYPE, batch_id,
          abs(qty), abs(qty), line['rate'], line['mrp'],
-         json.dumps({'invoice': doc['doc_number'], 'date': str(doc['doc_date'] or ''),
-                     'pack': line['raw_pack'], 'batch': line['raw_batch']}),
+         _meta_json(doc, line),
          company_id))
     transferin_row_id = cur.lastrowid
 
@@ -288,9 +499,10 @@ def _receive_line(cur, doc, line, company_id, planogram_id, type_id, transferin_
 def _upsert_price_from_receipt(cur, company_id, planogram_id, sku_id, batch_id, line,
                                invoice_ref, count_qty=True):
     """A receipt sets MRP, landing price and the GST rate for this SKU in this batch."""
-    # However the supplier split it, the total is what grosses the cost up.
-    gst_rate = (float(line['cgst_rate']) + float(line['sgst_rate'])
-                + float(line['igst_rate']))
+    # However the supplier split it between CGST/SGST and IGST — which depends on which
+    # Cadila depot shipped — the total is what grosses the cost up, so the parser hands
+    # over one combined rate derived from the tax actually charged.
+    gst_rate = float(line.get('gst_rate') or 0)
     cur.execute(
         """INSERT INTO fc_sku_price_details
              (company_id, planogram_id, entity_id, entity_type, batch_id, mrp,
@@ -306,17 +518,32 @@ def _upsert_price_from_receipt(cur, company_id, planogram_id, sku_id, batch_id, 
                                    grn_reference = VALUES(grn_reference),
                                    updated_by = 'ingestion'""",
         (company_id, planogram_id, sku_id, ENTITY_TYPE, batch_id, line['mrp'],
-         line['rate'], round(gst_rate, 2), DEFAULT_UOM, line['quantity'], invoice_ref,
+         line['rate'], round(gst_rate, 2), _line_uom(line), line['quantity'], invoice_ref,
          1 if count_qty else 0))
 
 
 def _apply_note(cur, doc, line, company_id, planogram_id, sku_id, batch_id):
-    """Record a credit/debit note's rate against the batch it adjusts.
+    """Record a credit note's per-unit price difference against the batch it adjusts.
 
-    SET, not accumulated. That makes a re-uploaded note a no-op, which matters because
-    there is no invoice table to check against. The trade-off is that a second, different
-    note against the same batch replaces the first.
+    Returns 'applied' when the batch has a receipt to reduce, 'pending' when it does not.
+
+    A price-difference note can arrive before the invoice it corrects. The rate is stored
+    either way — losing it would leave the adjustment unrecoverable from a file that has
+    already been filed — but the caller is told, because until the receipt lands the batch
+    reads as landing_price 0 less the note, which is a negative cost. It self-corrects the
+    moment the invoice is ingested, since that sets landing_price on this same row.
+
+    SET, not accumulated. A re-uploaded note is therefore a no-op, which matters because
+    there is no invoice table to check against. The trade-off is that a second, genuinely
+    different note against the same batch replaces the first rather than adding to it.
     """
+    cur.execute(
+        """SELECT landing_price FROM fc_sku_price_details
+            WHERE company_id = %s AND entity_id = %s AND batch_id = %s LIMIT 1""",
+        (company_id, sku_id, batch_id))
+    row = cur.fetchone()
+    landing = float((row['landing_price'] if isinstance(row, dict) else row[0]) or 0) if row else 0.0
+
     cur.execute(
         """INSERT INTO fc_sku_price_details
              (company_id, planogram_id, entity_id, entity_type, batch_id, cn_rate,
@@ -326,8 +553,8 @@ def _apply_note(cur, doc, line, company_id, planogram_id, sku_id, batch_id):
                                    cn_reference = VALUES(cn_reference),
                                    updated_by = 'ingestion'""",
         (company_id, planogram_id, sku_id, ENTITY_TYPE, batch_id,
-         abs(float(line['rate'])), doc['doc_number'], DEFAULT_UOM))
-    return True
+         abs(float(line['rate'])), doc['doc_number'], _line_uom(line)))
+    return 'applied' if landing > 0 else 'pending'
 
 
 # ── Reads for the admin screen ───────────────────────────────────────────────
@@ -349,9 +576,21 @@ def jsonable(value):
     return value
 
 
-def list_received(company_ids=None, warehouse_id=None, limit=200, offset=0):
-    """What has been taken in — transferin_info joined to the product, batch and price."""
+def list_received(company_ids=None, warehouse_id=None, limit=200, offset=0, docs=None):
+    """What has been taken in — transferin_info joined to the product, batch and price.
+
+    `docs` narrows the result to specific document numbers (transferin_id). The screen
+    uses it to show ONLY the lines of the file just uploaded: this is a confirmation of
+    what an upload did, not a stock report, and listing every past receipt made a fresh
+    upload impossible to pick out. With no docs given the caller gets nothing, so the
+    view cannot fall back to showing history by accident.
+    """
+    if docs is not None and not docs:
+        return []
     where, params = ['1=1'], []
+    if docs:
+        where.append('t.transferin_id IN (%s)' % ','.join(['%s'] * len(docs)))
+        params += list(docs)
     if company_ids is not None:
         if not company_ids:
             return []

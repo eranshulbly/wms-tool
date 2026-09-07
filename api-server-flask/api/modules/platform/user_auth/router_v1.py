@@ -135,8 +135,7 @@ class V1Companies(Resource):
     @v1_auth_required
     def get(self, current_user):
         scoped = current_user['company_ids']
-        cols = ("company_id, name, order_capture_mode, analytics_mode, "
-                "catalog_label_mode")
+        cols = "company_id, name"
         if scoped is None:
             rows = mysql_manager.execute_query(
                 f"SELECT {cols} FROM company ORDER BY name"
@@ -152,15 +151,6 @@ class V1Companies(Resource):
         return [{
             "company_id": r['company_id'],
             "name": r['name'],
-            # 'photo'    -> reps capture a picture of the paper order
-            # 'itemised' -> reps pick dealer + products in the app
-            "order_capture_mode": r['order_capture_mode'],
-            # 'targets'  -> Busy-feed sales measured against dealer targets
-            # 'invoices' -> a month total summed from uploaded invoices, no targets
-            "analytics_mode": r['analytics_mode'],
-            # 'code_first' -> order picker leads with the part number
-            # 'name_first' -> it leads with the product name instead
-            "catalog_label_mode": r['catalog_label_mode'],
         } for r in rows or []], 200
 
 

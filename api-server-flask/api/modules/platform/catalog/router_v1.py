@@ -21,9 +21,14 @@ from api.modules.platform.user_auth.rbac import P
 
 logger = get_logger(__name__)
 
-SKU_COLS = """product_string AS sku_code, name, description, nickname, category_id,
-              uom, size, weight, barcode, hsn_code, price, is_active, created_at,
-              company_id"""
+# product_id is selected but never serialised: it is the key _skus_out joins the
+# packaging ladder and the price/stock rows on. Leaving it out made both lookups
+# silently receive an empty id list, so every SKU went out with `order_units: []`
+# — the app then showed one quantity box for a product that can only be ordered
+# by the box or the case, and nothing anywhere errored.
+SKU_COLS = """product_id, product_string AS sku_code, name, description, nickname,
+              category_id, uom, size, weight, barcode, hsn_code, price, is_active,
+              created_at, company_id"""
 
 
 def _iso(dt):
@@ -108,31 +113,95 @@ def order_units_for(product_ids):
 # against the IN form, and against the join without STRAIGHT_JOIN.
 #
 # (%% because execute_query runs `query % params`, so a literal % must be doubled.)
-_WORKING_SET_FROM = """(SELECT item_code AS ps FROM busy_sales_data
-                         WHERE sale_date >= DATE_SUB(DATE_FORMAT(CURDATE(), '%%Y-%%m-01'),
-                                                     INTERVAL 6 MONTH)
-                        UNION
-                        SELECT part_number AS ps FROM part_groups
-                         WHERE time_period = DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
-                       ) ws STRAIGHT_JOIN product ON product.product_string = ws.ps """
+# The working set is the whole active catalogue. It used to be the subset of parts
+# a company had actually traded (derived from the Busy sales feed and target part
+# groups), but this deployment has neither — sales arrive as uploaded invoices — and
+# its catalogue is small enough to hold and search on the device in full.
+_WORKING_SET_FROM = "product "
 
 
 def _has_working_set(current_user):
-    """Whether this caller's company has ANY product in the working set.
+    """Whether there is a catalogue to serve as the working set.
 
-    Both sources behind the set — busy_sales_data and part_groups — exist only
-    for companies on the Busy feed. For anyone else the intersection is empty,
-    and an empty product picker is never the right answer for a company that has
-    a catalogue. A LIMIT 1 probe, so it stops at the first hit rather than
-    counting the whole set.
+    The working set is now the full active catalogue, so this is simply whether any
+    product exists. Kept as a function so the caller's branch reads unchanged.
     """
-    frag, params = company_filter(current_user)
-    where = f"WHERE {frag} " if frag else ""
     return bool(mysql_manager.execute_query(
-        f"SELECT 1 FROM {_WORKING_SET_FROM}{where}LIMIT 1", tuple(params)))
+        "SELECT 1 FROM product LIMIT 1"))
 
 
-def _sku_out(r, packing=None):
+# ── Pricing and stock, for the pack-and-price order flow ─────────────────────────
+#
+# A rep pricing an order at the counter needs three things the catalogue alone does not
+# carry: what the product retails at (mrp), what it costs us (the rate a margin is
+# applied to), and whether there is any to sell. All three are per company, and the
+# first two are per BATCH — so this mirrors price_for()'s rule (most recently received
+# batch, else the batch-0 list rate) rather than inventing a second one.
+#
+# One query for the page, for the same reason order_units_for is: the picker asks for up
+# to 5000 SKUs and a per-SKU lookup here would be 5000 round trips.
+
+def pricing_for(product_ids, company_id):
+    """{product_id: {'mrp', 'rate', 'gst_rate', 'stock_qty'}} for the given products.
+
+    `rate` is landing price net of credit note — the same figure price_for() calls
+    `amount`, and the basis a margin is applied to. None where nobody has priced the
+    product, which the app must show as "no rate" rather than as zero.
+    """
+    if not product_ids or company_id is None:
+        return {}
+    ids = list(product_ids)
+    out = {}
+    for i in range(0, len(ids), 1000):
+        chunk = ids[i:i + 1000]
+        ph = ','.join(['%s'] * len(chunk))
+        # One price row per product, chosen by the COSTLIEST received batch.
+        #
+        # Not the newest. A product sitting on two batches will be shipped from
+        # whichever the warehouse picks, so pricing off the cheaper one quietly
+        # sells the dearer stock below the margin the rep thought they were
+        # taking. Costliest-first makes the quoted margin a floor rather than an
+        # average, and it is the only choice that cannot lose money on the mix.
+        #
+        # Batch 0 is excluded outright, not merely ranked last. It is the supplier's
+        # RATE LIST, written with quantity_received = 0 — a price for goods that
+        # never arrived. Quoting from it means quoting a cost nobody has paid, so a
+        # product with no received batch is reported as HAVING NO RATE rather than
+        # being valued off the list. The app already renders that state ("no rate on
+        # file — the office will price this line"), which is the honest answer.
+        #
+        # created_on breaks a tie between two batches at the same cost.
+        for r in (mysql_manager.execute_query(
+                f"""SELECT entity_id, mrp, (landing_price - cn_rate) AS rate, gst_rate
+                      FROM (SELECT entity_id, mrp, landing_price, cn_rate, gst_rate,
+                                   ROW_NUMBER() OVER (PARTITION BY entity_id
+                                       ORDER BY (landing_price - cn_rate) DESC,
+                                                created_on DESC) AS rn
+                              FROM fc_sku_price_details
+                             WHERE entity_type = 'sku' AND company_id = %s
+                               AND batch_id <> 0
+                               AND entity_id IN ({ph})) ranked
+                     WHERE rn = 1""", (company_id, *chunk)) or []):
+            out[r['entity_id']] = {
+                'mrp': float(r['mrp']) if r['mrp'] is not None else None,
+                'rate': float(r['rate']) if r['rate'] is not None else None,
+                'gst_rate': float(r['gst_rate']) if r['gst_rate'] is not None else None,
+                'stock_qty': 0.0,
+            }
+        # Stock is held per batch and per bin, so a product's sellable quantity is the
+        # sum across them — in the priced unit, which is what the ladder converts to.
+        for r in (mysql_manager.execute_query(
+                f"""SELECT entity_id, COALESCE(SUM(quantity), 0) AS qty
+                      FROM fc_entity_stock
+                     WHERE entity_type = 'sku' AND company_id = %s
+                       AND entity_id IN ({ph})
+                     GROUP BY entity_id""", (company_id, *chunk)) or []):
+            out.setdefault(r['entity_id'], {'mrp': None, 'rate': None, 'gst_rate': None})
+            out[r['entity_id']]['stock_qty'] = float(r['qty'] or 0)
+    return out
+
+
+def _sku_out(r, packing=None, pricing=None):
     """One SKU as JSON. `packing` is this product's entry from order_units_for(), when
     the caller has fetched them — omitted, the SKU simply carries no order units and the
     app falls back to a single implicit unit."""
@@ -147,13 +216,34 @@ def _sku_out(r, packing=None):
         # Empty list = no packaging ladder = order in the one implicit unit.
         "order_units": packing.get('order_units', []),
         "price_uom": packing.get('price_uom'),
+        # Null throughout for a company that prices nothing — every Hero part today —
+        # so the flow that reads them can say "no rate" instead of showing a zero.
+        "mrp": (pricing or {}).get('mrp'),
+        "rate": (pricing or {}).get('rate'),
+        "gst_rate": (pricing or {}).get('gst_rate'),
+        "stock_qty": (pricing or {}).get('stock_qty'),
     }
 
 
 def _skus_out(rows):
-    """A list of SKUs with their order units attached, in one extra query."""
+    """A list of SKUs with their order units, price and stock attached.
+
+    Two extra queries for the whole page regardless of its size, not two per SKU.
+    Pricing is grouped by the row's own company because price and stock are held per
+    company; in practice a rep's page is one company and this is a single pass.
+    """
     packing = order_units_for([r['product_id'] for r in rows if r.get('product_id')])
-    return [_sku_out(r, packing.get(r.get('product_id'))) for r in rows]
+
+    by_company = {}
+    for r in rows:
+        if r.get('product_id') is not None:
+            by_company.setdefault(r.get('company_id'), []).append(r['product_id'])
+    pricing = {}
+    for company_id, pids in by_company.items():
+        pricing.update(pricing_for(pids, company_id))
+
+    return [_sku_out(r, packing.get(r.get('product_id')),
+                     pricing.get(r.get('product_id'))) for r in rows]
 
 
 def _category_out(r):
@@ -271,22 +361,32 @@ def _working_set_etag(current_user, company_params):
     try:
         rows = mysql_manager.execute_query(
             """SELECT COUNT(*) AS n,
-                      COALESCE(MAX(product.updated_at), '') AS newest
-                 FROM (SELECT item_code AS ps FROM busy_sales_data
-                        WHERE sale_date >= DATE_SUB(DATE_FORMAT(CURDATE(), '%%Y-%%m-01'),
-                                                    INTERVAL 6 MONTH)
-                       UNION
-                       SELECT part_number AS ps FROM part_groups
-                        WHERE time_period = DATE_FORMAT(CURDATE(), '%%Y-%%m-01')
-                      ) ws
-                 STRAIGHT_JOIN product ON product.product_string = ws.ps
+                      COALESCE(MAX(product.updated_at), '') AS newest,
+                      -- The response now carries price, packing and stock as well as
+                      -- the catalogue row, so all three have to be able to move the
+                      -- tag. Without them a re-priced product is served from cache
+                      -- indefinitely: the rep quotes last week's rate and nothing
+                      -- anywhere reports a problem.
+                      --
+                      -- Deliberately global rather than per company. It over-
+                      -- invalidates a little — one company's price load costs
+                      -- everyone a full response — which is the safe direction. The
+                      -- opposite error is a stale price on a live order.
+                      (SELECT COALESCE(MAX(updated_on), '')
+                         FROM fc_sku_price_details) AS priced,
+                      (SELECT COALESCE(MAX(updated_at), '')
+                         FROM product_uom) AS packed,
+                      (SELECT COALESCE(MAX(updated_on), '')
+                         FROM fc_entity_stock) AS stocked
+                 FROM product
                 WHERE product.is_active = 1""",
         )
         if not rows:
             return None
         row = rows[0]
         scope = ','.join(str(p) for p in company_params)
-        raw = f"{scope}|{row['n']}|{row['newest']}"
+        raw = (f"{scope}|{row['n']}|{row['newest']}"
+               f"|{row['priced']}|{row['packed']}|{row['stocked']}")
         return 'W/"%s"' % hashlib.sha256(raw.encode()).hexdigest()[:32]
     except Exception:  # pragma: no cover - never fail a catalog read over a tag
         logger.warning("could not compute working-set etag", exc_info=True)
@@ -365,7 +465,12 @@ class V1Skus(Resource):
                     f"ORDER BY name LIMIT %s OFFSET %s",
                     tuple(params + [limit, offset]),
                 ) or []
-                return [_sku_out(r) for r in rows], 200, {'ETag': etag}
+                # _skus_out, not a bare _sku_out: this branch was dropping the
+                # packaging ladder (and now price and stock) from every cached
+                # response, so a pack-ordered catalogue arrived with nothing to
+                # order it in — but only on the ETag path, which is why it looked
+                # intermittent.
+                return _skus_out(rows), 200, {'ETag': etag}
 
         rows = mysql_manager.execute_query(
             f"SELECT {SKU_COLS} FROM {frm}{where} "
@@ -414,7 +519,7 @@ class V1Skus(Resource):
             """INSERT INTO product (product_string, name, description, category_id,
                                     uom, size, weight, barcode, hsn_code, price, is_active,
                                     company_id)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s)""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s)""",
             (sku_code, name, body.get('description'), category_id,
              body.get('uom'), body.get('size'), body.get('weight'), barcode,
              body.get('hsn_code'), body.get('price'), company_id),

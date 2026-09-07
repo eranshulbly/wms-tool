@@ -30,7 +30,8 @@ const InvoiceUpload = () => (
           <Typography variant="h4" gutterBottom>Upload Invoice File</Typography>
           <Typography variant="body2" color="textSecondary" gutterBottom>
             Upload your invoice file to move matched orders to <strong>Invoiced</strong> status.
-            Orders in <em>Packed</em> state (or bypass order types like ZGOI) are invoiced immediately.
+            Orders in <em>Packed</em> state — and bypass order types such as <strong>INVOICE</strong>,
+            which is what a Cadila GST invoice arrives as — are invoiced immediately.
             Orders still in Open/Picking receive an <em>Invoice Submitted</em> flag and are
             auto-invoiced when moved to Packed.
           </Typography>
@@ -42,7 +43,10 @@ const InvoiceUpload = () => (
           <Typography variant="body2" component="div">
             <ul style={{ paddingLeft: '20px', margin: '8px 0' }}>
               <li>File must have <strong>Invoice #</strong> and <strong>Order #</strong> columns</li>
-              <li><strong>Bypass types (e.g. ZGOI):</strong> moved to Invoiced regardless of current state</li>
+              <li>
+                <strong>Bypass types (e.g. INVOICE):</strong> moved to Invoiced regardless of
+                current state. A Cadila invoice is the order, so it never waits for a Packed step.
+              </li>
               <li><strong>Packed orders:</strong> moved to Invoiced immediately</li>
               <li>
                 <strong>Open / Picking orders:</strong> flagged as "Invoice Submitted" — auto-transition

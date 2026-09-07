@@ -166,6 +166,24 @@ class V1Orders(Resource):
                 return {"detail": "duplicate sku_code in order items"}, 422
             seen.add(sku)
 
+            # The agreed rate per priced unit, where the flow that raised the order
+            # quotes one. Optional: the standard flow prices nothing, and an order
+            # with no rate is a normal order, not a malformed one.
+            #
+            # Validated but NOT recomputed. The number the rep showed the dealer is
+            # the commitment, and an order can sit in the phone's outbox for days
+            # before it arrives — re-deriving it here from today's cost would store
+            # a price nobody agreed to.
+            rate = it.get('net_rate')
+            if rate is not None:
+                try:
+                    rate = float(rate)
+                except (TypeError, ValueError):
+                    return {"detail": "net_rate must be a number"}, 422
+                if rate < 0:
+                    return {"detail": "net_rate cannot be negative"}, 422
+                it['net_rate'] = rate
+
         # Where the rep was standing. Required: orders are audited against the
         # dealer's location, so one without coordinates is not worth recording.
         lat, lng = body.get('latitude'), body.get('longitude')

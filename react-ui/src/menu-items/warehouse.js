@@ -20,19 +20,11 @@ const warehouse = {
             breadcrumbs: false
         },
         {
-            id: 'submitted-orders',
+            id: 'download-dms',
             title: 'Submitted Orders',
             type: 'item',
-            url: '/warehouse/submitted-orders',
-            icon: icons.IconClipboardList,
-            breadcrumbs: false
-        },
-        {
-            id: 'download-dms',
-            title: 'Download DMS Input',
-            type: 'item',
             url: '/warehouse/download-dms',
-            icon: icons.IconFileDownload,
+            icon: icons.IconClipboardList,
             breadcrumbs: false
         },
         {

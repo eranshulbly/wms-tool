@@ -244,8 +244,8 @@ class EwayCustomerRouteMappingsTemplate(Resource):
             ws = wb.active
             ws.title = "Customer Route Mapping"
             ws.append(['Customer Code', 'Customer Name', 'Route Name', 'Distance (km)'])
-            ws.append(['HMC001', 'Hero Moto Corp - Delhi', 'UP Route A', 120])
-            ws.append(['HMC002', 'Hero Moto Corp - UP',    'UP Route B', 85])
+            ws.append(['CUST001', 'Sample Dealer - Delhi', 'Route A', 120])
+            ws.append(['CUST002', 'Sample Dealer - UP',    'Route B', 85])
             ws.column_dimensions['A'].width = 18
             ws.column_dimensions['B'].width = 35
             ws.column_dimensions['C'].width = 20

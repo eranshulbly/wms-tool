@@ -10,6 +10,9 @@ import os
 
 from api.models import mysql_manager
 from api.modules.fulfillment.order.business import process_order_dataframe
+from api.modules.platform.catalog.product_upload_business import (
+    process_product_upload_dataframe,
+)
 from api.modules.platform.catalog.dealer_business import clear_dealer_cache
 from api.core.logging import get_logger
 from api.shared.upload_base import BaseUploadService
@@ -25,19 +28,61 @@ class OrderUploadService(BaseUploadService):
     upload_type = 'orders'
     required_columns = ['Sales Order #']
 
+    # The line-item columns. A file carrying these describes its own contents, so the
+    # order upload reads them itself instead of waiting for a second file — which is what
+    # left a PDF-sourced order with a header and no items.
+    LINE_COLUMNS = ('Part #', 'Reserved Qty')
+
     def process_dataframe(self, df, context: dict) -> dict:
         clear_dealer_cache()
+        company_id = context.get('company_id')
         result = process_order_dataframe(
             df,
             context['warehouse_id'],
-            context.get('company_id'),
+            company_id,
             context['user_id'],
             context['upload_batch_id'],
         )
-        return {
+
+        out = {
             'processed_count': result['orders_processed'],
             'error_rows': result['error_rows'],
         }
+
+        # Line items, from the same file, when it actually carries them. A file without
+        # these columns behaves exactly as before: header only, lines supplied later by
+        # the Products upload.
+        if not all(c in df.columns for c in self.LINE_COLUMNS):
+            return out
+
+        line_df = df
+        # The two uploads name the order column differently; the order file is the one
+        # that says 'Sales Order #'.
+        if 'Order #' not in line_df.columns and 'Sales Order #' in line_df.columns:
+            line_df = line_df.copy()
+            line_df['Order #'] = line_df['Sales Order #']
+
+        try:
+            lines = process_product_upload_dataframe(
+                line_df, company_id, context['user_id'], context['upload_batch_id'])
+        except Exception:
+            # The orders are already committed. A failure here must not lose them or
+            # present the upload as a total failure — it is reported as a row error so
+            # the operator knows to run the Products upload for the missing lines.
+            logger.exception("Order upload: line items could not be attached")
+            out['error_rows'] = list(out['error_rows']) + [{
+                'order_id': '', 'name': '',
+                'reason': 'Orders were created but their line items could not be read — '
+                          'upload the products file for them.'}]
+            return out
+
+        out['products_processed'] = lines.get('products_processed', 0)
+        out['orders_updated'] = lines.get('orders_updated', 0)
+        out['error_rows'] = list(out['error_rows']) + list(lines.get('error_rows') or [])
+        logger.info("Order upload attached line items",
+                    extra={'orders': out['processed_count'],
+                           'lines': out['products_processed']})
+        return out
 
 
 # ── Backward-compatible shim ──────────────────────────────────────────────────
