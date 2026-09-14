@@ -129,3 +129,37 @@ CREATE TABLE IF NOT EXISTS submitted_order_status_history (
     INDEX idx_sosh_order (submitted_order_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """, order=8)
+
+
+# What an admin deleted, and why.
+#
+# The delete is a HARD delete — the order, its lines, its history and any invoice all go.
+# That is what "wrongly uploaded" needs: a soft-deleted order still occupies its order
+# number, so the corrected upload of the same challan would be refused as a duplicate.
+#
+# But a hard delete with no trace is worse than the problem it solves: an order that was
+# on the system yesterday and is gone today, with nobody able to say who removed it or
+# what it contained. So the identifying facts are copied here first — enough to answer
+# "what was order 12246 and who deleted it", without keeping the rows that would block
+# re-uploading it.
+register_table("deleted_order_log", """
+CREATE TABLE IF NOT EXISTS deleted_order_log (
+    deleted_order_log_id INT AUTO_INCREMENT PRIMARY KEY,
+    potential_order_id   INT NOT NULL,
+    original_order_id    VARCHAR(100) NULL,
+    order_type           VARCHAR(50) NULL,
+    status_at_deletion   VARCHAR(30) NULL,
+    company_id           INT NULL,
+    warehouse_id         INT NULL,
+    dealer_id            INT NULL,
+    purchaser_name       VARCHAR(255) NULL,
+    line_count           INT NOT NULL DEFAULT 0,
+    total_quantity       INT NOT NULL DEFAULT 0,
+    invoice_numbers      VARCHAR(500) NULL,
+    reason               VARCHAR(500) NULL,
+    deleted_by           INT NULL,
+    deleted_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_dol_order  (original_order_id),
+    INDEX idx_dol_when   (deleted_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""", order=9)

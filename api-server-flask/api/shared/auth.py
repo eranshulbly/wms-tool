@@ -25,7 +25,8 @@ from flask import request
 
 from ..config import BaseConfig
 from .db_manager import (mysql_manager, partition_filter,
-                         _PART_CONVERTOR_ROLE_NAME, _DMS_OPERATOR_ROLE_NAME)
+                         _PART_CONVERTOR_ROLE_NAME, _DMS_OPERATOR_ROLE_NAME,
+                         _OPS_MANAGER_ROLE_NAME)
 from .logging import get_logger
 
 logger = get_logger(__name__)
@@ -77,6 +78,31 @@ _ROLE_SCOPES = {
         ('GET',  r'^/api/orders/inventory/?$'),
         ('POST', r'^/api/orders/inventory/?$'),
         ('GET',  r'^/api/orders/dealers/?$'),
+        ('GET',  r'^/api/warehouses/?$'),
+        ('GET',  r'^/api/companies/?$'),
+    )),
+    # The order desk: orders in, through their states, picked, and billed. Five screens
+    # rather than one — dashboard, upload orders, upload invoice, manage orders, download
+    # picklist — so this list is longer than the two above, but it is still an allowlist:
+    # analytics, admin, inventory, e-way bill and supply sheet are all absent, and so is
+    # the product master.
+    _OPS_MANAGER_ROLE_NAME: ('Order Tracking', (
+        # Dashboard
+        ('GET',  r'^/api/orders/status/?$'),
+        ('GET',  r'^/api/orders/recent/?$'),
+        # Manage Orders
+        ('GET',  r'^/api/orders/?$'),
+        ('GET',  r'^/api/orders/\d+/details/?$'),
+        ('PUT',  r'^/api/orders/\d+/status/?$'),
+        ('POST', r'^/api/orders/\d+/status/?$'),
+        ('POST', r'^/api/orders/\d+/complete-dispatch/?$'),
+        # Upload Orders / Upload Invoice
+        ('POST', r'^/api/orders/upload/?$'),
+        ('POST', r'^/api/invoices/upload/?$'),
+        # Download Picklist
+        ('GET',  r'^/api/orders/picklist/options/?$'),
+        ('GET',  r'^/api/orders/picklist/?$'),
+        # The warehouse/company pickers every one of those screens loads
         ('GET',  r'^/api/warehouses/?$'),
         ('GET',  r'^/api/companies/?$'),
     )),

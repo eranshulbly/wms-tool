@@ -21,6 +21,7 @@ const WarehouseDashboard = Loadable(lazy(() => import('../views/warehouse/Wareho
 const OrderManagement = Loadable(lazy(() => import('../views/warehouse/OrderManagement')));
 const SubmittedOrders = Loadable(lazy(() => import('../views/warehouse/SubmittedOrders')));
 const DownloadDmsInput = Loadable(lazy(() => import('../views/warehouse/DownloadDmsInput')));
+const DownloadPicklist = Loadable(lazy(() => import('../views/warehouse/DownloadPicklist')));
 const SupplySheetDownload = Loadable(lazy(() => import('../views/warehouse/SupplySheetDownload')));
 const InvoiceUpload = Loadable(lazy(() => import('../views/warehouse/InvoiceUpload')));
 const ProductUpload = Loadable(lazy(() => import('../views/warehouse/ProductUpload')));
@@ -51,6 +52,7 @@ const MainRoutes = () => {
                 '/dashboard/default',
                 '/warehouse/submitted-orders',
                 '/warehouse/download-dms',
+                '/warehouse/download-picklist',
                 '/warehouse/upload-orders',
                 '/warehouse/manage-orders',
                 '/warehouse/upload-invoices',
@@ -77,6 +79,7 @@ const MainRoutes = () => {
                     {/* Warehouse Management Routes */}
                     <Route path="/warehouse/submitted-orders" render={() => <AuthGuard><SubmittedOrders /></AuthGuard>} />
                     <Route path="/warehouse/download-dms" render={() => <AuthGuard><DownloadDmsInput /></AuthGuard>} />
+                    <Route path="/warehouse/download-picklist" render={() => <AuthGuard><DownloadPicklist /></AuthGuard>} />
                     <Route path="/warehouse/upload-orders" render={() => <AuthGuard><OrderUpload /></AuthGuard>} />
                     <Route path="/warehouse/manage-orders" render={() => <AuthGuard><OrderManagement /></AuthGuard>} />
                     <Route

@@ -62,10 +62,16 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
                 error_rows.append(_make_error_row('', purchaser_name, f"Row {index}: Missing Sales Order #"))
                 continue
 
-            if sales_order_id in existing_orders or sales_order_id in seen:
+            if sales_order_id in existing_orders:
                 error_rows.append(_make_error_row(
                     sales_order_id, purchaser_name,
                     f"Order {sales_order_id} already exists — skipped, nothing changed"))
+                continue
+            if sales_order_id in seen:
+                # Another LINE of an order this file already created — normal for a
+                # document with one row per item (an Order Challan), so it is skipped
+                # silently. Reporting it would put N-1 "errors" on a perfectly good
+                # N-line order and teach operators to ignore the error report.
                 continue
             seen.add(sales_order_id)
 

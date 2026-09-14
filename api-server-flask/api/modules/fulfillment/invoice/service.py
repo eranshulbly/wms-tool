@@ -27,19 +27,53 @@ class InvoiceUploadService(BaseUploadService):
     required_columns = ['Invoice #', 'Order #']
 
     def process_dataframe(self, df, context: dict) -> dict:
+        # A Tax Invoice PDF arrives as one row PER LINE ITEM, because its line items are
+        # what tells the stock ledger which goods left. The invoice RECORD is header-level
+        # though — one row is one invoice — so only the first row is billed. Without this
+        # a three-line invoice would create three identical invoice records.
+        #
+        # Spreadsheet feeds carry no 'Source Doc' and are untouched: they already arrive
+        # at the grain this service has always expected.
+        is_pdf_invoice = ('Source Doc' in df.columns
+                          and (df['Source Doc'] == 'tax_invoice').any())
+        header_df = df.head(1) if is_pdf_invoice else df
+
         result = process_invoice_dataframe(
-            df,
+            header_df,
             context['warehouse_id'],
             context.get('company_id'),
             context['user_id'],
             context['upload_batch_id'],
         )
-        return {
+
+        # Invoiced goods have been billed and have left the building, so they come off the
+        # shelf. Done ONLY when an invoice was actually created: a re-upload of the same
+        # invoice is refused upstream (the order is already Invoiced), and reducing stock
+        # again would take the same goods out twice.
+        stock = None
+        if is_pdf_invoice and result['invoices_processed'] > 0:
+            from api.modules.fulfillment.order import temp_inventory
+            stock = temp_inventory.reduce_stock([
+                {'part_number': row.get('Part #'), 'quantity': row.get('Reserved Qty')}
+                for _, row in df.iterrows()
+            ])
+            logger.info("Invoice upload reduced stock", extra={
+                'parts_reduced': stock['parts'], 'units_reduced': stock['units'],
+                'parts_not_in_stock_sheet': len(stock['missing'])})
+
+        out = {
             'processed_count': result['invoices_processed'],
             'error_rows': result['error_rows'],
             'orders_invoiced': result['orders_invoiced'],
             'orders_flagged': result['orders_flagged'],
         }
+        if stock is not None:
+            out['stock_parts_reduced'] = stock['parts']
+            out['stock_units_reduced'] = stock['units']
+            # Named plainly: these parts were billed but the stock sheet has never heard
+            # of them, so nothing could be deducted for them.
+            out['stock_parts_missing'] = stock['missing']
+        return out
 
 
 # ── Backward-compatible shim ──────────────────────────────────────────────────

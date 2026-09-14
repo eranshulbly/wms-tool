@@ -33,6 +33,30 @@ import {
 import { formatDate, getTimeInState } from '../utils';
 import StatusChip from './StatusChip';
 
+// Rupees, Indian grouping — matching how every other money figure in the app is rendered.
+// This cell used to read `${product.price}`, which in JSX is a literal '$' followed by the
+// value, not a template literal, so it printed a dollar sign on rupee amounts.
+const money = (val) =>
+  val != null && val !== ''
+    ? `₹${Number(val).toLocaleString('en-IN', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      })}`
+    : '—';
+
+// The reductions between the quoted rate and what was actually charged. Shown as the two
+// separate percentages the document prints rather than one combined figure: they are
+// applied in sequence, so 44% and 7% is not 51% off, and collapsing them would both
+// misstate the deal and stop the arithmetic reconciling against the challan.
+const pct = (val) => `${Number(val).toLocaleString('en-IN', { maximumFractionDigits: 2 })}%`;
+
+const discounts = (product) => {
+  const parts = [product.line_item_discount_percent, product.additional_discount_percent]
+    .filter((v) => v != null && v !== '' && Number(v) !== 0)
+    .map(pct);
+  return parts.length ? parts.join(' + ') : '—';
+};
+
 /**
  * Order details modal used by both WarehouseDashboard (read-only) and
  * OrderManagement (with status action buttons).
@@ -195,7 +219,10 @@ const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) =
                     <TableCell>Product</TableCell>
                     <TableCell>Description</TableCell>
                     <TableCell>Quantity</TableCell>
-                    <TableCell>Price</TableCell>
+                    <TableCell align="right">Rate</TableCell>
+                    <TableCell align="right">Disc.</TableCell>
+                    <TableCell align="right">Net / unit</TableCell>
+                    <TableCell align="right">Amount</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -207,7 +234,10 @@ const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) =
                       </TableCell>
                       <TableCell>{product.description}</TableCell>
                       <TableCell>{product.quantity_ordered}</TableCell>
-                      <TableCell>${product.price}</TableCell>
+                      <TableCell align="right">{money(product.unit_price)}</TableCell>
+                      <TableCell align="right">{discounts(product)}</TableCell>
+                      <TableCell align="right">{money(product.price)}</TableCell>
+                      <TableCell align="right">{money(product.total_price)}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

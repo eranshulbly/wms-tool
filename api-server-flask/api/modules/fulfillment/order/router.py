@@ -61,8 +61,53 @@ product_detail_model = rest_api.model('ProductDetail', {
     'quantity_ordered':   fields.Integer(description='Originally ordered quantity'),
     'quantity_available': fields.Integer(description='Available quantity for packed'),
     'quantity_packed':    fields.Integer(description='Quantity already packed'),
-    'price':              fields.String(description='Product price'),
+    'price':              fields.String(description='Net price per unit actually charged'),
+    'unit_price':         fields.String(description='Gross rate quoted, before discounts'),
+    'line_item_discount_percent':  fields.String(description='Line discount %'),
+    'additional_discount_percent': fields.String(description='Additional/SD discount %'),
+    'net_selling_price':  fields.String(description='Net price per unit after discounts'),
+    'total_price':        fields.String(description='Line total actually billed'),
 })
+
+def _money_str(value):
+    """A money figure for the API, or None when the line genuinely has none.
+
+    None is not 0.00. An order placed through a feed that prints no prices has an unknown
+    line value, and returning '0.00' would render in the UI as goods given away free.
+    """
+    return None if value is None else str(value)
+
+
+def _format_order_product(product):
+    """One order line for the API, money included.
+
+    `price` stays the field older clients read, and now means what it says: the net per
+    unit actually charged. The gross rate and the discounts that produced it travel
+    alongside so a reader can see how the figure was arrived at.
+
+    Lines written before the money columns existed have neither, so `price` falls back to
+    the catalogue figure exactly as it did before — those orders keep rendering as they
+    always have rather than turning blank. `.get` throughout because a deployment that has
+    not run the migration yet simply will not have these keys.
+    """
+    net = product.get('net_selling_price')
+    fallback = product.get('catalog_price')
+    return {
+        'product_id':        product['product_id'],
+        'product_string':    product['product_string'] or f'P{product["product_id"]}',
+        'name':              product['name'],
+        'description':       product['description'] or '',
+        'quantity_ordered':  product['quantity'],
+        'quantity_available': product['quantity'],
+        'quantity_packed':   product['quantity_packed'] or 0,
+        'price':             _money_str(net if net is not None else fallback),
+        'unit_price':        _money_str(product.get('unit_price')),
+        'line_item_discount_percent':  _money_str(product.get('line_item_discount_percent')),
+        'additional_discount_percent': _money_str(product.get('additional_discount_percent')),
+        'net_selling_price': _money_str(net),
+        'total_price':       _money_str(product.get('total_price')),
+    }
+
 
 state_history_model = rest_api.model('StateHistory', {
     'state_name': fields.String(description='State name'),
@@ -291,16 +336,7 @@ class OrderDetailWithProducts(Resource):
             products = PotentialOrderProduct.get_products_for_order(numeric_id)
             formatted_products = []
             for product in products:
-                formatted_products.append({
-                    'product_id':        product['product_id'],
-                    'product_string':    product['product_string'] or f'P{product["product_id"]}',
-                    'name':              product['name'],
-                    'description':       product['description'] or '',
-                    'quantity_ordered':  product['quantity'],
-                    'quantity_available': product['quantity'],
-                    'quantity_packed':   product['quantity_packed'] or 0,
-                    'price':             str(product['price']) if product['price'] else '0.00'
-                })
+                formatted_products.append(_format_order_product(product))
 
             # Boxes were removed from the packing flow; kept as an empty list
             # for response-shape compatibility with older clients.
@@ -630,16 +666,7 @@ class OrderPackedUpdate(Resource):
                 updated_products = PotentialOrderProduct.get_products_for_order(numeric_id)
                 formatted_products = []
                 for product in updated_products:
-                    formatted_products.append({
-                        'product_id':        product['product_id'],
-                        'product_string':    product['product_string'] or f'P{product["product_id"]}',
-                        'name':              product['name'],
-                        'description':       product['description'] or '',
-                        'quantity_ordered':  product['quantity'],
-                        'quantity_available': product['quantity'],
-                        'quantity_packed':   product['quantity_packed'] or 0,
-                        'price':             str(product['price']) if product['price'] else '0.00'
-                    })
+                    formatted_products.append(_format_order_product(product))
 
                 formatted_boxes = []
 

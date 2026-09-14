@@ -402,6 +402,12 @@ register_table("fc_entity_stock", """
 CREATE TABLE IF NOT EXISTS fc_entity_stock (
     id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     planogram_id       INT UNSIGNED NOT NULL,
+    -- Defined here, not only added by _migrate_company_id: the UNIQUE KEY below
+    -- names company_id, so on a FRESH database the CREATE TABLE failed outright
+    -- with 1072 "Key column 'company_id' doesn't exist in table". An existing
+    -- database never hit it, because CREATE TABLE IF NOT EXISTS is a no-op there.
+    -- Same type/nullability the migration uses, so migrated and fresh agree.
+    company_id         INT NULL,
     location_id        TINYINT UNSIGNED NOT NULL,
     bin_id             BIGINT UNSIGNED NOT NULL DEFAULT 0,
     bin_location       VARCHAR(255) NOT NULL DEFAULT '',
@@ -419,6 +425,7 @@ CREATE TABLE IF NOT EXISTS fc_entity_stock (
     -- for several companies at once, so without it two tenants holding the same SKU and
     -- batch in the same bin would collide on one row and silently pool their quantities.
     UNIQUE KEY planogram_id_new (planogram_id, location_id, bin_id, entity_id, entity_type, batch_id, company_id),
+    KEY idx_company_id (company_id),
     KEY planogram_id_2 (planogram_id, location_id, bin_id, entity_id),
     KEY planogram_id_3 (planogram_id, location_id, entity_id),
     KEY planogram_id_4 (planogram_id, entity_id),

@@ -4,7 +4,7 @@ import { useSelector } from 'react-redux';
 import { Redirect, useLocation } from 'react-router-dom';
 import { Box, Typography, Paper } from '@material-ui/core';
 
-import { scopeForRole } from '../roleScope';
+import { scopeForRole, scopeAllowsPath } from '../roleScope';
 
 //-----------------------|| AUTH GUARD ||-----------------------//
 
@@ -17,10 +17,12 @@ const AuthGuard = ({ children }) => {
         return <Redirect to="/login" />;
     }
 
-    // A single-screen role may only ever see its own page — any other path (including
-    // the /home launcher) bounces there.
+    // A scoped role may only ever see the pages in its scope — any other path (including
+    // the /home launcher) bounces to its landing page. Checked against every allowed
+    // path, not just `home`, or a role with several screens would be redirected off the
+    // four that are not its landing page.
     const scope = user && scopeForRole(user.role);
-    if (scope && !location.pathname.startsWith(scope.home)) {
+    if (scope && !scopeAllowsPath(scope, location.pathname)) {
         return <Redirect to={scope.home} />;
     }
 

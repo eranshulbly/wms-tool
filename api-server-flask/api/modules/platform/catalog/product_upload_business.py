@@ -26,6 +26,60 @@ from api.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _money(value):
+    """A number from an upload cell, or None. Blanks and 'nan' are not zero."""
+    if value is None:
+        return None
+    text = str(value).strip().replace(',', '').replace('%', '').replace('₹', '')
+    if not text or text.lower() in ('nan', 'none', 'nat', '-'):
+        return None
+    try:
+        return round(float(text), 4)
+    except ValueError:
+        return None
+
+
+def _line_pricing(row, qty):
+    """What this line was sold for, from whichever money columns the feed carries.
+
+    Spreadsheet feeds carry none of these and every value comes back None, which is the
+    honest answer — the old behaviour of storing nothing is preserved exactly rather than
+    inventing zeroes that would later read as "sold for free".
+
+    An Order Challan carries a gross rate plus a line discount and an SD percentage, all
+    negotiated per dealer. The net is derived by applying them in sequence, the way the
+    document itself totals: 428.00 less 44% is 239.68, less a further 7% is 222.90, and
+    222.90 x 200 is the 44,580.48 the challan prints. Sequential, not additive — treating
+    it as a flat 51% would give 209.72 and disagree with the paperwork by nearly 2,600
+    rupees on this one line.
+
+    The printed Amount wins over the computed total when it is present: it is what the
+    dealer was actually billed, and any rounding the issuer applied is theirs to keep.
+    """
+    unit = _money(row.get('Rate'))
+    discount = _money(row.get('Discount %'))
+    sd = _money(row.get('SD %'))
+    amount = _money(row.get('Amount'))
+
+    net = unit
+    if net is not None:
+        for pct in (discount, sd):
+            if pct:
+                net = net * (1 - pct / 100.0)
+        net = round(net, 2)
+
+    if amount is None and net is not None and qty:
+        amount = round(net * qty, 2)
+
+    return {
+        'unit_price': unit,
+        'line_item_discount_percent': discount,
+        'additional_discount_percent': sd,
+        'net_selling_price': net,
+        'total_price': amount,
+    }
+
+
 def _batch_key(product_id, batch_number, expiry_date):
     """Identity of a batch, matching how inventory ingestion hashes it."""
     from api.modules.inventory.ingestion.service import batch_hash
@@ -41,7 +95,7 @@ def _resolve_batch_ids(order_products, products_map):
     """
     hashes = set()
     for lines in order_products.values():
-        for part_no, _desc, _qty, batch_number, expiry_date in lines:
+        for part_no, _desc, _qty, batch_number, expiry_date, _pricing in lines:
             product = products_map.get(part_no)
             if product and batch_number:
                 hashes.add(_batch_key(product['product_id'], batch_number, expiry_date))
@@ -154,6 +208,7 @@ def process_product_upload_dataframe(df, company_id, _user_id, _upload_batch_id=
                 part_no, description, qty,
                 str(row.get('Batch #', '') or '').strip() or None,
                 row.get('Expiry') if str(row.get('Expiry', '') or '').strip() else None,
+                _line_pricing(row, qty),
             ))
 
         except Exception as e:
@@ -192,7 +247,7 @@ def process_product_upload_dataframe(df, company_id, _user_id, _upload_batch_id=
 
     pop_rows = []
     for pot_id, lines in order_products.items():
-        for part_no, _description, qty, batch_number, expiry_date in lines:
+        for part_no, _description, qty, batch_number, expiry_date, pricing in lines:
             product = products_map.get(part_no)
             if not product:
                 error_rows.append({
@@ -219,10 +274,14 @@ def process_product_upload_dataframe(df, company_id, _user_id, _upload_batch_id=
                 0,          # quantity_packed
                 qty,        # quantity_remaining
                 None,       # mrp
-                None,       # total_price
+                pricing['total_price'],
                 current_time,
                 current_time,
                 batch_id,
+                pricing['unit_price'],
+                pricing['line_item_discount_percent'],
+                pricing['additional_discount_percent'],
+                pricing['net_selling_price'],
             ))
 
     products_saved = product_repo.bulk_insert_order_products(pop_rows)

@@ -54,6 +54,50 @@ const adminService = {
         const res = await axios.delete(`${API}/admin/upload-batches/${batchId}`);
         return res.data;
     },
+
+    /**
+     * Orders an admin can delete, newest first.
+     *
+     * @param {object} [filters]
+     * @param {number} [filters.company_id]
+     * @param {number} [filters.warehouse_id]
+     * @param {string} [filters.status]     - order status, or 'all'
+     * @param {string} [filters.search]     - order number / dealer name
+     */
+    getDeletableOrders: async (filters = {}) => {
+        const params = {};
+        if (filters.company_id && filters.company_id !== 'all') params.company_id = filters.company_id;
+        if (filters.warehouse_id && filters.warehouse_id !== 'all') params.warehouse_id = filters.warehouse_id;
+        if (filters.status && filters.status !== 'all') params.status = filters.status;
+        if (filters.search) params.search = filters.search;
+        const res = await axios.get(`${API}/admin/orders`, { params });
+        return res.data;
+    },
+
+    /**
+     * Permanently delete orders uploaded in error.
+     *
+     * Returns 409 with `needs_confirmation` when some of the selected orders have been
+     * invoiced or dispatched — call again with force: true to go ahead.
+     *
+     * @param {number[]} orderIds
+     * @param {string}   reason    - required; written to the deletion log
+     * @param {boolean}  [force]
+     */
+    deleteOrders: async (orderIds, reason, force = false) => {
+        const res = await axios.post(`${API}/admin/orders/delete`, {
+            order_ids: orderIds,
+            reason,
+            force
+        });
+        return res.data;
+    },
+
+    /** The audit trail of deleted orders. */
+    getOrderDeletionLog: async () => {
+        const res = await axios.get(`${API}/admin/orders/deletion-log`);
+        return res.data;
+    },
 };
 
 export default adminService;

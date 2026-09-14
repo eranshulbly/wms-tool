@@ -119,6 +119,35 @@ CREATE TABLE IF NOT EXISTS product_uom (
 # catalog/product_pack.py for how a rate list is loaded as a batch-less rate.
 
 
+# Where a part is kept, so a picker can be sent to it. One row per product per warehouse:
+# the same part sits in different bins in different buildings, and a single column on
+# `product` could only ever describe one of them.
+#
+# The bin is stored as the ONE string the inventory sheet prints ("A-09 - A-01") rather
+# than pre-split into the L1/L2/L3 columns the picklist shows. A part can be spread across
+# several bins and the sheet joins them with a separator, but which separator, and how
+# many parts there are, varies; splitting on read keeps the uploaded value recoverable and
+# means a sheet with three bins does not silently lose the third to a two-column schema.
+#
+# This is deliberately NOT fc_entity_stock. That table is the live, batch-level, bin-level
+# quantity ledger written by stacking and picking, and a row there disappears when a bin
+# empties. A part's home bin outlives its stock — it is where the part BELONGS, which is
+# exactly what a picklist needs to print even for a line that is out of stock.
+register_table("product_location", """
+CREATE TABLE IF NOT EXISTS product_location (
+    product_location_id INT AUTO_INCREMENT PRIMARY KEY,
+    product_id   INT NOT NULL,
+    warehouse_id INT NOT NULL,
+    company_id   INT NULL,
+    bin_location VARCHAR(255) NOT NULL DEFAULT '',
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_product_location (product_id, warehouse_id),
+    INDEX idx_prodloc_warehouse (warehouse_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""", order=14)
+
+
 # Everything that is real for one industry and meaningless for the others — composition
 # and shelf life for pharma, whatever the next supplier brings. An admin defines a new
 # attribute by inserting a row here, not by shipping a migration.

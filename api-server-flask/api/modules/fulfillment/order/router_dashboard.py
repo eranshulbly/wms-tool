@@ -156,6 +156,17 @@ VALID_BULK_TRANSITIONS = {
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _int_or_none(raw):
+    """An int from a form field, or None. 'all' and '' are the UI's way of saying None."""
+    text = str(raw or '').strip()
+    if not text or text.lower() in ('all', 'none', 'null', 'undefined'):
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _ensure_state(name, description):
     """Get or create an OrderState by name."""
     state = OrderState.find_by_name(name)
@@ -1085,6 +1096,36 @@ class DmsInventory(Resource):
             return {'success': False, 'msg': str(e)}, 422
 
         updated, inserted, zeroed = temp_inventory.replace_stock(items)
+
+        # A sheet that also names bin locations and pack sizes updates those too. The
+        # quantity is a daily snapshot; where a part lives and how many make a case are
+        # standing facts, so they are written to their own tables rather than to
+        # temp_inventory, which is replaced wholesale on every upload.
+        #
+        # Location is per warehouse, so it needs one. When the operator has not filtered
+        # to a warehouse it falls back to the only one there is; with several defined and
+        # none chosen the stock still lands and the location columns are skipped, because
+        # guessing a warehouse would file every part under the wrong bins.
+        pack = {'created': 0, 'located': 0, 'packed': 0, 'unknown_parts': 0}
+        pack_msg = None
+        warehouse_id = _int_or_none(request.form.get('warehouse_id'))
+        company_id = _int_or_none(request.form.get('company_id'))
+        has_extra = any(it.get('location') or it.get('units_per_case')
+                        or it.get('units_per_box') for it in items)
+        if has_extra:
+            if warehouse_id is None:
+                warehouses = mysql_manager.execute_query(
+                    "SELECT warehouse_id FROM warehouse") or []
+                if len(warehouses) == 1:
+                    warehouse_id = warehouses[0]['warehouse_id']
+            if warehouse_id is None:
+                pack_msg = ('Locations and pack sizes were skipped — choose a warehouse '
+                            'first, as a bin location belongs to one.')
+            else:
+                from api.modules.platform.catalog import pack_location
+                pack = pack_location.sync_pack_and_location(
+                    items, warehouse_id, company_id)
+
         return {
             'success': True,
             'parts_in_sheet': len(items),
@@ -1093,6 +1134,11 @@ class DmsInventory(Resource):
             # Named plainly because it surprises people: a part the sheet omits is taken
             # to be out of stock, not left at its previous quantity.
             'zeroed_not_in_sheet': zeroed,
+            'products_created': pack['created'],
+            'located': pack['located'],
+            'packed': pack['packed'],
+            'unknown_parts': pack['unknown_parts'],
+            'pack_msg': pack_msg,
             'inventory': temp_inventory.status(),
         }, 200
 
@@ -1426,3 +1472,126 @@ class SubmittedOrderReject(Resource):
             )
 
         return {'success': True}, 200
+
+
+@rest_api.route('/api/orders/picklist/options')
+class PicklistOptions(Resource):
+    """Orders that can be picked right now, for the picklist screen's list.
+
+    Deliberately narrow: id, number, dealer, date and a line count. The screen is a
+    chooser, not a report, and sending every order's full line detail to populate a list
+    of checkboxes would put the whole warehouse's open work on the wire to render a few
+    rows of text.
+    """
+
+    @token_required
+    @active_required
+    def get(self, current_user):
+        from api.modules.fulfillment.order import picklist
+
+        try:
+            company_ids = resolve_company_scope(
+                current_user, request.args.get('company_id', type=int))
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
+
+        warehouse_id = request.args.get('warehouse_id', type=int)
+        pf_sql, pf_params = partition_filter('potential_order', alias='po')
+        cf_sql, cf_params = company_filter_sql(company_ids, alias='po')
+        status_ph = ','.join(['%s'] * len(picklist.PICKABLE_STATUSES))
+
+        sql = f"""SELECT po.potential_order_id, po.original_order_id, po.order_date,
+                         po.created_at, po.status,
+                         COALESCE(d.name, po.purchaser_name) AS dealer_name,
+                         d.town,
+                         (SELECT COUNT(*) FROM potential_order_product pop
+                           WHERE pop.potential_order_id = po.potential_order_id) AS line_count
+                  FROM potential_order po
+                  LEFT JOIN dealer d ON d.dealer_id = po.dealer_id
+                  WHERE {pf_sql} AND {cf_sql}
+                    AND po.status IN ({status_ph})"""
+        params = pf_params + tuple(cf_params) + picklist.PICKABLE_STATUSES
+        if warehouse_id:
+            sql += " AND po.warehouse_id = %s"
+            params = params + (warehouse_id,)
+        sql += " ORDER BY po.created_at DESC LIMIT 500"
+
+        rows = mysql_manager.execute_query(sql, params) or []
+        return {
+            'success': True,
+            'orders': [{
+                'potential_order_id': r['potential_order_id'],
+                'order_number': r['original_order_id'],
+                'dealer_name': r['dealer_name'] or '',
+                'town': r['town'] or '',
+                'order_date': (r['order_date'] or r['created_at']).isoformat()
+                              if (r['order_date'] or r['created_at']) else None,
+                'line_count': r['line_count'],
+                'status': r['status'],
+            } for r in rows],
+        }, 200
+
+
+@rest_api.route('/api/orders/picklist')
+class PicklistDownload(Resource):
+    """Download pick lists for one or more Open orders.
+
+    One order downloads as a PDF; several download as a zip of one PDF each, so a picklist
+    can be handed to a picker, filed or emailed on its own rather than extracted from a
+    combined document.
+
+    Orders are re-checked here rather than trusted from the request: the screen lists only
+    pickable orders, but a list can be minutes old, and an order that has since moved on
+    must not print a second picking instruction for goods already picked.
+    """
+
+    @token_required
+    @active_required
+    def get(self, current_user):
+        from api.modules.fulfillment.order import picklist
+
+        raw = request.args.get('order_ids', '')
+        order_ids = []
+        for piece in str(raw).split(','):
+            piece = piece.strip()
+            if piece.isdigit():
+                order_ids.append(int(piece))
+        if not order_ids:
+            return {'success': False,
+                    'msg': 'select at least one order (order_ids=1,2,3)'}, 422
+        if len(order_ids) > 200:
+            return {'success': False,
+                    'msg': 'at most 200 orders can be downloaded at once'}, 422
+
+        try:
+            company_ids = resolve_company_scope(
+                current_user, request.args.get('company_id', type=int))
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
+
+        sheets = picklist.build(order_ids, company_ids)
+        if not sheets:
+            return {'success': False,
+                    'msg': 'none of the selected orders are open for picking — '
+                           'they may already have been picked, or belong to another '
+                           'company'}, 409
+
+        stamp = datetime.utcnow().strftime('%Y%m%d-%H%M')
+        if len(sheets) == 1:
+            number = picklist._safe_filename(sheets[0]['order'].get('original_order_id'))
+            payload, mime, name = (picklist.render_pdf(sheets),
+                                   'application/pdf', f'picklist_{number}.pdf')
+        else:
+            payload, mime, name = (picklist.render_zip(sheets),
+                                   'application/zip', f'picklists_{stamp}.zip')
+
+        logger.info("picklist downloaded", extra={
+            'user_id': getattr(current_user, 'id', None),
+            'orders_requested': len(order_ids), 'orders_returned': len(sheets),
+            'format': 'pdf' if len(sheets) == 1 else 'zip'})
+
+        resp = send_file(io.BytesIO(payload), mimetype=mime,
+                         as_attachment=True, download_name=name)
+        # The browser cannot read the filename off a cross-origin download without this.
+        resp.headers['Access-Control-Expose-Headers'] = 'Content-Disposition'
+        return resp

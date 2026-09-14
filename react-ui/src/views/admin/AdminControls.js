@@ -11,6 +11,7 @@ import { makeStyles } from '@material-ui/styles';
 import { IconTrash, IconMapPin, IconPackage, IconCurrentLocation, IconUsers } from '@tabler/icons';
 
 import DeleteUploads from './tabs/DeleteUploads';
+import DeleteOrders from './tabs/DeleteOrders';
 import DealerTownUpload from './tabs/DealerTownUpload';
 import ProductMasterUpload from './tabs/ProductMasterUpload';
 import DealerAdmin from './tabs/DealerAdmin';
@@ -31,6 +32,14 @@ const TABS = [
         label:     'Delete Uploads',
         icon:      <IconTrash size={16} />,
         component: DeleteUploads,
+    },
+    {
+        // Sits next to Delete Uploads on purpose: same job, different grain — that one
+        // reverts a whole upload, this one removes individual orders from within one.
+        id:        'delete-orders',
+        label:     'Delete Orders',
+        icon:      <IconTrash size={16} />,
+        component: DeleteOrders,
     },
     {
         id:        'dealer-town',

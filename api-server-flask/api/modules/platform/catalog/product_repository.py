@@ -79,10 +79,15 @@ class ProductRepository(BaseRepository):
             rows: list of tuples —
                   (potential_order_id, product_id, quantity, quantity_packed,
                    quantity_remaining, mrp, total_price, created_at, updated_at,
-                   batch_id)
+                   batch_id, unit_price, line_item_discount_percent,
+                   additional_discount_percent, net_selling_price)
 
                   batch_id is NULL for feeds that do not name a batch (Hero's sheets).
                   It points at sku_batch, which holds the batch number and expiry.
+
+                  The four price columns are NULL for feeds that print no money — the
+                  spreadsheet orders never did. They live on the line, not on the product,
+                  because the discount behind them is negotiated per dealer.
 
         Returns:
             Number of rows inserted.
@@ -94,8 +99,9 @@ class ProductRepository(BaseRepository):
                 """INSERT INTO potential_order_product
                    (potential_order_id, product_id, quantity, quantity_packed,
                     quantity_remaining, mrp, total_price, created_at, updated_at,
-                    batch_id)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    batch_id, unit_price, line_item_discount_percent,
+                    additional_discount_percent, net_selling_price)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 rows
             )
             return cursor.rowcount

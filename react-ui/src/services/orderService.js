@@ -117,12 +117,42 @@ export const downloadDmsFile = (orderId) =>
 export const getDmsInventory = () => api.get('orders/inventory').then((res) => res.data);
 
 // Apply a stock sheet (PART# | QTY). A full snapshot: parts the sheet omits are set to 0.
-export const uploadDmsInventory = (file) => {
+//
+// The warehouse travels with it because a sheet may also carry bin locations, and a bin
+// belongs to one warehouse. The server ignores it when the sheet has no location column,
+// and falls back to the only warehouse when there is just one.
+export const uploadDmsInventory = (file, warehouseId, companyId) => {
   const formData = new FormData();
   formData.append('file', file);
+  if (warehouseId && warehouseId !== 'all') formData.append('warehouse_id', warehouseId);
+  if (companyId && companyId !== 'all') formData.append('company_id', companyId);
   return api
     .post('orders/inventory', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
     .then((res) => res.data);
+};
+
+// Orders open for picking, for the picklist chooser.
+export const getPicklistOptions = (warehouseId, companyId) => {
+  const params = {};
+  if (warehouseId && warehouseId !== 'all') params.warehouse_id = warehouseId;
+  if (companyId && companyId !== 'all') params.company_id = companyId;
+  return api.get('orders/picklist/options', { params }).then((res) => res.data);
+};
+
+// Pick lists for the selected orders. One order comes back as a PDF, several as a zip of
+// one PDF each — the server decides, so the filename it sends is authoritative rather
+// than something the caller guesses from the count.
+export const downloadPicklists = (orderIds, companyId) => {
+  const params = { order_ids: orderIds.join(',') };
+  if (companyId && companyId !== 'all') params.company_id = companyId;
+  return api.get('orders/picklist', { params, responseType: 'blob' }).then((res) => {
+    const disposition = res.headers['content-disposition'] || '';
+    const match = /filename[^;=\n]*=(?:"?)([^";\n]*)/.exec(disposition);
+    return {
+      blob: res.data,
+      filename: match ? match[1].trim() : 'picklist.pdf'
+    };
+  });
 };
 
 // Active dealers for the manual-order picker. Narrowed by company, because an order's

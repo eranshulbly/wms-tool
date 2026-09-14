@@ -244,6 +244,29 @@ def generate_error_excel(error_rows):
     return base64.b64encode(buf.read()).decode('utf-8')
 
 
+def _failure_message(error_rows):
+    """Why the upload failed, said plainly.
+
+    The per-row reasons are already written as sentences an operator can act on
+    ("Order 11956 already exists — skipped, nothing changed"), so for a handful of rows
+    we say them outright rather than sending someone to open a spreadsheet to read one
+    line. A long list stays summarised — pasting fifty reasons into a banner communicates
+    less, not more.
+    """
+    reasons = []
+    for row in error_rows:
+        reason = (row.get('reason') or '').strip()
+        if reason and reason not in reasons:
+            reasons.append(reason)
+
+    if not reasons:
+        return 'No rows could be processed. Download the error report for details.'
+    if len(reasons) <= 3:
+        return ' '.join(r.rstrip('.') + '.' for r in reasons)
+    return ('No rows could be processed (%d errors). '
+            'Download the error report for details.' % len(error_rows))
+
+
 def make_upload_response(processed_count, error_rows, **extra):
     """
     Build a standardized upload response dict.
@@ -266,11 +289,14 @@ def make_upload_response(processed_count, error_rows, **extra):
         **extra,
     }
 
-    if error_count > 1:
+    # Every failed row gets a report, a lone one included. This read `> 1`, so an upload
+    # of a single row — one PDF challan is exactly that — generated no report at all,
+    # while the message below still told the operator to go and download it.
+    if error_count > 0:
         response['error_report'] = generate_error_excel(error_rows)
 
     if not success:
-        response['msg'] = 'No rows could be processed. Download the error report for details.'
+        response['msg'] = _failure_message(error_rows)
 
     status_code = 200 if success else 400
     return response, status_code

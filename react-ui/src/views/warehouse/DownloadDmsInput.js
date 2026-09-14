@@ -120,15 +120,26 @@ const DownloadDmsInput = () => {
     if (!invFile) return;
     setInvUploading(true);
     try {
-      const data = await uploadDmsInventory(invFile);
+      const data = await uploadDmsInventory(invFile, warehouseFilter, companyFilter);
       if (data.success) {
         setInventory(data.inventory);
+        // Location and pack sizes are only mentioned when the sheet actually carried
+        // them — a plain stock file should not be reported as having updated 0 bins,
+        // which reads like something failed.
+        const extras = [];
+        if (data.products_created) extras.push(`${data.products_created} new product(s)`);
+        if (data.located) extras.push(`${data.located} bin location(s)`);
+        if (data.packed) extras.push(`${data.packed} pack size(s)`);
+        if (data.unknown_parts) extras.push(`${data.unknown_parts} part(s) could not be resolved`);
         notify(
           `Inventory updated — ${data.parts_in_sheet} part${data.parts_in_sheet === 1 ? '' : 's'} in the sheet ` +
             `(${data.inserted} new, ${data.updated} updated` +
             (data.zeroed_not_in_sheet ? `, ${data.zeroed_not_in_sheet} set to 0 as they were not listed` : '') +
-            ')'
+            ')' +
+            (extras.length ? ` — also updated ${extras.join(', ')}` : ''),
+          data.pack_msg ? 'warning' : 'success'
         );
+        if (data.pack_msg) notify(data.pack_msg, 'warning');
         setInvOpen(false);
         setInvFile(null);
         if (invInputRef.current) invInputRef.current.value = '';

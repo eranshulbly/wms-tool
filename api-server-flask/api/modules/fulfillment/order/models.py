@@ -318,7 +318,12 @@ class PotentialOrderProduct(MySQLModel):
         """Get all products for an order with product details"""
         pf_sql, pf_params = partition_filter('potential_order_product', alias='pop')
         results = mysql_manager.execute_query(
-            f"""SELECT pop.*, p.product_string, p.name, p.description, p.price
+            # p.price is aliased because the LINE now carries its own money columns
+            # (unit_price, net_selling_price, ...) picked up by pop.*, and an unaliased
+            # p.price would land on the same 'price' key and quietly win. The catalogue
+            # figure is only a fallback for old orders that were stored without one.
+            f"""SELECT pop.*, p.product_string, p.name, p.description,
+                       p.price AS catalog_price
                FROM potential_order_product pop
                JOIN product p ON pop.product_id = p.product_id
                WHERE {pf_sql} AND pop.potential_order_id = %s""",

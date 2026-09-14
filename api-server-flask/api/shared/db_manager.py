@@ -838,6 +838,7 @@ def create_all_tables():
     # Packaging / pricing model: the tables come from the schema registry, these carry
     # the column and the reference data the registry cannot.
     _migrate_product_gst_percent()
+    _migrate_order_line_pricing()
     seed_default_uoms()
     # Runs last: it only adds columns, and several of the migrations above assume the
     # base tables already exist in their pre-v2 shape.
@@ -1861,7 +1862,10 @@ def _migrate_product_gst_percent():
     """Add product.gst_percent (idempotent).
 
     A core column, not an attribute: every company selling in India has a GST rate, and
-    it sits beside hsn_code which already determines it. Kept on the product rather than
+    it sits beside hsn_code which already determines it. No AFTER clause:
+    hsn_code is itself added by a later migration, so on a FRESH database positioning
+    against it failed with 1054 "Unknown column 'hsn_code'" and the column was silently
+    skipped. Column order is cosmetic; being present is not. Kept on the product rather than
     on the price because the rate is a property of what the thing IS, not of what a
     given price list charges for it.
     """
@@ -1871,11 +1875,52 @@ def _migrate_product_gst_percent():
                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product'
                      AND COLUMN_NAME = 'gst_percent'"""):
             mysql_manager.execute_query(
-                "ALTER TABLE product ADD COLUMN gst_percent DECIMAL(5,2) NULL "
-                "AFTER hsn_code", fetch=False)
+                "ALTER TABLE product ADD COLUMN gst_percent DECIMAL(5,2) NULL",
+                fetch=False)
             logger.info("product: added column gst_percent")
     except Exception:
         logger.exception("product: migration failed for column gst_percent")
+
+
+def _migrate_order_line_pricing():
+    """Add the money columns to potential_order_product (idempotent).
+
+    An order line recorded a quantity and nothing else, so what the goods were actually
+    sold for lived only on the product — a single shared row. That cannot hold a price
+    that is negotiated per dealer: an Order Challan prints a rate together with a line
+    discount and an SD percentage, and those are that dealer's terms, so the last upload
+    would overwrite everyone else's price.
+
+    Keeping all four on the line makes an order self-contained and auditable: the gross
+    rate that was quoted, the two reductions applied to it, and the net actually charged.
+    A historical order then keeps the price it was placed at instead of re-reading
+    whatever the catalogue says today.
+
+    Names follow the invoice table's existing vocabulary (`unit_price`,
+    `line_item_discount_percent`, `net_selling_price`) so the same figure is not called
+    two different things on either side of the order-to-invoice boundary.
+    `total_price` already exists on the table and holds the line amount.
+    """
+    columns = (
+        ('unit_price',                  'DECIMAL(10,2) NULL'),
+        ('line_item_discount_percent',  'DECIMAL(5,2) NULL'),
+        ('additional_discount_percent', 'DECIMAL(5,2) NULL'),
+        ('net_selling_price',           'DECIMAL(10,2) NULL'),
+    )
+    for name, ddl in columns:
+        try:
+            if not mysql_manager.execute_query(
+                    """SELECT 1 FROM information_schema.COLUMNS
+                       WHERE TABLE_SCHEMA = DATABASE()
+                         AND TABLE_NAME = 'potential_order_product'
+                         AND COLUMN_NAME = %s""", (name,)):
+                mysql_manager.execute_query(
+                    "ALTER TABLE potential_order_product ADD COLUMN %s %s" % (name, ddl),
+                    fetch=False)
+                logger.info("potential_order_product: added column %s" % name)
+        except Exception:
+            logger.exception(
+                "potential_order_product: migration failed for column %s" % name)
 
 
 # The unit names the packaging ladder is built from. Seeded rather than hard-coded so an
@@ -2222,6 +2267,17 @@ def _migrate_potential_order_table():
             "'ZGOI orders bypass the Packed prerequisite — invoice upload moves them directly to Invoiced.')",
             fetch=False
         )
+        # An Order Challan is picked straight against the challan and billed; there is no
+        # separate packing step to wait for, so requiring Packed before the invoice could
+        # bill it would leave every such order flagged and never invoiced — and still
+        # appearing on the picklist after its goods had shipped.
+        mysql_manager.execute_query(
+            "INSERT IGNORE INTO invoice_processing_config (config_key, config_value, description) "
+            "VALUES ('bypass_order_type', 'Order Challan', "
+            "'Order Challan orders have no packing step — the Tax Invoice moves them "
+            "directly from Open to Invoiced.')",
+            fetch=False
+        )
     except Exception:
         pass
 
@@ -2258,6 +2314,7 @@ ALL_UPLOAD_TYPES = ['orders', 'invoices', 'products']
 # launcher / sidebar / AuthGuard. A typo in any of them silently grants full access.
 _PART_CONVERTOR_ROLE_NAME = 'part_convertor'
 _DMS_OPERATOR_ROLE_NAME = 'dms_operator'
+_OPS_MANAGER_ROLE_NAME = 'ebco_opsmanager'
 
 
 def seed_default_roles():
@@ -2348,6 +2405,26 @@ def seed_default_roles():
             'all_warehouses': True,
             'order_states': [],
             'uploads': [],
+        },
+        # Runs the order desk end to end: brings orders in, moves them through their
+        # states, prints what the warehouse picks, and bills them. Confined to Order
+        # Tracking — no analytics, no admin, no inventory, no e-way bill.
+        #
+        # Unlike the two roles above this one is NOT a single-screen role: it needs five
+        # screens, which is why roleScope.js carries a list rather than one menu id.
+        #
+        # `uploads` is what puts Upload Orders and Upload Invoice in its sidebar — the
+        # menu filters those two items by exactly this list. 'products' is deliberately
+        # absent: editing the catalogue is not part of running the order desk.
+        {
+            'name': _OPS_MANAGER_ROLE_NAME,
+            'description': 'Order Tracking only — dashboard, upload orders, upload '
+                           'invoice, manage orders and download picklist. No other '
+                           'sections.',
+            'all_warehouses': True,
+            'order_states': ['Open', 'Picking', 'Packed', 'Invoiced',
+                             'Dispatch Ready', 'Completed', 'Partially Completed'],
+            'uploads': ['orders', 'invoices'],
         },
     ]
 

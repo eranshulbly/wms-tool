@@ -63,6 +63,30 @@ def _qty_column(header):
     return None
 
 
+# Columns the Ebco inventory sheet adds on top of part-and-quantity. All optional: the
+# Hero DMS stock export carries none of them and must keep parsing exactly as before.
+#
+# Matched by EXACT normalised name, never by substring. 'Case' and 'Unit per Case' both
+# normalise to strings containing "case", so a contains test would bind the case-count
+# column to the units-per-case header and silently invert the pack maths.
+_EXTRA_COLUMNS = {
+    'location':       ('location', 'binlocation', 'bin', 'binlocations', 'rack'),
+    'units_per_case': ('unitpercase', 'unitspercase', 'percase', 'qtypercase'),
+    'units_per_box':  ('unitperboxinsidecase', 'unitsperboxinsidecase',
+                       'unitperbox', 'unitsperbox', 'perbox'),
+    'cases':          ('case', 'cases', 'noofcases', 'totalcases'),
+    'name':           ('productname', 'itemname', 'partname'),
+}
+
+
+def _optional_column(header, aliases):
+    """Index of the first column whose normalised name matches exactly, or None."""
+    for alias in aliases:
+        if alias in header:
+            return header.index(alias)
+    return None
+
+
 def _decode(raw):
     """Text from a delimited export, whatever it was saved as.
 
@@ -133,8 +157,24 @@ def parse_inventory_sheet(file_storage):
     if len(header) < 2:
         raise InventorySheetError("the sheet needs at least two columns")
 
+    # Where the part lives and how it is packed, when the sheet says. Absent on the Hero
+    # stock export, in which case every one of these stays None and the result is exactly
+    # the two-key rows this function has always returned.
+    extra = {key: _optional_column(header, aliases)
+             for key, aliases in _EXTRA_COLUMNS.items()}
+
     def cell(row, idx):
-        return row[idx] if idx < len(row) else None
+        return row[idx] if idx is not None and idx < len(row) else None
+
+    def number(raw):
+        """A positive number from a sheet cell, or None. Zero reads as 'not stated'."""
+        if raw is None or str(raw).strip() == '':
+            return None
+        try:
+            val = float(str(raw).strip().strip('"').replace(',', ''))
+        except (TypeError, ValueError):
+            return None
+        return val if val > 0 else None
 
     # Last value wins if a part is listed twice — the table's unique key cannot hold both,
     # and silently summing them would invent stock the sheet never claimed.
@@ -156,12 +196,21 @@ def parse_inventory_sheet(file_storage):
             except (TypeError, ValueError):
                 qty = 0
         # Negative stock is meaningless downstream (it would read as supply); floor it.
-        seen[part] = max(0, qty)
+        item = {'part_number': part, 'quantity': max(0, qty)}
+
+        location = cell(row, extra['location'])
+        item['location'] = str(location).strip() if location is not None else None
+        item['units_per_case'] = number(cell(row, extra['units_per_case']))
+        item['units_per_box'] = number(cell(row, extra['units_per_box']))
+        item['cases'] = number(cell(row, extra['cases']))
+        name = cell(row, extra['name'])
+        item['name'] = str(name).strip() if name is not None else None
+        seen[part] = item
 
     if not seen:
         raise InventorySheetError(
             "no usable rows found (each needs a part number and a quantity)")
-    return [{'part_number': p, 'quantity': q} for p, q in seen.items()]
+    return list(seen.values())
 
 
 # Rows per statement for the bulk writes. Big enough that a 20k-part sheet is ~20 round
@@ -332,3 +381,63 @@ def allocate(order_items):
                     WHERE part_number = %s""", (qty, part))
 
     return allocated, shortfalls
+
+
+def reduce_stock(lines):
+    """Take invoiced goods out of stock. Returns {'parts': n, 'units': n, 'missing': [...]}.
+
+    Called when an invoice is accepted: the goods have been billed and have left the
+    building, so the stock they came from is no longer on the shelf. Without this the
+    next DMS download would allocate against quantities that include parts already sold.
+
+    `lines` are {part_number, quantity} — from the invoice's own line items, not from the
+    order. An invoice can be for less than was ordered (a short supply), and what leaves
+    is what was billed.
+
+    GREATEST(0, ...) floors at zero rather than letting stock go negative, because a
+    negative on-hand reads downstream as "available to supply" of an absurd size. A part
+    the sheet has never seen is reported in `missing` rather than inserted: stock this
+    system was never told it had is not stock it can now take away, and inventing a row at
+    0 would claim otherwise.
+    """
+    wanted = {}
+    for line in lines:
+        part = str(line.get('part_number') or '').strip()
+        try:
+            qty = int(float(line.get('quantity') or 0))
+        except (TypeError, ValueError):
+            continue
+        if not part or qty <= 0:
+            continue
+        # One invoice may list a part twice; both lines left the building.
+        wanted[part] = wanted.get(part, 0) + qty
+    if not wanted:
+        return {'parts': 0, 'units': 0, 'missing': []}
+
+    known = set()
+    parts = list(wanted)
+    for i in range(0, len(parts), _CHUNK):
+        chunk = parts[i:i + _CHUNK]
+        ph = ",".join(["%s"] * len(chunk))
+        for r in (mysql_manager.execute_query(
+                f"SELECT part_number FROM temp_inventory WHERE part_number IN ({ph})",
+                tuple(chunk)) or []):
+            known.add(r['part_number'])
+
+    missing = sorted(p for p in wanted if p not in known)
+    now = datetime.utcnow()
+    applied = 0
+    with mysql_manager.get_cursor() as cursor:
+        for part, qty in wanted.items():
+            if part not in known:
+                continue
+            cursor.execute(
+                """UPDATE temp_inventory
+                      SET quantity = GREATEST(0, quantity - %s), updated_at = %s
+                    WHERE part_number = %s""", (qty, now, part))
+            applied += qty
+
+    logger.info("stock reduced by invoice", extra={
+        'parts': len(wanted) - len(missing), 'units': applied,
+        'missing_parts': len(missing)})
+    return {'parts': len(wanted) - len(missing), 'units': applied, 'missing': missing}

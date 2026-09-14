@@ -1218,3 +1218,279 @@ class AdminUserDetail(Resource):
         except Exception as e:
             logger.exception('Error updating user')
             return {'success': False, 'msg': str(e)}, 400
+
+
+# ---------------------------------------------------------------------------
+# Delete individual orders — for orders uploaded in error
+# ---------------------------------------------------------------------------
+#
+# The batch delete above reverts a WHOLE upload. That is the right tool when an operator
+# uploaded the wrong file, but not when one order inside a good batch is wrong — a
+# spreadsheet of fifty orders cannot have one bad row removed by reverting all fifty.
+# These two routes work at the order level instead.
+
+@rest_api.route('/api/admin/orders')
+class AdminOrderList(Resource):
+    """Orders an admin can choose from, newest first.
+
+    Its own route rather than a reuse of /api/orders: this one is admin-only, and it
+    carries the two counts that matter before deleting — how many lines the order has,
+    and whether an invoice is attached to it.
+    """
+
+    @token_required
+    @active_required
+    @_admin_required
+    def get(self, current_user):
+        try:
+            company_ids = resolve_company_scope(
+                current_user, request.args.get('company_id', type=int))
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
+
+        pf_sql, pf_params = partition_filter('potential_order', alias='po')
+        cf_sql, cf_params = company_filter_sql(company_ids, alias='po')
+        sql = f"""SELECT po.potential_order_id, po.original_order_id, po.status,
+                         po.order_type, po.order_date, po.created_at, po.upload_batch_id,
+                         COALESCE(d.name, po.purchaser_name) AS dealer_name,
+                         c.name AS company_name, w.name AS warehouse_name,
+                         (SELECT COUNT(*) FROM potential_order_product pop
+                           WHERE pop.potential_order_id = po.potential_order_id) AS line_count,
+                         (SELECT COUNT(*) FROM invoice i
+                           WHERE i.potential_order_id = po.potential_order_id) AS invoice_count
+                  FROM potential_order po
+                  LEFT JOIN dealer    d ON d.dealer_id    = po.dealer_id
+                  LEFT JOIN company   c ON c.company_id   = po.company_id
+                  LEFT JOIN warehouse w ON w.warehouse_id = po.warehouse_id
+                  WHERE {pf_sql} AND {cf_sql}"""
+        params = pf_params + tuple(cf_params)
+
+        warehouse_id = request.args.get('warehouse_id', type=int)
+        if warehouse_id:
+            sql += " AND po.warehouse_id = %s"
+            params = params + (warehouse_id,)
+        status = (request.args.get('status') or '').strip()
+        if status and status.lower() != 'all':
+            sql += " AND po.status = %s"
+            params = params + (status,)
+        search = (request.args.get('search') or '').strip()
+        if search:
+            sql += (" AND (po.original_order_id LIKE %s OR po.purchaser_name LIKE %s"
+                    " OR d.name LIKE %s)")
+            like = f"%{search}%"
+            params = params + (like, like, like)
+
+        sql += " ORDER BY po.created_at DESC LIMIT 500"
+        rows = mysql_manager.execute_query(sql, params) or []
+        return {
+            'success': True,
+            'orders': [{
+                'potential_order_id': r['potential_order_id'],
+                'order_number': r['original_order_id'],
+                'status': r['status'],
+                'order_type': r['order_type'] or '',
+                'dealer_name': r['dealer_name'] or '',
+                'company_name': r['company_name'] or '',
+                'warehouse_name': r['warehouse_name'] or '',
+                'upload_batch_id': r['upload_batch_id'],
+                'line_count': r['line_count'],
+                'invoice_count': r['invoice_count'],
+                'order_date': (r['order_date'] or r['created_at']).isoformat()
+                              if (r['order_date'] or r['created_at']) else None,
+            } for r in rows],
+        }, 200
+
+
+def _order_snapshot(order_ids):
+    """The facts worth keeping about orders that are about to stop existing."""
+    if not order_ids:
+        return []
+    placeholders = ','.join(['%s'] * len(order_ids))
+    return mysql_manager.execute_query(
+        f"""SELECT po.potential_order_id, po.original_order_id, po.order_type, po.status,
+                   po.company_id, po.warehouse_id, po.dealer_id, po.purchaser_name,
+                   (SELECT COUNT(*) FROM potential_order_product pop
+                     WHERE pop.potential_order_id = po.potential_order_id) AS line_count,
+                   (SELECT COALESCE(SUM(pop.quantity), 0) FROM potential_order_product pop
+                     WHERE pop.potential_order_id = po.potential_order_id) AS total_quantity,
+                   (SELECT GROUP_CONCAT(i.invoice_number SEPARATOR ', ') FROM invoice i
+                     WHERE i.potential_order_id = po.potential_order_id) AS invoice_numbers
+            FROM potential_order po
+            WHERE po.potential_order_id IN ({placeholders})""",
+        tuple(order_ids)) or []
+
+
+@rest_api.route('/api/admin/orders/delete')
+class AdminOrderDelete(Resource):
+    """Permanently delete orders that were uploaded in error.
+
+    A HARD delete, on purpose. A soft-deleted order would keep occupying its order
+    number, and the corrected re-upload of the same challan would then be refused as a
+    duplicate — which is exactly the situation the admin is trying to get out of.
+
+    Removed per order: the order, its line items, its state history, any invoice raised
+    against it, and the dispatched order / order_product records. NOT removed: the dealer,
+    the products, and the stock — shared master data that outlives any one order, and
+    deleting it would take other orders down with it.
+
+    Stock is deliberately not restored. temp_inventory is a snapshot the operator
+    re-uploads; putting quantities back here would fight with the next upload rather than
+    agree with it.
+    """
+
+    @token_required
+    @active_required
+    @_admin_required
+    def post(self, current_user):
+        payload = request.get_json(silent=True) or {}
+        raw_ids = payload.get('order_ids') or []
+        reason = str(payload.get('reason') or '').strip()[:500]
+        force = bool(payload.get('force'))
+
+        order_ids = []
+        for value in raw_ids:
+            try:
+                order_ids.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        if not order_ids:
+            return {'success': False, 'msg': 'Select at least one order to delete.'}, 422
+        if len(order_ids) > 200:
+            return {'success': False,
+                    'msg': 'At most 200 orders can be deleted at once.'}, 422
+        if not reason:
+            return {'success': False,
+                    'msg': 'A reason is required - it is written to the deletion log.'}, 422
+
+        try:
+            company_ids = resolve_company_scope(current_user, payload.get('company_id'))
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
+
+        snapshots = _order_snapshot(order_ids)
+        if not snapshots:
+            return {'success': False, 'msg': 'None of those orders exist.'}, 404
+
+        # Tenant scope is enforced on the SNAPSHOT, not on the request: an admin restricted
+        # to one company must not be able to delete another company's order by guessing an
+        # id that was never in a list they were shown.
+        if company_ids is not None:
+            allowed = set(company_ids)
+            outside = [s for s in snapshots if s['company_id'] not in allowed]
+            if outside:
+                return {'success': False,
+                        'msg': f"{len(outside)} of the selected orders belong to another "
+                               f"company and cannot be deleted."}, 403
+
+        # An order that has been invoiced or dispatched is a financial record, not a bad
+        # upload. It can still be removed, but only when the admin says so explicitly, and
+        # the confirmation names what would go with it.
+        blocked = [s for s in snapshots if s['status'] in BLOCKING_STATES]
+        if blocked and not force:
+            sample = ', '.join(str(s['original_order_id']) for s in blocked[:5])
+            suffix = f' and {len(blocked) - 5} more' if len(blocked) > 5 else ''
+            return {
+                'success': False,
+                'needs_confirmation': True,
+                'blocked_count': len(blocked),
+                'blocked_orders': [
+                    {'order_number': s['original_order_id'], 'status': s['status'],
+                     'invoice_numbers': s['invoice_numbers'] or ''} for s in blocked[:20]],
+                'msg': (f"{len(blocked)} of these orders have been invoiced or dispatched "
+                        f"({sample}{suffix}). Deleting them also deletes their invoices. "
+                        f"Confirm to proceed."),
+            }, 409
+
+        ids = [s['potential_order_id'] for s in snapshots]
+        placeholders = ','.join(['%s'] * len(ids))
+        now = datetime.utcnow()
+        rows_removed = {}
+
+        # `order` is a reserved word in MySQL and has to stay quoted in these statements.
+        order_table = chr(96) + 'order' + chr(96)
+
+        with mysql_manager.get_cursor() as cursor:
+            # The log is written FIRST, in the same transaction. Written afterwards it
+            # would be rolled back along with everything else if a later delete failed,
+            # leaving no record that the attempt was ever made.
+            cursor.executemany(
+                """INSERT INTO deleted_order_log
+                       (potential_order_id, original_order_id, order_type, status_at_deletion,
+                        company_id, warehouse_id, dealer_id, purchaser_name,
+                        line_count, total_quantity, invoice_numbers, reason,
+                        deleted_by, deleted_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                [(s['potential_order_id'], s['original_order_id'], s['order_type'],
+                  s['status'], s['company_id'], s['warehouse_id'], s['dealer_id'],
+                  s['purchaser_name'], s['line_count'], int(s['total_quantity'] or 0),
+                  s['invoice_numbers'], reason, getattr(current_user, 'id', None), now)
+                 for s in snapshots])
+
+            # Children before parents. order / order_product are the dispatched records the
+            # batch revert never cleaned up, which is how an invoiced order deleted there
+            # left them orphaned.
+            statements = (
+                ('order_product',
+                 f"DELETE op FROM order_product op "
+                 f"INNER JOIN {order_table} o ON o.order_id = op.order_id "
+                 f"WHERE o.potential_order_id IN ({placeholders})"),
+                ('order',
+                 f"DELETE FROM {order_table} WHERE potential_order_id IN ({placeholders})"),
+                ('invoice',
+                 f"DELETE FROM invoice WHERE potential_order_id IN ({placeholders})"),
+                ('order_state_history',
+                 f"DELETE FROM order_state_history "
+                 f"WHERE potential_order_id IN ({placeholders})"),
+                ('potential_order_product',
+                 f"DELETE FROM potential_order_product "
+                 f"WHERE potential_order_id IN ({placeholders})"),
+                ('potential_order',
+                 f"DELETE FROM potential_order WHERE potential_order_id IN ({placeholders})"),
+            )
+            for label, sql in statements:
+                cursor.execute(sql, tuple(ids))
+                rows_removed[label] = cursor.rowcount
+
+        logger.warning("admin deleted orders", extra={
+            'user_id': getattr(current_user, 'id', None),
+            'orders': len(ids),
+            'order_numbers': ', '.join(str(s['original_order_id']) for s in snapshots[:20]),
+            'reason': reason, 'forced': force, 'rows': rows_removed})
+
+        return {
+            'success': True,
+            'deleted_count': len(ids),
+            'deleted_orders': [str(s['original_order_id']) for s in snapshots],
+            'rows_removed': rows_removed,
+            'msg': (f"Deleted {len(ids)} order(s). "
+                    f"Products, dealers and stock were left untouched."),
+        }, 200
+
+
+@rest_api.route('/api/admin/orders/deletion-log')
+class AdminOrderDeletionLog(Resource):
+    """What has been deleted, by whom, and why. Read-only."""
+
+    @token_required
+    @active_required
+    @_admin_required
+    def get(self, current_user):
+        rows = mysql_manager.execute_query(
+            """SELECT l.*, u.name AS deleted_by_name, u.email AS deleted_by_email
+               FROM deleted_order_log l
+               LEFT JOIN users u ON u.id = l.deleted_by
+               ORDER BY l.deleted_at DESC LIMIT 500""") or []
+        return {
+            'success': True,
+            'entries': [{
+                'order_number': r['original_order_id'],
+                'status_at_deletion': r['status_at_deletion'],
+                'purchaser_name': r['purchaser_name'] or '',
+                'line_count': r['line_count'],
+                'total_quantity': r['total_quantity'],
+                'invoice_numbers': r['invoice_numbers'] or '',
+                'reason': r['reason'] or '',
+                'deleted_by': r['deleted_by_name'] or r['deleted_by_email'] or '',
+                'deleted_at': r['deleted_at'].isoformat() if r['deleted_at'] else None,
+            } for r in rows],
+        }, 200

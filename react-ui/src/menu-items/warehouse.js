@@ -36,6 +36,14 @@ const warehouse = {
             breadcrumbs: false
         },
         {
+            id: 'download-picklist',
+            title: 'Download Picklist',
+            type: 'item',
+            url: '/warehouse/download-picklist',
+            icon: icons.IconClipboardList,
+            breadcrumbs: false
+        },
+        {
             id: 'upload-orders',
             title: 'Upload Orders',
             type: 'item',

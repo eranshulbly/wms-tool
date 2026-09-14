@@ -50,9 +50,11 @@ const MenuList = () => {
     if (sectionGroup && sectionGroup.id === 'order-tracking') {
         sectionGroup = filterOrderTracking(sectionGroup, allowedUploads);
         if (scope) {
+            // The scope is the last word: a role sees exactly the items it lists, whatever
+            // the upload filter above left standing.
             sectionGroup = {
                 ...sectionGroup,
-                children: sectionGroup.children.filter((c) => c.id === scope.menuId)
+                children: sectionGroup.children.filter((c) => scope.menuIds.includes(c.id))
             };
         }
     }
