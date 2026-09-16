@@ -51,6 +51,13 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
          if str(r.get('Sales Order #', '') or '').strip()],
     )
     seen = set()
+    # Order numbers this call actually created. The line-item pass is limited to these,
+    # so a re-uploaded file can never rewrite the lines of an order that already exists.
+    created_order_ids = set()
+    # An existing order is reported once. Every further row of it is the same document's
+    # next line, and listing each as its own "already exists" buries one duplicate order
+    # under a page of identical errors.
+    reported_existing = set()
 
     for index, row in df.iterrows():
         try:
@@ -65,9 +72,11 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
 
             # A number already in the DB is a genuine re-upload — refused, and reported.
             if sales_order_id in existing_orders:
-                error_rows.append(_make_error_row(
-                    sales_order_id, purchaser_name,
-                    f"Order {sales_order_id} already exists — skipped, nothing changed"))
+                if sales_order_id not in reported_existing:
+                    reported_existing.add(sales_order_id)
+                    error_rows.append(_make_error_row(
+                        sales_order_id, purchaser_name,
+                        f"Order {sales_order_id} already exists — skipped, nothing changed"))
                 continue
 
             # A number repeated WITHIN this file is the same document's next line item,
@@ -95,7 +104,8 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
             dealer_id = None
             if purchaser_name:
                 try:
-                    dealer_id = dealer_business.get_or_create_dealer(purchaser_name)
+                    dealer_id = dealer_business.get_or_create_dealer(
+                        purchaser_name, company_id=company_id)
                     logger.debug("Resolved dealer", extra={'row': index, 'dealer_id': dealer_id})
                 except Exception as e:
                     logger.warning("Error resolving dealer", extra={'row': index, 'error': str(e)})
@@ -121,6 +131,7 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
                     upload_batch_id=upload_batch_id
                 )
                 orders_processed += 1
+                created_order_ids.add(sales_order_id)
                 logger.debug("Order created", extra={'row': index, 'order_id': potential_order_id, 'sales_order': sales_order_id})
             except Exception as e:
                 if '1062' in str(e) or 'Duplicate entry' in str(e):
@@ -147,6 +158,7 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
         # Rows that belonged to an order this file already created. They are not errors;
         # the caller feeds them to the line-item pass.
         'repeated_lines': repeated_lines,
+        'created_order_ids': created_order_ids,
         'error_rows': error_rows,
     }
 

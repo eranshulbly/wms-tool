@@ -308,3 +308,126 @@ class InvoiceDetail(Resource):
 # OLD /api/invoices/supply-sheet/download has been removed.
 # Use POST /api/supply-sheet/generate (supply_sheet_routes.py) instead.
 # ---------------------------------------------------------------------------
+
+
+# ── Margin check ─────────────────────────────────────────────────────────────
+#
+# Admin tool: upload Marg order invoices and see the margin on each product and overall.
+# Nothing is stored — no upload batch, no invoice row, no stock or price change. The
+# PDFs are read in memory and discarded when the response is sent.
+
+@rest_api.route('/api/admin/margin-check')
+class MarginCheck(Resource):
+    """Margin on uploaded Marg order invoices, computed on read."""
+
+    @token_required
+    @active_required
+    def post(self, current_user):
+        from api.modules.fulfillment.invoice import margin_check
+
+        # Same rule as the other admin tools: margin exposes landed cost.
+        if getattr(current_user, 'role', None) != 'admin':
+            return {'success': False, 'msg': 'Admin access required.'}, 403
+
+        files = request.files.getlist('files') or (
+            [request.files['file']] if 'file' in request.files else [])
+        if not files:
+            return {'success': False, 'msg': 'No invoice uploaded'}, 400
+
+        # Costs are per company, so the operator names one. A scoped admin cannot read
+        # another tenant's landed costs by posting its id.
+        try:
+            scope = resolve_company_scope(current_user, request.form.get('company_id'))
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
+        if scope is None:
+            return {'success': False, 'msg': 'Select a company.'}, 422
+        if not scope:
+            return {'success': False, 'msg': 'You are not assigned to any company.'}, 422
+        if len(scope) > 1:
+            return {'success': False,
+                    'msg': 'Select a company — you have access to several.'}, 422
+
+        invoices, failed = [], []
+        for f in files:
+            try:
+                invoices.append(margin_check.check_invoice(f.stream, f.filename, scope[0]))
+            except margin_check.MarginCheckError as e:
+                failed.append({'filename': f.filename, 'error': str(e)})
+            except Exception:
+                logger.exception('margin check failed for %s', f.filename)
+                failed.append({'filename': f.filename,
+                               'error': 'Unexpected error — see logs'})
+
+        # Across several invoices the overall margin is worked out over every line, not
+        # averaged from each invoice's percentage — a small invoice must not weigh as much
+        # as a large one.
+        combined = (margin_check.totals_for([l for inv in invoices for l in inv['lines']])
+                    if len(invoices) > 1 else None)
+        return {'success': True, 'invoices': invoices, 'failed': failed,
+                'combined': combined}, 200
+
+
+# ── Order margin (Analytics tab) ─────────────────────────────────────────────
+#
+# Margin on every order already invoiced through the app — no upload, reads what's on
+# file. See order_margin.py for how a line's cost is found.
+
+@rest_api.route('/api/admin/order-margin')
+class OrderMarginReport(Resource):
+    """One row per invoiced order, plus the running margin over all of them."""
+
+    @token_required
+    @active_required
+    def get(self, current_user):
+        from api.modules.fulfillment.invoice import order_margin
+
+        # Same rule as margin-check: this exposes landed cost, so it's admin-only.
+        if getattr(current_user, 'role', None) != 'admin':
+            return {'success': False, 'msg': 'Admin access required.'}, 403
+
+        try:
+            scope = resolve_company_scope(current_user, request.args.get('company_id'))
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
+
+        date_from = (request.args.get('from') or '').strip() or None
+        date_to = (request.args.get('to') or '').strip() or None
+
+        try:
+            report = order_margin.order_margin_report(scope, date_from, date_to)
+        except Exception:
+            logger.exception('order margin report failed',
+                             extra={'company_id': request.args.get('company_id')})
+            return {'success': False, 'msg': 'Could not build the order margin report.'}, 500
+
+        return {'success': True, **report, 'from': date_from, 'to': date_to}, 200
+
+
+@rest_api.route('/api/admin/order-margin/<int:order_id>')
+class OrderMarginDetail(Resource):
+    """Product-level margin for one invoiced order — the popup behind a row."""
+
+    @token_required
+    @active_required
+    def get(self, current_user, order_id):
+        from api.modules.fulfillment.invoice import order_margin
+
+        if getattr(current_user, 'role', None) != 'admin':
+            return {'success': False, 'msg': 'Admin access required.'}, 403
+
+        try:
+            scope = resolve_company_scope(current_user, request.args.get('company_id'))
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
+
+        try:
+            detail = order_margin.order_margin_detail(scope, order_id)
+        except Exception:
+            logger.exception('order margin detail failed', extra={'order_id': order_id})
+            return {'success': False, 'msg': 'Could not load this order.'}, 500
+
+        if detail is None:
+            return {'success': False, 'msg': 'Order not found'}, 404
+
+        return {'success': True, **detail}, 200

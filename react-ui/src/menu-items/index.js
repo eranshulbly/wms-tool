@@ -20,6 +20,9 @@ export const SECTION_FOR_PATH = [
     // MenuList finds no group to render, so the whole sidebar comes up empty — the page
     // still works, but the user loses all navigation.
     { match: (p) => p.startsWith('/inventory-ingestion'), section: 'admin' },
+    // Margin Check. Same rule as Inventory Ingestion above: without an entry the
+    // sidebar renders no group at all and the page loses its navigation.
+    { match: (p) => p.startsWith('/margin-check'), section: 'admin' },
     { match: (p) => p.startsWith('/analytics'), section: 'analytics' },
     { match: (p) => p === '/warehouse/eway-bill', section: 'eway' },
     { match: (p) => p === '/warehouse/supply-sheet', section: 'supply' },

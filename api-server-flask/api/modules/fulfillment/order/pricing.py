@@ -63,6 +63,10 @@ def _batches_for(product_ids, company_id):
 
     fc_entity_stock holds one row per bin, so quantities are summed per batch. The
     'RATE LIST' pseudo-batch (batch_id 0) is excluded — it is a price list, not stock.
+
+    landing_price is net of cn_rate: a credit note against the same receipt lowers what
+    the batch actually cost (see ingestion/schema.py), so the raw GRN rate alone
+    overstates it.
     """
     from api.shared.db_manager import mysql_manager
     if not product_ids:
@@ -73,7 +77,7 @@ def _batches_for(product_ids, company_id):
                    SUM(s.quantity) AS on_hand,
                    JSON_UNQUOTE(JSON_EXTRACT(sb.batch_params, '$.expiry'))      AS expiry,
                    JSON_UNQUOTE(JSON_EXTRACT(sb.batch_params, '$.batch_number')) AS batch_number,
-                   MAX(f.landing_price) AS landing_price
+                   MAX(f.landing_price - f.cn_rate) AS landing_price
             FROM fc_entity_stock s
             JOIN sku_batch sb ON sb.id = s.batch_id
             LEFT JOIN fc_sku_price_details f

@@ -93,6 +93,14 @@ def pdf_to_dataframe(path, company_id=None, upload_type=None):
     one row per line.
     """
     doc = parser.parse_pdf(path, os.path.basename(path))
+
+    # Only a sale belongs in the order and invoice uploads. The same parser reads goods
+    # receipts and credit/debit notes; accepting one here would open or close an order for
+    # stock that is arriving rather than leaving. Those go through Inventory Ingestion.
+    if upload_type in ('orders', 'invoices') and doc['doc_type'] not in parser.OUTBOUND_TYPES:
+        raise parser.ParseError(
+            f"this is a {doc.get('doc_title') or doc['doc_type']}, not a sales invoice — "
+            f"upload it in Inventory Ingestion")
     order_no = derive_order_number(doc)
     prefix = _company_prefix(company_id)
     party = doc.get('party_name') or ''
@@ -109,6 +117,11 @@ def pdf_to_dataframe(path, company_id=None, upload_type=None):
             'Order Type': doc['doc_type'],
             'Submit Date': doc['doc_date'],
             'Order Date': doc['doc_date'],
+            # Read by the invoice upload. Without them the invoice is stored with no value
+            # and no date, and every sales figure built on invoices reads zero.
+            'Invoice Date': doc['doc_date'],
+            'Invoice Amount': doc.get('grand_total'),
+            'Invoice Type': doc['doc_type'],
             'Number of Boxes': doc.get('cases') or 0,
             'B2B PO#': '',
             'Created By': '',

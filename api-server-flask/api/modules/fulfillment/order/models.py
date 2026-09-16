@@ -322,9 +322,15 @@ class PotentialOrderProduct(MySQLModel):
         # costs has two rows. A line with no batch (feeds that do not name one) simply has
         # no landing price, and the caller reports the margin as unknown rather than
         # guessing at one.
+        #
+        # Net of cn_rate: a credit note against the same receipt lowers what the batch
+        # actually cost (see ingestion/schema.py — "final landing price = landing_price -
+        # cn_rate"), so the raw GRN rate alone overstates cost. margin_check.py already
+        # applies this; leaving it out here made this screen's margin disagree with that
+        # one on the same invoice.
         results = mysql_manager.execute_query(
             f"""SELECT pop.*, p.product_string, p.name, p.description, p.price,
-                       fsp.landing_price
+                       (fsp.landing_price - fsp.cn_rate) AS landing_price
                FROM potential_order_product pop
                JOIN product p ON pop.product_id = p.product_id
                LEFT JOIN fc_sku_price_details fsp

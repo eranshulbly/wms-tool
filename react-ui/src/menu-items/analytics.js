@@ -1,8 +1,8 @@
 // Analytics menu group — dashboards and reports (built out over time).
 
-import { IconReportAnalytics, IconUsers } from '@tabler/icons';
+import { IconReportAnalytics, IconUsers, IconReceipt2 } from '@tabler/icons';
 
-const icons = { IconReportAnalytics, IconUsers };
+const icons = { IconReportAnalytics, IconUsers, IconReceipt2 };
 
 // ==============================|| ANALYTICS MENU ITEMS ||============================== //
 
@@ -35,6 +35,14 @@ const analytics = {
             type: 'item',
             url: '/analytics/sales-executives',
             icon: icons.IconUsers,
+            breadcrumbs: false
+        },
+        {
+            id: 'analytics-order-margin',
+            title: 'Order Margin',
+            type: 'item',
+            url: '/analytics/order-margin',
+            icon: icons.IconReceipt2,
             breadcrumbs: false
         }
     ]

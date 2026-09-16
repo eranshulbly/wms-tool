@@ -516,3 +516,111 @@ def allocate_live(order_items, company_id, planogram_id=None, reference_id=0,
                                                'lines': len(allocated),
                                                'shortfalls': len(shortfalls)})
     return allocated, shortfalls
+
+
+# ── Deduction for a closing document ─────────────────────────────────────────
+class StockShortfall(Exception):
+    """A closing document asks for more of a batch than is on hand."""
+
+    def __init__(self, shortfalls):
+        self.shortfalls = shortfalls
+        super().__init__('; '.join(
+            f"{s['product']} batch {s['batch']}: needs {s['needed']:g}, on hand {s['on_hand']:g}"
+            for s in shortfalls))
+
+
+def deduct_batches(cursor, lines, company_id, planogram_id, reference_id,
+                   reference_type='INVOICE', user='system'):
+    """Take each line's quantity out of the exact batch it names, on the caller's cursor.
+
+    Unlike allocate_live this chooses no batches: the document being closed already says
+    which batch the customer received, and FEFO would record stock leaving from a batch
+    that never left.
+
+    All-or-nothing. Every line is checked against the locked stock rows before anything is
+    written, and one short line raises StockShortfall with nothing deducted, so the caller's
+    transaction rolls back and the order stays open rather than closing with part of its
+    stock taken. A line with no batch is a shortfall too — there is no batch to take from.
+
+    `lines`: dicts with product_id, batch_id, quantity, and optionally label/batch_number
+    for the error message. Returns the number of ledger rows written.
+    """
+    lines = [ln for ln in lines if float(ln.get('quantity') or 0) > 0]
+    if not lines:
+        return 0
+
+    shortfalls = [{'product': ln.get('label') or ln['product_id'], 'batch': '(none)',
+                   'needed': float(ln['quantity']), 'on_hand': 0.0}
+                  for ln in lines if not ln.get('batch_id')]
+    if shortfalls:
+        raise StockShortfall(shortfalls)
+
+    # Two lines can name the same batch; they draw on one pool.
+    needed, labels = {}, {}
+    for ln in lines:
+        key = (int(ln['product_id']), int(ln['batch_id']))
+        needed[key] = needed.get(key, 0.0) + float(ln['quantity'])
+        labels[key] = (ln.get('label') or ln['product_id'], ln.get('batch_number') or ln['batch_id'])
+
+    match = ' OR '.join(['(entity_id = %s AND batch_id = %s)'] * len(needed))
+    params = [company_id]
+    for product_id, batch_id in needed:
+        params += [product_id, batch_id]
+    plano_sql = ''
+    if planogram_id is not None:
+        plano_sql = ' AND planogram_id = %s'
+        params.append(planogram_id)
+
+    cursor.execute(
+        f"""SELECT id, planogram_id, location_id, bin_id, entity_id, entity_type,
+                   batch_id, quantity
+              FROM fc_entity_stock
+             WHERE company_id = %s AND ({match}){plano_sql} AND quantity > 0
+             ORDER BY id
+             FOR UPDATE""",
+        tuple(params))
+    rows_by_key = {}
+    for r in cursor.fetchall():
+        rows_by_key.setdefault((int(r['entity_id']), int(r['batch_id'])), []).append(r)
+
+    for key, qty in needed.items():
+        on_hand = sum(float(r['quantity']) for r in rows_by_key.get(key, []))
+        if on_hand + 1e-9 < qty:
+            shortfalls.append({'product': labels[key][0], 'batch': labels[key][1],
+                               'needed': qty, 'on_hand': on_hand})
+    if shortfalls:
+        raise StockShortfall(shortfalls)
+
+    written = 0
+    for key, qty in needed.items():
+        remaining = qty
+        for row in rows_by_key.get(key, []):
+            if remaining <= 1e-9:
+                break
+            take = min(remaining, float(row['quantity']))
+            after = float(row['quantity']) - take
+            # An emptied row is deleted: fc_entity_stock is the live working set, and a
+            # zero row is stock that is not there.
+            if after <= 1e-9:
+                after = 0.0
+                cursor.execute("DELETE FROM fc_entity_stock WHERE id = %s", (row['id'],))
+            else:
+                cursor.execute("UPDATE fc_entity_stock SET quantity = %s WHERE id = %s",
+                               (after, row['id']))
+            cursor.execute(
+                """INSERT INTO fc_entity_stock_ledger
+                     (planogram_id, location_id, bin_id, entity_id, entity_type,
+                      batch_id, quantity_changed, quantity_after_change, reference_id,
+                      reference_type, company_id, created_by, updated_by)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (row['planogram_id'], row['location_id'], row['bin_id'], row['entity_id'],
+                 row['entity_type'], row['batch_id'], -take, after, reference_id,
+                 reference_type, company_id, user, user))
+            remaining -= take
+            written += 1
+
+    logger.info("batch stock deducted", extra={'company_id': company_id,
+                                               'reference_type': reference_type,
+                                               'reference_id': reference_id,
+                                               'ledger_rows': written})
+    return written

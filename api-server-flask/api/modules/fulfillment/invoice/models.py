@@ -155,6 +155,15 @@ class InvoiceProcessingConfig(MySQLModel):
         return set(cls.get_values('bypass_order_type'))
 
     @classmethod
+    def get_complete_on_invoice_types(cls) -> set:
+        """order_type values the invoice upload closes outright.
+
+        For these the invoice IS the sale: there is no pick/pack step, so the upload takes
+        the stock out of the invoiced batches and moves the order straight to Completed.
+        """
+        return set(cls.get_values('complete_on_invoice_type'))
+
+    @classmethod
     def invalidate_cache(cls, config_key: str = None):
         """Clear cached values (call after mutating config rows)."""
         if config_key:

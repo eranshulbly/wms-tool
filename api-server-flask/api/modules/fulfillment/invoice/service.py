@@ -39,6 +39,7 @@ class InvoiceUploadService(BaseUploadService):
             'error_rows': result['error_rows'],
             'orders_invoiced': result['orders_invoiced'],
             'orders_flagged': result['orders_flagged'],
+            'orders_completed': result.get('orders_completed', 0),
         }
 
 

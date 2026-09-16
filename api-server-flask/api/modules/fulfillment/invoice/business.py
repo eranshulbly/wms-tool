@@ -4,6 +4,12 @@ Invoice Business Logic for MySQL.
 
 State-transition rules for invoice upload
 ──────────────────────────────────────────
+0. Close-on-invoice order types (e.g. INVOICE — key complete_on_invoice_type):
+     The invoice IS the sale, with no pick/pack step. Any state in {Open, Picking,
+     Packed} → in ONE transaction: stock leaves the invoiced batches, the invoice is
+     recorded and the order moves straight to Completed. A short batch leaves the
+     order untouched and is reported.
+
 1. Bypass order types (e.g. ZGOI, from invoice_processing_config):
      Any state in {Open, Picking, Packed} → create invoice record + move to Invoiced.
 
@@ -60,6 +66,7 @@ def process_invoice_dataframe(df, warehouse_id, company_id, user_id, upload_batc
     # ── Phase 1: one-time DB lookups ─────────────────────────────────────────
     bypass_types = invoice_repo.get_bypass_order_types()
     logger.debug("Loaded bypass order types", extra={'bypass_types': list(bypass_types)})
+    complete_types = invoice_repo.get_complete_on_invoice_types()
 
     unique_order_ids = list({
         str(row.get('Order #', '') or '').strip()
@@ -71,12 +78,15 @@ def process_invoice_dataframe(df, warehouse_id, company_id, user_id, upload_batc
                  extra={'fetched': len(potential_orders_map), 'requested': len(unique_order_ids)})
 
     invoiced_state = order_repo.get_or_create_state('Invoiced', 'Invoice uploaded for order')
+    completed_state = (order_repo.get_or_create_state('Completed', 'Order completed')
+                       if complete_types else None)
 
     # ── Phase 2: classify every row in memory (zero DB calls) ────────────────
     invoices_to_create = []       # Invoice objects ready for bulk INSERT
     orders_to_invoice  = {}       # pot_order_id → PotentialOrder (deduped)
     orders_to_flag     = {}       # pot_order_id → PotentialOrder (deduped)
     dealer_backfills   = {}       # pot_order_id → dealer_id (for COALESCE update)
+    orders_to_complete = []       # (PotentialOrder, Invoice, dealer_id, row, order #)
     error_rows         = []
     processed_order_ids = set()
 
@@ -107,11 +117,36 @@ def process_invoice_dataframe(df, warehouse_id, company_id, user_id, upload_batc
                 ))
                 continue
 
+            # Path 0: the invoice closes the order outright. One close per order, however
+            # many rows of the file repeat it.
+            if potential_order.order_type in complete_types:
+                if potential_order.potential_order_id in processed_order_ids:
+                    continue
+                dealer_id = _resolve_dealer(row, index, company_id)
+                try:
+                    invoice = create_invoice_from_row(
+                        row=row,
+                        potential_order_id=potential_order.potential_order_id,
+                        warehouse_id=warehouse_id,
+                        company_id=company_id,
+                        dealer_id=dealer_id,
+                        user_id=user_id,
+                        upload_batch_id=upload_batch_id
+                    )
+                except Exception as e:
+                    error_rows.append(_make_error_row(
+                        row, original_order_id, f"Error preparing invoice: {str(e)}"))
+                    continue
+                orders_to_complete.append(
+                    (potential_order, invoice, dealer_id, row, original_order_id))
+                processed_order_ids.add(potential_order.potential_order_id)
+                continue
+
             is_bypass = potential_order.order_type in bypass_types
             is_packed = current_status == 'Packed'
 
             if is_bypass or is_packed:
-                dealer_id = _resolve_dealer(row, index)
+                dealer_id = _resolve_dealer(row, index, company_id)
 
                 if dealer_id and not potential_order.dealer_id:
                     dealer_backfills[potential_order.potential_order_id] = dealer_id
@@ -161,20 +196,43 @@ def process_invoice_dataframe(df, warehouse_id, company_id, user_id, upload_batc
     invoice_repo.bulk_migrate_products_to_order(orders_to_invoice, current_time)
     invoice_repo.bulk_flag_orders(orders_to_flag, current_time)
 
+    # Each close is its own transaction, so one short batch fails one order, not the file.
+    from api.modules.inventory.service import StockShortfall
+    orders_completed = 0
+    for potential_order, invoice, dealer_id, row, order_no in orders_to_complete:
+        try:
+            invoice_repo.close_order_on_invoice(
+                potential_order, invoice, dealer_id, invoiced_state.state_id,
+                completed_state.state_id, user_id, current_time)
+            orders_completed += 1
+        except StockShortfall as e:
+            error_rows.append(_make_error_row(
+                row, order_no,
+                f"Not closed — not enough stock ({e}). Nothing was changed: receive the "
+                f"stock, then upload this invoice again."))
+        except Exception as e:
+            logger.exception("Could not close order on invoice",
+                             extra={'order_no': order_no})
+            error_rows.append(_make_error_row(
+                row, order_no, f"Not closed: {e}. Nothing was changed."))
+
     logger.info(
         "Invoice processing complete",
         extra={
             'invoices_created': invoices_saved,
             'orders_invoiced': len(orders_to_invoice),
             'orders_flagged': len(orders_to_flag),
+            'orders_completed': orders_completed,
             'error_count': len(error_rows),
         }
     )
 
     return {
-        'invoices_processed': invoices_saved,
+        # A closed order's invoice is written inside its close, not by the bulk INSERT.
+        'invoices_processed': invoices_saved + orders_completed,
         'orders_invoiced': len(orders_to_invoice),
         'orders_flagged': len(orders_to_flag),
+        'orders_completed': orders_completed,
         'error_rows': error_rows,
     }
 
@@ -242,7 +300,7 @@ def _make_error_row(row, order_id, reason):
     return {'order_id': order_id or '', 'name': name, 'reason': reason}
 
 
-def _resolve_dealer(row, index):
+def _resolve_dealer(row, index, company_id=None):
     """Look up or create dealer from invoice row's Code + Account Name."""
     dealer_code  = str(row.get('Code', '') or '').strip() or None
     account_name = str(row.get('Account Name', '') or '').strip() or None
@@ -253,7 +311,8 @@ def _resolve_dealer(row, index):
         return None
 
     try:
-        return get_or_create_dealer(dealer_name=account_name or dealer_code, dealer_code=dealer_code)
+        return get_or_create_dealer(dealer_name=account_name or dealer_code,
+                                    dealer_code=dealer_code, company_id=company_id)
     except Exception as e:
         logger.warning("Error resolving dealer",
                        extra={'row': index, 'dealer_code': dealer_code, 'error': str(e)})

@@ -1730,6 +1730,23 @@ def _migrate_potential_order_table():
     except Exception:
         pass
 
+    # A supplier invoice that IS the order (Cadila's GST invoice arrives as order_type
+    # INVOICE) closes it: there is no pick/pack step, so the invoice upload deducts the
+    # stock and completes the order. NOT EXISTS rather than INSERT IGNORE, so this does not
+    # depend on a unique key the table may not carry — it must never add a second row.
+    try:
+        mysql_manager.execute_query(
+            "INSERT INTO invoice_processing_config (config_key, config_value, description) "
+            "SELECT 'complete_on_invoice_type', 'INVOICE', "
+            "'INVOICE orders close on invoice upload: stock is deducted from the invoiced "
+            "batches and the order moves straight to Completed.' "
+            "FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM invoice_processing_config "
+            "WHERE config_key = 'complete_on_invoice_type' AND config_value = 'INVOICE')",
+            fetch=False
+        )
+    except Exception:
+        pass
+
 
 def insert_default_states():
     """Insert default order states"""

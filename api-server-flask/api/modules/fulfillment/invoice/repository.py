@@ -39,6 +39,91 @@ class InvoiceRepository(BaseRepository):
         from api.models import InvoiceProcessingConfig
         return InvoiceProcessingConfig.get_bypass_order_types()
 
+    def get_complete_on_invoice_types(self) -> set:
+        """Return the order_type values an invoice upload closes outright."""
+        from api.models import InvoiceProcessingConfig
+        return InvoiceProcessingConfig.get_complete_on_invoice_types()
+
+    def close_order_on_invoice(self, potential_order, invoice, dealer_id, invoiced_state_id,
+                               completed_state_id, user_id, current_time) -> int:
+        """Close one order from its invoice, atomically. Returns ledger rows written.
+
+        For an order the invoice IS (no pick/pack step), the stock leaves, the invoice is
+        recorded and the order completes in ONE transaction. Any failure — most often a
+        batch without enough stock — rolls all of it back, so an order is never Completed
+        without its stock having left, nor its stock taken without the order closing.
+
+        Raises inventory.service.StockShortfall when a batch is short.
+        """
+        from api.modules.inventory.service import deduct_batches
+
+        pot_id = potential_order.potential_order_id
+        company_id = potential_order.company_id
+
+        with self._db.get_cursor() as cursor:
+            cursor.execute(
+                """SELECT pop.product_id, pop.quantity, pop.mrp, pop.total_price, pop.batch_id,
+                          p.name AS label,
+                          JSON_UNQUOTE(JSON_EXTRACT(b.batch_params, '$.batch_number'))
+                              AS batch_number
+                     FROM potential_order_product pop
+                     JOIN product p ON p.product_id = pop.product_id
+                     LEFT JOIN sku_batch b ON b.id = pop.batch_id
+                    WHERE pop.potential_order_id = %s""",
+                (pot_id,))
+            lines = cursor.fetchall()
+            if not lines:
+                raise ValueError('the order has no line items, so there is no stock to take')
+
+            ledger_rows = deduct_batches(
+                cursor, lines, company_id, potential_order.warehouse_id,
+                reference_id=pot_id, reference_type='INVOICE', user=str(user_id))
+
+            cursor.execute(
+                f"INSERT INTO invoice ({', '.join(_INVOICE_COLUMNS)}) "
+                f"VALUES ({', '.join(['%s'] * len(_INVOICE_COLUMNS))})",
+                tuple(getattr(invoice, col) for col in _INVOICE_COLUMNS))
+
+            cursor.execute(
+                """UPDATE potential_order
+                      SET status = 'Completed', invoice_submitted = 0,
+                          dealer_id = COALESCE(dealer_id, %s), updated_at = %s
+                    WHERE potential_order_id = %s""",
+                (dealer_id, current_time, pot_id))
+
+            cursor.execute(
+                """INSERT INTO `order`
+                     (potential_order_id, company_id, order_number, status, box_count,
+                      created_at, updated_at)
+                   VALUES (%s, %s, %s, 'Completed', %s, %s, %s)""",
+                (pot_id, company_id, f"ORD-{pot_id}-{current_time.strftime('%Y%m%d%H%M')}",
+                 potential_order.box_count or 1, current_time, current_time))
+            order_id = cursor.lastrowid
+
+            # The batch travels into order_product, so "which batch did this customer get"
+            # stays answerable after the order has closed.
+            cursor.executemany(
+                """INSERT INTO order_product
+                     (order_id, company_id, product_id, quantity, mrp, total_price,
+                      created_at, updated_at, batch_id)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                [(order_id, company_id, ln['product_id'], ln['quantity'], ln['mrp'],
+                  ln['total_price'], current_time, current_time, ln['batch_id'])
+                 for ln in lines])
+
+            # Both steps are recorded: the invoice arrived, and it closed the order.
+            cursor.executemany(
+                """INSERT INTO order_state_history
+                     (potential_order_id, company_id, state_id, changed_by, changed_at)
+                   VALUES (%s, %s, %s, %s, %s)""",
+                [(pot_id, company_id, invoiced_state_id, user_id, current_time),
+                 (pot_id, company_id, completed_state_id, user_id, current_time)])
+
+        logger.info("Order closed on invoice",
+                    extra={'potential_order_id': pot_id, 'order_id': order_id,
+                           'lines': len(lines), 'ledger_rows': ledger_rows})
+        return ledger_rows
+
     def bulk_insert_invoices(self, invoices: list) -> int:
         """
         INSERT all Invoice objects in a single executemany call.

@@ -266,11 +266,18 @@ def make_upload_response(processed_count, error_rows, **extra):
         **extra,
     }
 
-    if error_count > 1:
+    # Built for a single error too. It used to need two, so a one-document upload (a PDF
+    # is one row) failed with "download the error report" and no report to download.
+    if error_count > 0:
         response['error_report'] = generate_error_excel(error_rows)
 
     if not success:
-        response['msg'] = 'No rows could be processed. Download the error report for details.'
+        if error_count == 1:
+            # One failure is the whole story — say it, rather than sending the operator to a
+            # spreadsheet with a single row in it.
+            response['msg'] = error_rows[0].get('reason') or 'The row could not be processed.'
+        else:
+            response['msg'] = 'No rows could be processed. Download the error report for details.'
 
     status_code = 200 if success else 400
     return response, status_code

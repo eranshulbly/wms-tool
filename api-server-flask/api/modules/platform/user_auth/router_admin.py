@@ -17,9 +17,12 @@ Order uploads:
 
 Invoice uploads:
   - Always allowed (invoice can be reverted even when orders are already Invoiced).
+  - An order the invoice CLOSED (stock deducted, moved to Completed) first gets that stock
+    back, then returns to the state it held before the invoice arrived.
   - Each affected order is rolled back to the state it held just before 'Invoiced',
     derived from order_state_history (defaults to 'Packed' if history is absent).
   - invoice_submitted flag on each order is reset to 0.
+  - The `order` and its order_product rows are removed.
   - All invoice rows in the batch are hard-deleted; order_state_history is preserved
     for audit.
 """
@@ -495,7 +498,13 @@ def _delete_invoice_batch(batch_id: int) -> None:
     now = datetime.utcnow()
 
     for order_id in order_ids:
-        previous_state = _state_before_invoiced(order_id)
+        # An order the invoice closed had its stock taken. Put it back before the order
+        # reopens — otherwise the order is open again while its stock is still gone.
+        restored = _restore_invoice_stock(order_id)
+        # Its history then ends Invoiced, Completed (both written by the close), so both
+        # are skipped to find where it stood before the invoice.
+        previous_state = _state_before_invoiced(
+            order_id, exclude=('Invoiced', 'Completed') if restored else ('Invoiced',))
         mysql_manager.execute_query(
             """UPDATE potential_order
                SET status = %s, invoice_submitted = 0, updated_at = %s
@@ -513,6 +522,12 @@ def _delete_invoice_batch(batch_id: int) -> None:
         )
         if existing_order:
             db_order_id = existing_order[0]['order_id']
+            # Its lines go with it; left behind they point at an order that no longer exists.
+            mysql_manager.execute_query(
+                "DELETE FROM order_product WHERE order_id = %s",
+                (db_order_id,),
+                fetch=False,
+            )
             mysql_manager.execute_query(
                 "DELETE FROM `order` WHERE order_id = %s",
                 (db_order_id,),
@@ -526,28 +541,92 @@ def _delete_invoice_batch(batch_id: int) -> None:
     )
 
 
-def _state_before_invoiced(potential_order_id: int) -> str:
+def _state_before_invoiced(potential_order_id: int, exclude=('Invoiced',)) -> str:
     """
     Query order_state_history for the most recent state this order held
     before it was transitioned to 'Invoiced'.
 
+    `exclude` names the states the invoice itself wrote. An order closed on invoice
+    records Invoiced and Completed at the same instant, so both must be skipped — or the
+    rollback "restores" it to Completed.
+
     Returns 'Packed' as a safe default if no earlier state is found.
     """
     pf_osh_sql, pf_osh_params = partition_filter('order_state_history', alias='osh')
+    placeholders = ','.join(['%s'] * len(exclude))
     rows = mysql_manager.execute_query(
         f"""
         SELECT os.state_name
         FROM order_state_history osh
         JOIN order_state os ON osh.state_id = os.state_id
         WHERE osh.potential_order_id = %s
-          AND os.state_name != 'Invoiced'
+          AND os.state_name NOT IN ({placeholders})
           AND {pf_osh_sql}
         ORDER BY osh.changed_at DESC
         LIMIT 1
         """,
-        (potential_order_id, *pf_osh_params),
+        (potential_order_id, *exclude, *pf_osh_params),
     )
     return rows[0]['state_name'] if rows else 'Packed'
+
+
+def _restore_invoice_stock(potential_order_id: int) -> bool:
+    """Give back the stock an invoice close took for this order. True if any was restored.
+
+    Worked out from the ledger's NET movement for the order (INVOICE rows minus
+    INVOICE_REVERSAL rows) rather than a "has it been reversed" flag, so it is exact across
+    any number of close/revert cycles and a second call finds nothing left to restore.
+    One transaction: the stock rows and their reversal ledger rows land together or not
+    at all.
+    """
+    with mysql_manager.get_cursor() as cursor:
+        cursor.execute(
+            """SELECT planogram_id, company_id, location_id, bin_id, entity_id, entity_type,
+                      batch_id, SUM(quantity_changed) AS net
+                 FROM fc_entity_stock_ledger
+                WHERE reference_id = %s
+                  AND reference_type IN ('INVOICE', 'INVOICE_REVERSAL')
+                GROUP BY planogram_id, company_id, location_id, bin_id, entity_id,
+                         entity_type, batch_id
+               HAVING SUM(quantity_changed) < 0""",
+            (potential_order_id,))
+        owed = cursor.fetchall()
+
+        for r in owed:
+            qty = -float(r['net'])
+            # The row may be gone (a take that emptied it deletes it), so this upserts on
+            # fc_entity_stock's unique key rather than assuming the row still exists.
+            cursor.execute(
+                """INSERT INTO fc_entity_stock
+                     (planogram_id, company_id, location_id, bin_id, entity_id, entity_type,
+                      batch_id, quantity, created_by, updated_by)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'invoice_reversal', 'invoice_reversal')
+                   ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity),
+                                           updated_by = 'invoice_reversal'""",
+                (r['planogram_id'], r['company_id'], r['location_id'], r['bin_id'],
+                 r['entity_id'], r['entity_type'], r['batch_id'], qty))
+            cursor.execute(
+                """SELECT quantity FROM fc_entity_stock
+                    WHERE planogram_id = %s AND company_id = %s AND location_id = %s
+                      AND bin_id = %s AND entity_id = %s AND entity_type = %s AND batch_id = %s""",
+                (r['planogram_id'], r['company_id'], r['location_id'], r['bin_id'],
+                 r['entity_id'], r['entity_type'], r['batch_id']))
+            after = cursor.fetchone()
+            cursor.execute(
+                """INSERT INTO fc_entity_stock_ledger
+                     (planogram_id, location_id, bin_id, entity_id, entity_type, batch_id,
+                      quantity_changed, quantity_after_change, reference_id, reference_type,
+                      company_id, created_by, updated_by)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'INVOICE_REVERSAL', %s,
+                           'invoice_reversal', 'invoice_reversal')""",
+                (r['planogram_id'], r['location_id'], r['bin_id'], r['entity_id'],
+                 r['entity_type'], r['batch_id'], qty,
+                 after['quantity'] if after else qty, potential_order_id, r['company_id']))
+
+    if owed:
+        logger.info("Invoice stock restored",
+                    extra={'potential_order_id': potential_order_id, 'rows': len(owed)})
+    return bool(owed)
 
 
 # ---------------------------------------------------------------------------

@@ -33,6 +33,74 @@ class OrderUploadService(BaseUploadService):
     # left a PDF-sourced order with a header and no items.
     LINE_COLUMNS = ('Part #', 'Reserved Qty')
 
+    def before_processing(self, df, context: dict):
+        """Refuse a file that sells a batch this company never received.
+
+        Only for files that name batches (the supplier's PDF invoices). The invoice upload
+        closes an order by taking stock out of the exact batches on it, so an order that
+        names a batch never received could be opened but never closed. Refusing here,
+        before anything is written, keeps every open order closable.
+
+        Rows of orders that already exist are left out: the upload skips those anyway, and
+        blaming a batch would hide the real reason the row did nothing.
+        """
+        if 'Batch #' not in df.columns or 'Part #' not in df.columns:
+            return None
+
+        from api.modules.platform.catalog.product_upload_business import _batch_key
+        from api.repositories import order_repo, product_repo
+
+        company_id = context.get('company_id')
+        rows = [r for _, r in df.iterrows() if str(r.get('Batch #') or '').strip()]
+        if not rows:
+            return None
+
+        existing = order_repo.existing_original_order_ids(
+            company_id, [str(r.get('Sales Order #') or '').strip() for r in rows])
+        rows = [r for r in rows
+                if str(r.get('Sales Order #') or '').strip() not in existing]
+        if not rows:
+            return None
+
+        products = product_repo.find_bulk_by_part_numbers(
+            list({str(r.get('Part #') or '').strip() for r in rows}))
+
+        wanted, missing = {}, []
+        for r in rows:
+            part = str(r.get('Part #') or '').strip()
+            batch = str(r.get('Batch #') or '').strip()
+            label = f"{str(r.get('Part Description') or part).strip()} (batch {batch})"
+            product = products.get(part)
+            if not product:
+                missing.append(f"{label} — product not in the catalogue")
+                continue
+            # Same expiry handling as the line-item pass, so both compute the same key.
+            expiry = r.get('Expiry') if str(r.get('Expiry', '') or '').strip() else None
+            wanted[_batch_key(product['product_id'], batch, expiry)] = label
+
+        if wanted:
+            placeholders = ','.join(['%s'] * len(wanted))
+            found = {x['batch_hash'] for x in (mysql_manager.execute_query(
+                f"SELECT batch_hash FROM sku_batch WHERE batch_hash IN ({placeholders})",
+                tuple(wanted)) or [])}
+            missing += [label for key, label in wanted.items() if key not in found]
+
+        if not missing:
+            return None
+
+        shown = '; '.join(missing[:5]) + (f'; and {len(missing) - 5} more' if len(missing) > 5 else '')
+        logger.info("Order upload refused: batches not received",
+                    extra={'company_id': company_id, 'missing': len(missing)})
+        return {
+            'success': False,
+            'msg': (f"Not uploaded — {len(missing)} line(s) name stock that has not been "
+                    f"received, so this order could never be closed: {shown}. Receive the "
+                    f"stock through Inventory Ingestion first, then upload again. "
+                    f"Nothing was saved."),
+            'processed_count': 0,
+            'error_count': len(missing),
+        }, 400
+
     def process_dataframe(self, df, context: dict) -> dict:
         clear_dealer_cache()
         company_id = context.get('company_id')
@@ -55,11 +123,17 @@ class OrderUploadService(BaseUploadService):
         if not all(c in df.columns for c in self.LINE_COLUMNS):
             return out
 
-        line_df = df
+        # Lines are attached only to orders THIS upload created. The line pass replaces an
+        # order's lines wholesale, so running it over a re-uploaded file would delete and
+        # re-insert the lines of an order that already exists — one that may already be
+        # closed, with its stock gone.
+        created = result.get('created_order_ids') or set()
+        if not created:
+            return out
+        line_df = df[df['Sales Order #'].astype(str).str.strip().isin(created)].copy()
         # The two uploads name the order column differently; the order file is the one
         # that says 'Sales Order #'.
-        if 'Order #' not in line_df.columns and 'Sales Order #' in line_df.columns:
-            line_df = line_df.copy()
+        if 'Order #' not in line_df.columns:
             line_df['Order #'] = line_df['Sales Order #']
 
         try:

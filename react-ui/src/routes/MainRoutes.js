@@ -29,12 +29,16 @@ const EwayBillGenerator = Loadable(lazy(() => import('../views/warehouse/EwayBil
 const InventoryReport = Loadable(lazy(() => import('../views/analytics/InventoryReport')));
 const StockMovement = Loadable(lazy(() => import('../views/analytics/StockMovement')));
 const SalesExecutives = Loadable(lazy(() => import('../views/analytics/SalesExecutives')));
+const OrderMargin = Loadable(lazy(() => import('../views/analytics/OrderMargin')));
 
 // admin routing
 const AdminControls = Loadable(lazy(() => import('../views/admin/AdminControls')));
 
 // supplier document ingestion (top-level, admin only)
 const InventoryIngestion = Loadable(lazy(() => import('../views/inventory/InventoryIngestion')));
+
+// margin check (top-level, admin only) — reads invoices, stores nothing
+const MarginCheck = Loadable(lazy(() => import('../views/margin/MarginCheck')));
 
 //-----------------------|| MAIN ROUTING ||-----------------------//
 
@@ -57,10 +61,12 @@ const MainRoutes = () => {
                 '/analytics/inventory-report',
                 '/analytics/stock-movement',
                 '/analytics/sales-executives',
+                '/analytics/order-margin',
                 // Admin routes
                 '/admin-controls',
                 // Supplier document ingestion (top-level, admin only)
                 '/inventory-ingestion',
+                '/margin-check',
             ]}
         >
             <MainLayout>
@@ -110,6 +116,18 @@ const MainRoutes = () => {
                     <Route path="/analytics/inventory-report" render={() => <AuthGuard><InventoryReport /></AuthGuard>} />
                     <Route path="/analytics/stock-movement" render={() => <AuthGuard><StockMovement /></AuthGuard>} />
                     <Route path="/analytics/sales-executives" render={() => <AuthGuard><SalesExecutives /></AuthGuard>} />
+                    {/* Order Margin — exposes landed cost, so admin-only like the other
+                        margin screens. */}
+                    <Route
+                        path="/analytics/order-margin"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard>
+                                    <OrderMargin />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
                     <Route exact path="/analytics" render={() => <Redirect to="/analytics/inventory-report" />} />
 
                     {/* Admin routes */}
@@ -119,6 +137,20 @@ const MainRoutes = () => {
                             <AuthGuard>
                                 <AdminGuard>
                                     <AdminControls />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+
+                    {/* Margin Check — margin on uploaded order invoices, admin only.
+                        Guarded like the other admin pages: the figures expose landed cost,
+                        which is the same reason the endpoint refuses a non-admin. */}
+                    <Route
+                        path="/margin-check"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard>
+                                    <MarginCheck />
                                 </AdminGuard>
                             </AuthGuard>
                         )}

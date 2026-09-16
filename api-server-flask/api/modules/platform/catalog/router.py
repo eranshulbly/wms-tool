@@ -77,3 +77,55 @@ class ProductUpload(Resource):
         except Exception as e:
             return {'success': False, 'msg': f'Error processing upload: {str(e)}',
                     'processed_count': 0, 'error_count': 0}, 400
+
+
+# ── Product master ───────────────────────────────────────────────────────────
+#
+# Distinct from /api/products/upload above, which attaches product LINES to existing
+# orders. This one loads the catalogue itself: identity and packaging, merge-upserted.
+
+product_master_parser = reqparse.RequestParser()
+product_master_parser.add_argument('file', type=werkzeug.datastructures.FileStorage,
+                                   location='files', required=True,
+                                   help='CSV or Excel product master')
+product_master_parser.add_argument('company_id', type=int, location='form',
+                                   required=False,
+                                   help='Company the catalogue belongs to')
+
+
+@rest_api.route('/api/admin/catalog/product-master')
+class ProductMasterUpload(Resource):
+    """Merge-upsert the product catalogue and its packaging ladder."""
+
+    @rest_api.expect(product_master_parser)
+    @token_required
+    @active_required
+    @upload_permission_required('products')
+    def post(self, current_user):
+        from api.permissions import resolve_company_scope, CompanyAccessDenied
+        from api.modules.platform.catalog import master_upload
+
+        args = product_master_parser.parse_args()
+
+        # The company is chosen by the operator and never read from the sheet, so a
+        # scoped admin cannot load another tenant's catalogue by posting someone
+        # else's id. With nothing selected we fall back to the caller's own scope,
+        # but only when that is unambiguous.
+        try:
+            scope = resolve_company_scope(current_user, args.get('company_id'))
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
+        if scope is None:
+            return {'success': False, 'msg': 'Select a company for this upload.'}, 422
+        if not scope:
+            return {'success': False, 'msg': 'You are not assigned to any company.'}, 422
+        if len(scope) > 1:
+            return {'success': False,
+                    'msg': 'Select a company for this upload — you have access to several.'}, 422
+
+        try:
+            return master_upload.process(args['file'], scope[0])
+        except Exception as e:
+            logger.exception("Product master upload failed",
+                             extra={'company_id': scope[0]})
+            return {'success': False, 'msg': f'Upload failed: {e}'}, 400
