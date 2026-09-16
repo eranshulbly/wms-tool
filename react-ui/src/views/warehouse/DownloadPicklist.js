@@ -109,8 +109,13 @@ const DownloadPicklist = () => {
       a.remove();
       window.URL.revokeObjectURL(url);
       notify(
-        `Downloaded ${selected.length} picklist${selected.length === 1 ? '' : 's'} (${filename})`
+        `Issued ${selected.length} picklist${selected.length === 1 ? '' : 's'} (${filename}) — ` +
+          'those orders are now in Picking'
       );
+      // Issuing moves the orders to Picking, so they leave this list. Reloaded rather than
+      // left showing orders that would now be refused if downloaded again.
+      setSelected([]);
+      load();
     } catch (e) {
       // The error body is a Blob here, because the request asked for one.
       const msg = await readBlobError(e);

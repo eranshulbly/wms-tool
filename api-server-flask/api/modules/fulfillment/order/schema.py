@@ -163,3 +163,35 @@ CREATE TABLE IF NOT EXISTS deleted_order_log (
     INDEX idx_dol_when   (deleted_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """, order=9)
+
+
+# A picklist that was handed to the warehouse floor.
+#
+# Downloading a picklist used to record nothing, so the same order could be printed any
+# number of times and nobody could say what had been sent to be picked. Issuing one now
+# moves the order Open -> Picking, and this is the record of that: which order, who
+# printed it, when.
+#
+# Cancelling is what the record exists for. A picklist printed in error cannot be recalled
+# from the floor, so an admin voids it here and the order goes back to Open, free to be
+# issued again. The cancelled row is KEPT rather than deleted — "this was printed and then
+# withdrawn" is exactly the history somebody will need when a picker turns up with a sheet
+# for goods that were never meant to move.
+register_table("picklist_issue", """
+CREATE TABLE IF NOT EXISTS picklist_issue (
+    picklist_issue_id  INT AUTO_INCREMENT PRIMARY KEY,
+    potential_order_id INT NOT NULL,
+    original_order_id  VARCHAR(100) NULL,
+    company_id         INT NULL,
+    warehouse_id       INT NULL,
+    status             VARCHAR(20) NOT NULL DEFAULT 'issued',
+    issued_by          INT NULL,
+    issued_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+    cancelled_by       INT NULL,
+    cancelled_at       DATETIME NULL,
+    cancel_reason      VARCHAR(500) NULL,
+    INDEX idx_pli_order  (potential_order_id),
+    INDEX idx_pli_status (status, issued_at),
+    INDEX idx_pli_number (original_order_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""", order=10)

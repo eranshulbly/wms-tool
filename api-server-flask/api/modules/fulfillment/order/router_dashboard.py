@@ -1576,6 +1576,36 @@ class PicklistDownload(Resource):
                            'they may already have been picked, or belong to another '
                            'company'}, 409
 
+        # Issuing a picklist is a real event, so it is recorded and the order moves on.
+        #
+        # Until now downloading changed nothing: the same order could be printed any number
+        # of times, and nothing said what had been sent to the floor. Moving Open -> Picking
+        # both takes the order off this screen (which lists Open only) and gives an admin
+        # something to cancel when a sheet is printed in error.
+        issued_at = datetime.utcnow()
+        picking = _ensure_state('Picking', 'Order is being picked from inventory')
+        issued = []
+        with mysql_manager.get_cursor() as cursor:
+            for sheet in sheets:
+                order = sheet['order']
+                order_id = order['potential_order_id']
+                cursor.execute(
+                    """INSERT INTO picklist_issue
+                           (potential_order_id, original_order_id, company_id,
+                            warehouse_id, status, issued_by, issued_at)
+                       VALUES (%s, %s, %s, %s, 'issued', %s, %s)""",
+                    (order_id, order.get('original_order_id'), order.get('company_id'),
+                     order.get('warehouse_id'), getattr(current_user, 'id', None), issued_at))
+                cursor.execute(
+                    """UPDATE potential_order SET status = 'Picking', updated_at = %s
+                        WHERE potential_order_id = %s""", (issued_at, order_id))
+                cursor.execute(
+                    """INSERT INTO order_state_history
+                           (potential_order_id, state_id, changed_by, changed_at)
+                       VALUES (%s, %s, %s, %s)""",
+                    (order_id, picking.state_id, getattr(current_user, 'id', None), issued_at))
+                issued.append(order.get('original_order_id'))
+
         stamp = datetime.utcnow().strftime('%Y%m%d-%H%M')
         if len(sheets) == 1:
             number = picklist._safe_filename(sheets[0]['order'].get('original_order_id'))

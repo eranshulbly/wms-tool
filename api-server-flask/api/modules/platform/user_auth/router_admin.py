@@ -1494,3 +1494,166 @@ class AdminOrderDeletionLog(Resource):
                 'deleted_at': r['deleted_at'].isoformat() if r['deleted_at'] else None,
             } for r in rows],
         }, 200
+
+
+# ---------------------------------------------------------------------------
+# Cancel an issued picklist — admin only
+# ---------------------------------------------------------------------------
+#
+# Downloading a picklist records a picklist_issue row and moves the order Open -> Picking.
+# A sheet printed in error cannot be recalled from the warehouse floor, so an admin voids
+# it here instead: the issue is marked cancelled and the order goes back to Open, where it
+# can be issued again. No new order state — Open and Picking already say everything.
+
+@rest_api.route('/api/admin/picklists')
+class AdminPicklistList(Resource):
+    """Issued picklists, newest first, with the order's current status beside each.
+
+    The current status matters more than the issue record: a picklist can only be
+    cancelled while its order is still in Picking. Once the order has been packed or
+    invoiced the goods have moved, and pulling the order back to Open would put it on the
+    picklist screen a second time for stock that has already left.
+    """
+
+    @token_required
+    @active_required
+    @_admin_required
+    def get(self, current_user):
+        try:
+            company_ids = resolve_company_scope(
+                current_user, request.args.get('company_id', type=int))
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
+
+        cf_sql, cf_params = company_filter_sql(company_ids, alias='pi')
+        sql = f"""SELECT pi.picklist_issue_id, pi.potential_order_id, pi.original_order_id,
+                         pi.status, pi.issued_at, pi.cancelled_at, pi.cancel_reason,
+                         po.status AS order_status,
+                         COALESCE(d.name, po.purchaser_name) AS dealer_name,
+                         iu.name AS issued_by_name, cu.name AS cancelled_by_name,
+                         (SELECT COUNT(*) FROM potential_order_product pop
+                           WHERE pop.potential_order_id = pi.potential_order_id) AS line_count
+                  FROM picklist_issue pi
+                  LEFT JOIN potential_order po ON po.potential_order_id = pi.potential_order_id
+                  LEFT JOIN dealer d  ON d.dealer_id = po.dealer_id
+                  LEFT JOIN users  iu ON iu.id = pi.issued_by
+                  LEFT JOIN users  cu ON cu.id = pi.cancelled_by
+                  WHERE {cf_sql}"""
+        params = tuple(cf_params)
+
+        status = (request.args.get('status') or '').strip().lower()
+        if status in ('issued', 'cancelled'):
+            sql += " AND pi.status = %s"
+            params = params + (status,)
+        search = (request.args.get('search') or '').strip()
+        if search:
+            sql += " AND (pi.original_order_id LIKE %s OR d.name LIKE %s OR po.purchaser_name LIKE %s)"
+            like = f"%{search}%"
+            params = params + (like, like, like)
+
+        sql += " ORDER BY pi.issued_at DESC LIMIT 500"
+        rows = mysql_manager.execute_query(sql, params) or []
+        return {
+            'success': True,
+            'picklists': [{
+                'picklist_issue_id': r['picklist_issue_id'],
+                'potential_order_id': r['potential_order_id'],
+                'order_number': r['original_order_id'],
+                'status': r['status'],
+                # Null when the order itself has since been deleted.
+                'order_status': r['order_status'],
+                'dealer_name': r['dealer_name'] or '',
+                'line_count': r['line_count'],
+                'issued_by': r['issued_by_name'] or '',
+                'issued_at': r['issued_at'].isoformat() if r['issued_at'] else None,
+                'cancelled_by': r['cancelled_by_name'] or '',
+                'cancelled_at': r['cancelled_at'].isoformat() if r['cancelled_at'] else None,
+                'cancel_reason': r['cancel_reason'] or '',
+                'can_cancel': r['status'] == 'issued' and r['order_status'] == 'Picking',
+            } for r in rows],
+        }, 200
+
+
+@rest_api.route('/api/admin/picklists/<int:issue_id>/cancel')
+class AdminPicklistCancel(Resource):
+    """Void an issued picklist and return its order to Open."""
+
+    @token_required
+    @active_required
+    @_admin_required
+    def post(self, current_user, issue_id):
+        payload = request.get_json(silent=True) or {}
+        reason = str(payload.get('reason') or '').strip()[:500]
+        if not reason:
+            return {'success': False,
+                    'msg': 'A reason is required - it is kept with the cancelled picklist.'}, 422
+
+        rows = mysql_manager.execute_query(
+            """SELECT pi.picklist_issue_id, pi.potential_order_id, pi.original_order_id,
+                      pi.status, pi.company_id, po.status AS order_status
+               FROM picklist_issue pi
+               LEFT JOIN potential_order po ON po.potential_order_id = pi.potential_order_id
+               WHERE pi.picklist_issue_id = %s""", (issue_id,)) or []
+        if not rows:
+            return {'success': False, 'msg': 'Picklist not found.'}, 404
+        issue = rows[0]
+
+        try:
+            company_ids = resolve_company_scope(current_user, None)
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
+        if company_ids is not None and issue['company_id'] not in set(company_ids):
+            return {'success': False,
+                    'msg': 'This picklist belongs to another company.'}, 403
+
+        if issue['status'] == 'cancelled':
+            return {'success': False, 'msg': 'This picklist has already been cancelled.'}, 409
+        if issue['order_status'] is None:
+            return {'success': False,
+                    'msg': 'The order for this picklist no longer exists.'}, 409
+        # Only an order still being picked can go back. Past Picking the goods have moved,
+        # and returning it to Open would offer it for picking a second time.
+        if issue['order_status'] != 'Picking':
+            return {'success': False,
+                    'msg': (f"Order {issue['original_order_id']} is already "
+                            f"'{issue['order_status']}', so its picklist can no longer be "
+                            f"cancelled.")}, 409
+
+        state = mysql_manager.execute_query(
+            "SELECT state_id FROM order_state WHERE state_name = 'Open' LIMIT 1") or []
+        if not state:
+            return {'success': False, 'msg': "Order state 'Open' is not configured."}, 500
+        open_state_id = state[0]['state_id']
+
+        now = datetime.utcnow()
+        user_id = getattr(current_user, 'id', None)
+        with mysql_manager.get_cursor() as cursor:
+            cursor.execute(
+                """UPDATE picklist_issue
+                      SET status = 'cancelled', cancelled_by = %s, cancelled_at = %s,
+                          cancel_reason = %s
+                    WHERE picklist_issue_id = %s AND status = 'issued'""",
+                (user_id, now, reason, issue_id))
+            # Guarded on the status it was read in, so two admins cancelling the same
+            # picklist at once cannot both succeed and write two history rows.
+            if cursor.rowcount == 0:
+                return {'success': False,
+                        'msg': 'This picklist was cancelled by someone else just now.'}, 409
+            cursor.execute(
+                """UPDATE potential_order SET status = 'Open', updated_at = %s
+                    WHERE potential_order_id = %s AND status = 'Picking'""",
+                (now, issue['potential_order_id']))
+            cursor.execute(
+                """INSERT INTO order_state_history
+                       (potential_order_id, state_id, changed_by, changed_at)
+                   VALUES (%s, %s, %s, %s)""",
+                (issue['potential_order_id'], open_state_id, user_id, now))
+
+        logger.warning("admin cancelled picklist", extra={
+            'user_id': user_id, 'picklist_issue_id': issue_id,
+            'order_number': issue['original_order_id'], 'reason': reason})
+        return {
+            'success': True,
+            'msg': (f"Picklist for order {issue['original_order_id']} cancelled. "
+                    f"The order is back to Open and can be picked again."),
+        }, 200

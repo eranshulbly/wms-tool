@@ -106,6 +106,17 @@ class BaseUploadService(abc.ABC):
             # Step 1 — save to temp
             temp_path, ext = save_temp_file(uploaded_file, self._tmp_dir())
 
+            # An empty file is a download that never finished. Left to the parsers it
+            # surfaces as "No /Root object! - Is this really a PDF?", which sends the operator
+            # looking for something wrong with a document that simply is not there.
+            if os.path.getsize(temp_path) == 0:
+                return {
+                    'success': False,
+                    'msg': 'This file is empty (0 bytes) — the download did not complete. '
+                           'Download it again and re-upload.',
+                    'processed_count': 0, 'error_count': 0,
+                }, 400
+
             # Step 2 — validate extension
             if ext not in _SUPPORTED_EXTENSIONS:
                 return {

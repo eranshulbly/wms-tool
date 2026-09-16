@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Box,
   Button,
@@ -29,7 +29,7 @@ import DescriptionIcon from '@material-ui/icons/Description';
 import ErrorOutlineIcon from '@material-ui/icons/ErrorOutline';
 import { Snackbar, Alert } from '@material-ui/core';
 import AnimateButton from '../../../../ui-component/extended/AnimateButton';
-import UploadResultCard from '../../../../components/UploadResultCard';
+import UploadResultCard, { downloadErrorExcel } from '../../../../components/UploadResultCard';
 import { useWarehouse } from '../../../../context/WarehouseContext';
 import { useSnackbar } from '../../../../hooks/useSnackbar';
 import api from '../../../../services/api';
@@ -153,96 +153,160 @@ const FileUploadForm = ({
 
   const { snackbar, showSnackbar, hideSnackbar } = useSnackbar();
 
-  const [file, setFile] = useState(null);
+  // Several files can be chosen at once. Each is still uploaded as its OWN request, one
+  // after another, so every file goes through the same server pipeline a single upload
+  // does — duplicate checks, error reports, the approval prompt — and one bad file fails
+  // only itself rather than taking the rest of the batch down with it.
+  const [files, setFiles] = useState([]);
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null); // null | 'uploading' | 'success' | 'error'
-  const [uploadResults, setUploadResults] = useState(null);
+  const [uploadResults, setUploadResults] = useState(null); // single-file result (unchanged UX)
+  const [batchResults, setBatchResults] = useState([]);     // one entry per file when >1
+  const [progress, setProgress] = useState(null);           // { done, total, name }
   const [approval, setApproval] = useState(null); // backend asked a question before writing
+  // Resolves the pending approval when the dialog is answered, so the queue can wait on it.
+  const approvalResolver = useRef(null);
 
-  const validateAndSetFile = (selectedFile) => {
-    if (!VALID_TYPES.includes(selectedFile.type)) {
-      showSnackbar('Please upload an Excel, CSV or PDF file', 'error');
-      return;
-    }
-    if (selectedFile.size > maxSizeMB * 1024 * 1024) {
-      showSnackbar(`File size exceeds ${maxSizeMB}MB limit`, 'error');
-      return;
-    }
-    setFile(selectedFile);
+  const addFiles = (fileList) => {
+    const accepted = [];
+    const rejected = [];
+    Array.from(fileList || []).forEach((f) => {
+      if (f.size === 0) {
+        // A zero-byte file is a download that never finished. Sent to the server it fails
+        // with "No /Root object!", which says nothing useful; caught here it says what to do.
+        rejected.push(`${f.name}: the file is empty (0 bytes) — download it again`);
+      } else if (!VALID_TYPES.includes(f.type) && !/\.(xlsx|xls|csv|pdf)$/i.test(f.name)) {
+        rejected.push(`${f.name}: not an Excel, CSV or PDF file`);
+      } else if (f.size > maxSizeMB * 1024 * 1024) {
+        rejected.push(`${f.name}: larger than ${maxSizeMB}MB`);
+      } else {
+        accepted.push(f);
+      }
+    });
+    if (rejected.length) showSnackbar(rejected.join(' · '), 'error');
+    if (!accepted.length) return;
+    setFiles((prev) => {
+      // Picking the same file twice should not upload it twice.
+      const seen = new Set(prev.map((f) => `${f.name}|${f.size}|${f.lastModified}`));
+      return [...prev, ...accepted.filter((f) => !seen.has(`${f.name}|${f.size}|${f.lastModified}`))];
+    });
     setUploadStatus(null);
     setUploadResults(null);
+    setBatchResults([]);
   };
+
+  const removeFile = (index) => setFiles((prev) => prev.filter((_, i) => i !== index));
 
   const handleDragOver = (e) => { e.preventDefault(); setIsDragging(true); };
   const handleDragLeave = (e) => { e.preventDefault(); setIsDragging(false); };
   const handleDrop = (e) => {
     e.preventDefault();
     setIsDragging(false);
-    if (e.dataTransfer.files?.[0]) validateAndSetFile(e.dataTransfer.files[0]);
+    addFiles(e.dataTransfer.files);
   };
   const handleFileSelect = (e) => {
-    if (e.target.files?.[0]) validateAndSetFile(e.target.files[0]);
+    addFiles(e.target.files);
+    // Cleared so choosing the same file again still fires onChange.
+    e.target.value = '';
   };
 
   // `approvals` carries the operator's answers to anything the backend asked about — see
   // the needs_approval branch below. The same file is simply re-posted with the answer, so
   // no partially-processed upload is left waiting on the server for a decision.
-  const handleUpload = (approvals = null) => {
-    if (!file) { showSnackbar('Please select a file to upload', 'warning'); return; }
+  const postOne = async (f, approvals = null) => {
+    const formData = new FormData();
+    formData.append('file', f);
+    if (requiresWarehouse) formData.append('warehouse_id', selectedWarehouse);
+    if (requiresCompany) formData.append('company_id', selectedCompany);
+    if (approvals) Object.entries(approvals).forEach(([k, v]) => formData.append(k, v));
+    try {
+      const response = await api.post(endpoint, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      return response.data;
+    } catch (error) {
+      // A 4xx still carries a useful body (msg, error_report); keep it.
+      return error.response?.data || { success: false, msg: error.message || 'Error processing file' };
+    }
+  };
+
+  // Waits for the operator to answer the approval dialog. Resolves true to approve.
+  const askApproval = (data) =>
+    new Promise((resolve) => {
+      approvalResolver.current = resolve;
+      setApproval(data);
+    });
+
+  const answerApproval = (approved) => {
+    const resolve = approvalResolver.current;
+    approvalResolver.current = null;
+    setApproval(null);
+    if (resolve) resolve(approved);
+  };
+
+  const handleUpload = async () => {
+    if (!files.length) { showSnackbar('Please select a file to upload', 'warning'); return; }
     if (requiresWarehouse && !selectedWarehouse) { showSnackbar('Please select a warehouse', 'warning'); return; }
     if (requiresCompany && !selectedCompany) { showSnackbar('Please select a company', 'warning'); return; }
 
     setIsUploading(true);
     setUploadStatus('uploading');
-    setApproval(null);
+    setUploadResults(null);
+    setBatchResults([]);
 
-    const formData = new FormData();
-    formData.append('file', file);
-    if (requiresWarehouse) formData.append('warehouse_id', selectedWarehouse);
-    if (requiresCompany) formData.append('company_id', selectedCompany);
-    if (approvals) Object.entries(approvals).forEach(([k, v]) => formData.append(k, v));
+    const results = [];
+    for (let i = 0; i < files.length; i += 1) {
+      const f = files[i];
+      setProgress({ done: i, total: files.length, name: f.name });
 
-    api
-      .post(endpoint, formData, { headers: { 'Content-Type': 'multipart/form-data' } })
-      .then((response) => {
-        const data = response.data;
-
-        // The backend stopped to ask something rather than guessing. Nothing has been
-        // written at this point, so declining is a genuine no-op.
-        if (data.needs_approval) {
-          setApproval(data);
-          setUploadStatus(null);
-          return;
-        }
-
-        setUploadResults(data);
-        if (data.success) {
-          setUploadStatus('success');
-          showSnackbar(
-            `Processed ${data.processed_count} record(s)` +
-              (data.error_count > 0 ? ` — ${data.error_count} row(s) failed` : ''),
-            data.error_count > 0 ? 'warning' : 'success'
-          );
+      let data = await postOne(f);
+      // The backend stopped to ask something rather than guessing. Nothing was written, so
+      // the batch waits for an answer: approving re-posts this file, rejecting skips it.
+      if (data?.needs_approval) {
+        const approved = await askApproval(data);
+        if (approved) {
+          data = await postOne(f, { [data.needs_approval]: 'true' });
         } else {
-          setUploadStatus('error');
-          showSnackbar(data.msg || 'Processing failed', 'error');
+          data = { success: false, skipped: true, msg: 'Skipped — not approved, nothing was saved' };
         }
-      })
-      .catch((error) => {
-        setUploadStatus('error');
-        setUploadResults(error.response?.data || null);
-        showSnackbar(error.response?.data?.msg || 'Error processing file', 'error');
-      })
-      .finally(() => {
-        setIsUploading(false);
-      });
+      }
+      results.push({ name: f.name, data });
+    }
+    setProgress(null);
+    setIsUploading(false);
+
+    const ok = results.filter((r) => r.data?.success).length;
+    const failed = results.length - ok;
+
+    if (results.length === 1) {
+      // A single file keeps exactly the result card it always had.
+      const data = results[0].data;
+      setUploadResults(data);
+      setUploadStatus(data?.success ? 'success' : 'error');
+      showSnackbar(
+        data?.success
+          ? `Processed ${data.processed_count} record(s)` +
+              (data.error_count > 0 ? ` — ${data.error_count} row(s) failed` : '')
+          : data?.msg || 'Processing failed',
+        data?.success ? (data.error_count > 0 ? 'warning' : 'success') : 'error'
+      );
+      return;
+    }
+
+    setBatchResults(results);
+    setUploadStatus(ok ? 'success' : 'error');
+    showSnackbar(
+      `${results.length} files: ${ok} uploaded` + (failed ? `, ${failed} failed` : ''),
+      failed ? (ok ? 'warning' : 'error') : 'success'
+    );
   };
 
   const resetUpload = () => {
-    setFile(null);
+    setFiles([]);
     setUploadStatus(null);
     setUploadResults(null);
+    setBatchResults([]);
   };
 
   if (contextLoading) {
@@ -301,45 +365,117 @@ const FileUploadForm = ({
                           id={inputId}
                           style={{ display: 'none' }}
                           accept={ACCEPT_ATTR}
+                          multiple
                           onChange={handleFileSelect}
                         />
-                        {!file ? (
-                          <>
-                            <CloudUploadIcon className={classes.uploadIcon} />
-                            <Typography variant="h6" gutterBottom>
-                              Drag & Drop your file here
-                            </Typography>
-                            <Typography variant="body2" color="textSecondary">
-                              or click to browse
-                            </Typography>
-                            <Typography variant="caption" color="textSecondary" style={{ marginTop: '8px' }}>
-                              Supported formats: {SUPPORTED_LABEL} (Max {maxSizeMB}MB)
-                            </Typography>
-                          </>
-                        ) : (
-                          <div className={classes.fileInfo}>
-                            <DescriptionIcon className={classes.fileIcon} />
-                            <div>
-                              <Typography variant="subtitle1" className={classes.fileName}>
-                                {file.name}
-                              </Typography>
-                              <Typography variant="caption" color="textSecondary">
-                                {(file.size / 1024).toFixed(2)} KB
-                              </Typography>
-                            </div>
-                          </div>
-                        )}
+                        <CloudUploadIcon className={classes.uploadIcon} />
+                        <Typography variant="h6" gutterBottom>
+                          {files.length ? 'Add more files' : 'Drag & Drop your files here'}
+                        </Typography>
+                        <Typography variant="body2" color="textSecondary">
+                          or click to browse — you can select several at once
+                        </Typography>
+                        <Typography variant="caption" color="textSecondary" style={{ marginTop: '8px' }}>
+                          Supported formats: {SUPPORTED_LABEL} (Max {maxSizeMB}MB each)
+                        </Typography>
                       </div>
                     </Grid>
+
+                    {files.length > 0 && (
+                      <Grid item xs={12}>
+                        <Typography variant="subtitle2" gutterBottom>
+                          {files.length} file{files.length === 1 ? '' : 's'} selected
+                        </Typography>
+                        {files.map((f, i) => (
+                          <div key={`${f.name}-${f.lastModified}-${i}`} className={classes.fileInfo}>
+                            <DescriptionIcon className={classes.fileIcon} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <Typography variant="subtitle1" className={classes.fileName} noWrap>
+                                {f.name}
+                              </Typography>
+                              <Typography variant="caption" color="textSecondary">
+                                {(f.size / 1024).toFixed(2)} KB
+                              </Typography>
+                            </div>
+                            {!isUploading && uploadStatus !== 'success' && (
+                              <Button size="small" onClick={() => removeFile(i)}>
+                                Remove
+                              </Button>
+                            )}
+                          </div>
+                        ))}
+                      </Grid>
+                    )}
 
                     {uploadStatus === 'uploading' && (
                       <Grid item xs={12}>
                         <div className={classes.uploadProgress}>
                           <CircularProgress size={40} />
                           <Typography variant="body1" style={{ marginTop: '16px' }}>
-                            {processingMessage}
+                            {progress && progress.total > 1
+                              ? `Uploading ${progress.done + 1} of ${progress.total}: ${progress.name}`
+                              : processingMessage}
                           </Typography>
                         </div>
+                      </Grid>
+                    )}
+
+                    {batchResults.length > 0 && (
+                      <Grid item xs={12}>
+                        <Typography variant="h6" gutterBottom>
+                          Results
+                        </Typography>
+                        <Table size="small">
+                          <TableHead>
+                            <TableRow>
+                              <TableCell>File</TableCell>
+                              <TableCell>Result</TableCell>
+                              <TableCell align="right">{successLabel}</TableCell>
+                              <TableCell align="right">Errors</TableCell>
+                              <TableCell />
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {batchResults.map((r, i) => {
+                              const d = r.data || {};
+                              return (
+                                <TableRow key={`${r.name}-${i}`}>
+                                  <TableCell style={{ maxWidth: 220, wordBreak: 'break-word' }}>{r.name}</TableCell>
+                                  <TableCell>
+                                    <Typography
+                                      variant="body2"
+                                      color={d.success ? 'textPrimary' : 'error'}
+                                    >
+                                      {d.success ? (d.error_count ? 'Uploaded, with errors' : 'Uploaded') : d.msg || 'Failed'}
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell align="right">{d.processed_count ?? '—'}</TableCell>
+                                  <TableCell align="right">{d.error_count ?? '—'}</TableCell>
+                                  <TableCell align="right">
+                                    {d.error_report && d.error_count > 0 && (
+                                      <Button
+                                        size="small"
+                                        onClick={() =>
+                                          downloadErrorExcel(
+                                            d.error_report,
+                                            `${errorFilename}_${r.name.replace(/\.[^.]+$/, '')}_${errorDate}.xlsx`
+                                          )
+                                        }
+                                      >
+                                        Error report
+                                      </Button>
+                                    )}
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </Table>
+                        <Box mt={2}>
+                          <Button variant="outlined" onClick={resetUpload}>
+                            Upload more files
+                          </Button>
+                        </Box>
                       </Grid>
                     )}
 
@@ -418,7 +554,7 @@ const FileUploadForm = ({
                           fullWidth
                           startIcon={<CloudUploadIcon />}
                           disabled={
-                            !file ||
+                            !files.length ||
                             (requiresWarehouse && !selectedWarehouse) ||
                             (requiresCompany && !selectedCompany) ||
                             isUploading ||
@@ -426,7 +562,11 @@ const FileUploadForm = ({
                           }
                           onClick={() => handleUpload()}
                         >
-                          {isUploading ? 'Processing…' : uploadButtonLabel}
+                          {isUploading
+                            ? 'Processing…'
+                            : files.length > 1
+                              ? `${uploadButtonLabel} (${files.length} files)`
+                              : uploadButtonLabel}
                         </Button>
                       </AnimateButton>
                     </Grid>
@@ -449,7 +589,9 @@ const FileUploadForm = ({
       {/* The backend asks before writing anything it had to guess at. Approving re-posts
           the same file with the answer; rejecting simply discards it, and because nothing
           was written on the first attempt there is nothing to undo. */}
-      <Dialog open={!!approval} onClose={() => setApproval(null)} maxWidth="sm" fullWidth>
+      {/* Dismissing counts as Reject. Merely clearing the dialog would leave the upload
+          queue waiting on an answer that never comes, stuck on "Processing…". */}
+      <Dialog open={!!approval} onClose={() => answerApproval(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Missing product numbers</DialogTitle>
         <DialogContent>
           <DialogContentText>{approval?.msg}</DialogContentText>
@@ -487,18 +629,12 @@ const FileUploadForm = ({
           )}
         </DialogContent>
         <DialogActions>
-          <Button
-            onClick={() => {
-              setApproval(null);
-              showSnackbar('Upload cancelled — nothing was saved', 'info');
-            }}
-          >
+          {/* Answering resumes the batch: approve re-posts this file, reject skips it and
+              moves on to the next — nothing was written for it either way. */}
+          <Button onClick={() => answerApproval(false)}>
             Reject
           </Button>
-          <Button
-            variant="contained"
-            onClick={() => handleUpload({ [approval.needs_approval]: 'true' })}
-          >
+          <Button variant="contained" onClick={() => answerApproval(true)}>
             Approve &amp; upload
           </Button>
         </DialogActions>

@@ -93,7 +93,7 @@ def _orders(order_ids, company_ids=None):
     return mysql_manager.execute_query(
         f"""SELECT po.potential_order_id, po.original_order_id, po.order_date,
                    po.purchaser_name, po.purchaser_sap_code, po.shipping_address,
-                   po.status, po.warehouse_id, po.created_at,
+                   po.status, po.warehouse_id, po.company_id, po.created_at,
                    d.name  AS dealer_name, d.dealer_code, d.town, d.gstin AS dealer_gstin,
                    d.address AS dealer_address,
                    w.name  AS warehouse_name, w.location AS warehouse_location,
