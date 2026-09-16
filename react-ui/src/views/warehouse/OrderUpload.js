@@ -10,6 +10,7 @@ const OrderUpload = () => (
       maxSizeMB={5}
       requiresWarehouse
       requiresCompany
+      allowMultiple
       successLabel="Orders Processed"
       errorFilename="order_upload_errors"
       processingMessage="Uploading and processing file…"

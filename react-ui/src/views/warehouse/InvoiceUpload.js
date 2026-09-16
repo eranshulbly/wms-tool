@@ -22,6 +22,7 @@ const InvoiceUpload = () => (
       maxSizeMB={10}
       requiresWarehouse
       requiresCompany
+      allowMultiple
       successLabel="Invoices Processed"
       errorFilename="invoice_upload_errors"
       processingMessage="Processing invoice file and closing orders…"
