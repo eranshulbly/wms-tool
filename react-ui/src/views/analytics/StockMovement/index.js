@@ -478,14 +478,6 @@ const StockMovement = () => {
                       return (
                         <TableCell key={c.key} align="right" className={classes.num}>
                           {render(c.type, r.sale_rate_month)}
-                          {/* How much history the rate is actually based on. Stock received
-                              last week is measured over last week, not over the whole
-                              window, and saying so stops the figure being over-read. */}
-                          {r.sale_rate_month !== null && r.observed_days < windowDays && (
-                            <Typography variant="caption" className={classes.muted} display="block">
-                              over {r.observed_days}d
-                            </Typography>
-                          )}
                         </TableCell>
                       );
                     }
