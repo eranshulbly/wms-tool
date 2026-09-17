@@ -10,6 +10,7 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  TableSortLabel,
   Paper,
   Grid,
   MenuItem,
@@ -21,6 +22,7 @@ import { makeStyles } from '@material-ui/styles';
 import { IconRefresh, IconDownload } from '@tabler/icons';
 import api from '../../../services/api';
 import { useWarehouse } from '../../../context/WarehouseContext';
+import { useColumnSearch } from '../../../hooks/useColumnSearch';
 
 const BASE = 'admin/inventory/ingestion';
 
@@ -91,7 +93,6 @@ const InventoryReport = () => {
   const { companies, selectedCompany, setSelectedCompany } = useWarehouse();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [filters, setFilters] = useState({});
   const [toast, setToast] = useState(null);
 
   const load = useCallback(async () => {
@@ -116,40 +117,23 @@ const InventoryReport = () => {
     load();
   }, [load]);
 
-  // Numbers are matched both as stored and as displayed, so typing what is on screen
-  // ("1,26,720") works as readily as the raw value.
-  const searchable = useMemo(
-    () =>
-      rows.map((r) => ({
-        row: r,
-        text: COLUMNS.reduce((acc, c) => {
-          acc[c.key] = `${r[c.key] ?? ''} ${render(c.type, r[c.key])}`.toLowerCase();
-          return acc;
-        }, {}),
-      })),
-    [rows]
-  );
-
-  const visible = useMemo(() => {
-    const active = Object.entries(filters).filter(([, v]) => (v || '').trim());
-    if (!active.length) return searchable.map((s) => s.row);
-    return searchable
-      .filter((s) => active.every(([k, term]) => (s.text[k] || '').includes(term.trim().toLowerCase())))
-      .map((s) => s.row);
-  }, [searchable, filters]);
+  // Per-column search + click-to-sort — see useColumnSearch. Numbers are matched both
+  // as stored and as displayed, so typing what is on screen ("1,26,720") works as
+  // readily as the raw value.
+  const search = useColumnSearch(rows, COLUMNS, render);
 
   // Totals follow the filter, so a narrowed view reports on what it shows.
   const totals = useMemo(() => {
     // Only quantity is meaningfully additive here — summing per-unit rates or margins
     // across different products would produce a number that means nothing.
-    return { qty: visible.reduce((a, r) => a + Number(r.qty || 0), 0) };
-  }, [visible]);
+    return { qty: search.visible.reduce((a, r) => a + Number(r.qty || 0), 0) };
+  }, [search.visible]);
 
   const exportCsv = () => {
     const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const csv = [
       COLUMNS.map((c) => esc(c.label)).join(','),
-      ...visible.map((r) => COLUMNS.map((c) => esc(r[c.key])).join(',')),
+      ...search.visible.map((r) => COLUMNS.map((c) => esc(r[c.key])).join(',')),
     ].join('\n');
     const company = companies.find((c) => c.id === selectedCompany);
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
@@ -159,8 +143,6 @@ const InventoryReport = () => {
     a.click();
     URL.revokeObjectURL(url);
   };
-
-  const activeFilters = Object.values(filters).some((v) => (v || '').trim());
 
   return (
     <Box>
@@ -191,13 +173,13 @@ const InventoryReport = () => {
               <Typography variant="body2" className={classes.muted}>
                 {loading
                   ? 'Loading…'
-                  : `${visible.length}${activeFilters ? ` of ${rows.length}` : ''} batch${
-                      visible.length === 1 ? '' : 'es'
+                  : `${search.visible.length}${search.hasActive ? ` of ${rows.length}` : ''} batch${
+                      search.visible.length === 1 ? '' : 'es'
                     }`}
               </Typography>
               <Box flexGrow={1} />
-              {activeFilters && (
-                <Button size="small" onClick={() => setFilters({})} style={{ marginRight: 8 }}>
+              {search.hasActive && (
+                <Button size="small" onClick={search.clearFilters} style={{ marginRight: 8 }}>
                   Clear search
                 </Button>
               )}
@@ -206,7 +188,7 @@ const InventoryReport = () => {
                 variant="outlined"
                 startIcon={<IconDownload size={16} />}
                 onClick={exportCsv}
-                disabled={!visible.length}
+                disabled={!search.visible.length}
                 style={{ marginRight: 8 }}
               >
                 Export CSV
@@ -234,8 +216,15 @@ const InventoryReport = () => {
                   key={c.key}
                   align={isNumeric(c.type) ? 'right' : 'left'}
                   className={classes.head}
+                  sortDirection={search.sort?.key === c.key ? search.sort.dir : false}
                 >
-                  {c.label}
+                  <TableSortLabel
+                    active={search.sort?.key === c.key}
+                    direction={search.sort?.key === c.key ? search.sort.dir : 'desc'}
+                    onClick={() => search.toggleSort(c.key)}
+                  >
+                    {c.label}
+                  </TableSortLabel>
                 </TableCell>
               ))}
             </TableRow>
@@ -245,8 +234,8 @@ const InventoryReport = () => {
                   <TextField
                     variant="standard"
                     placeholder="Search"
-                    value={filters[c.key] || ''}
-                    onChange={(e) => setFilters((f) => ({ ...f, [c.key]: e.target.value }))}
+                    value={search.filters[c.key] || ''}
+                    onChange={(e) => search.setFilter(c.key, e.target.value)}
                     InputProps={{ style: { fontSize: '0.75rem' } }}
                     fullWidth
                   />
@@ -262,7 +251,7 @@ const InventoryReport = () => {
                 </TableCell>
               </TableRow>
             )}
-            {!loading && visible.length === 0 && (
+            {!loading && search.visible.length === 0 && (
               <TableRow>
                 <TableCell colSpan={COLUMNS.length} align="center" className={classes.muted}>
                   {!selectedCompany
@@ -274,7 +263,7 @@ const InventoryReport = () => {
               </TableRow>
             )}
             {!loading &&
-              visible.map((r) => (
+              search.visible.map((r) => (
                 <TableRow key={`${r.sku_id}-${r.batch_id}`} hover>
                   {COLUMNS.map((c) => {
                     const v = r[c.key];
@@ -295,12 +284,12 @@ const InventoryReport = () => {
                   })}
                 </TableRow>
               ))}
-            {!loading && visible.length > 0 && (
+            {!loading && search.visible.length > 0 && (
               <TableRow>
                 {COLUMNS.map((c, i) => (
                   <TableCell key={c.key} align={isNumeric(c.type) ? 'right' : 'left'}>
                     {i === 0 ? (
-                      <strong>Total ({visible.length})</strong>
+                      <strong>Total ({search.visible.length})</strong>
                     ) : totals[c.key] !== undefined ? (
                       <strong>{render(c.type, totals[c.key])}</strong>
                     ) : (

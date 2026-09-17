@@ -11,6 +11,7 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  TableSortLabel,
   Paper,
   Grid,
   MenuItem,
@@ -472,8 +473,15 @@ const SalesReport = () => {
                     key={c.key}
                     className={classes.head}
                     align={isNumeric(c.type) ? 'right' : 'left'}
+                    sortDirection={activeSearch.sort?.key === c.key ? activeSearch.sort.dir : false}
                   >
-                    {c.label}
+                    <TableSortLabel
+                      active={activeSearch.sort?.key === c.key}
+                      direction={activeSearch.sort?.key === c.key ? activeSearch.sort.dir : 'desc'}
+                      onClick={() => activeSearch.toggleSort(c.key)}
+                    >
+                      {c.label}
+                    </TableSortLabel>
                   </TableCell>
                 ))}
               </TableRow>

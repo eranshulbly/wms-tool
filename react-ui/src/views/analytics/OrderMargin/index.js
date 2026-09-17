@@ -12,6 +12,7 @@ import {
   TableHead,
   TableRow,
   TableFooter,
+  TableSortLabel,
   Paper,
   Grid,
   MenuItem,
@@ -366,8 +367,15 @@ const OrderMargin = () => {
                     key={c.key}
                     className={classes.head}
                     align={isNumeric(c.type) ? 'right' : 'left'}
+                    sortDirection={orderSearch.sort?.key === c.key ? orderSearch.sort.dir : false}
                   >
-                    {c.label}
+                    <TableSortLabel
+                      active={orderSearch.sort?.key === c.key}
+                      direction={orderSearch.sort?.key === c.key ? orderSearch.sort.dir : 'desc'}
+                      onClick={() => orderSearch.toggleSort(c.key)}
+                    >
+                      {c.label}
+                    </TableSortLabel>
                   </TableCell>
                 ))}
               </TableRow>

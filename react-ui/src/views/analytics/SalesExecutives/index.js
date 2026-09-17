@@ -11,6 +11,7 @@ import {
   TableContainer,
   TableHead,
   TableRow,
+  TableSortLabel,
   Paper,
   Grid,
   Link,
@@ -309,8 +310,15 @@ const SalesExecutives = () => {
                       key={c.key}
                       className={classes.head}
                       align={isNumeric(c.type) ? 'right' : 'left'}
+                      sortDirection={execSearch.sort?.key === c.key ? execSearch.sort.dir : false}
                     >
-                      {c.label}
+                      <TableSortLabel
+                        active={execSearch.sort?.key === c.key}
+                        direction={execSearch.sort?.key === c.key ? execSearch.sort.dir : 'desc'}
+                        onClick={() => execSearch.toggleSort(c.key)}
+                      >
+                        {c.label}
+                      </TableSortLabel>
                     </TableCell>
                   ))}
                 </TableRow>
@@ -423,8 +431,15 @@ const SalesExecutives = () => {
                       key={c.key}
                       className={classes.head}
                       align={isNumeric(c.type) ? 'right' : 'left'}
+                      sortDirection={visitSearch.sort?.key === c.key ? visitSearch.sort.dir : false}
                     >
-                      {c.label}
+                      <TableSortLabel
+                        active={visitSearch.sort?.key === c.key}
+                        direction={visitSearch.sort?.key === c.key ? visitSearch.sort.dir : 'desc'}
+                        onClick={() => visitSearch.toggleSort(c.key)}
+                      >
+                        {c.label}
+                      </TableSortLabel>
                     </TableCell>
                   ))}
                 </TableRow>
