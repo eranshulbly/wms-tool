@@ -74,9 +74,7 @@ class OrderUploadService(BaseUploadService):
             if not product:
                 missing.append(f"{label} — product not in the catalogue")
                 continue
-            # Same expiry handling as the line-item pass, so both compute the same key.
-            expiry = r.get('Expiry') if str(r.get('Expiry', '') or '').strip() else None
-            wanted[_batch_key(product['product_id'], batch, expiry)] = label
+            wanted[_batch_key(product['product_id'], batch)] = label
 
         if wanted:
             placeholders = ','.join(['%s'] * len(wanted))

@@ -1,13 +1,25 @@
 # -*- encoding: utf-8 -*-
 """One-off backfill: load Cadila_PO_Receipts_Data.xlsx as goods receipts.
 
-Run from /app inside the backend container (it needs the app's DB config on the path):
+Run wherever the app's own DB config is on the path — inside the dev container, or
+directly with the production venv on the server (it talks to whatever database that
+environment's api.shared.db_manager is configured for, so double-check you're where
+you think you are before passing --commit):
 
-    docker exec -it wms_backend python3 scripts/backfill_cadila_po_receipts.py --file /tmp/Cadila_PO_Receipts_Data.xlsx
-    docker exec -it wms_backend python3 scripts/backfill_cadila_po_receipts.py --file /tmp/Cadila_PO_Receipts_Data.xlsx --commit
+    docker exec -it wms_backend python3 scripts/backfill_cadila_po_receipts.py \
+        --file /tmp/Cadila_PO_Receipts_Data.xlsx --company-id 3 --warehouse-id 1
+
+    /path/to/.venv/bin/python3 scripts/backfill_cadila_po_receipts.py \
+        --file /path/to/Cadila_PO_Receipts_Data.xlsx --company-id 1 --warehouse-id 1 --commit
 
 Without --commit it only prints what it would do — no database writes. Review that
 output before adding --commit.
+
+--company-id / --warehouse-id have no default on purpose: this script writes stock and
+price data, and every environment (local dev, staging, production) can assign the
+Cadila tenant a different company_id — guessing one would risk silently writing
+against the wrong tenant, or matching nothing at all and reporting every row as
+"missing from catalogue" when the real cause is just the wrong id.
 
 Why this exists
 ----------------
@@ -21,9 +33,10 @@ hands it to the SAME service._ingest_document() a real PDF upload uses — so th
 byte-for-byte what a PDF upload of these receipts would have done.
 
 Rows are skipped, not guessed at, in two cases:
-  * the batch (by the app's own identity: SKU + batch number + expiry) already exists
-    — most of this file turned out to already be in the system from earlier PDF
-    uploads, and re-receiving it would double stock.
+  * the batch (by the app's own identity: SKU + batch number — expiry is NOT part of
+    the identity, see service.batch_hash) already exists — most of this file turned
+    out to already be in the system from earlier PDF uploads, and re-receiving it
+    would double stock.
   * the product code is not yet in the catalogue — this file carries no product name,
     pack or UOM, so a product cannot be safely created from it. These are reported so
     the master can be fixed and this file (or the row) re-run afterwards.
@@ -36,17 +49,26 @@ import os
 import sys
 
 import pandas as pd
+from dotenv import load_dotenv
 
-# Run as a plain script (not `python -m`), so the project root — this file's parent
-# directory — needs to be on sys.path for `api.*` to import.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Run as a plain script (not `python -m`), from any working directory — so both the
+# import path and the .env lookup are resolved from this file's own location instead
+# of relying on CWD, the way run.py's bare load_dotenv() does.
+#
+# api.shared.db_manager reads DB_HOST/DB_SCHEMA/DB_USERNAME/DB_PASS straight from
+# os.environ with hardcoded fallbacks (localhost / root / root-pw / warehouse_management)
+# and never loads .env itself — only run.py does that, and this isn't run.py. Skipping
+# this step doesn't fail loudly: it falls back to those defaults, which on a box with no
+# local MySQL just refuses to connect, but on a box that DOES have something on
+# localhost:3306 it would silently read/write the wrong database.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
+load_dotenv(os.path.join(PROJECT_ROOT, '.env'))
 
 from api.shared.db_manager import mysql_manager
 from api.modules.inventory.ingestion import service
 from api.modules.inventory.ingestion.parser_cadila import _doc_date, _month_end
 
-COMPANY_ID = 3        # Cadila
-WAREHOUSE_ID = 1       # Main Warehouse — the only one mapped to company 3
 UPLOAD_USER = 'backfill_script'
 
 
@@ -86,7 +108,7 @@ def classify_rows(df, products, existing_hashes):
             continue
 
         expiry = _month_end(str(row['Expiry']))
-        h = service.batch_hash(product['product_id'], row['Batch No'], expiry)
+        h = service.batch_hash(product['product_id'], row['Batch No'])
         if h in existing_hashes:
             already_exists.append(row)
             continue
@@ -134,13 +156,18 @@ def build_docs(ready_rows):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--file', required=True, help='Path to Cadila_PO_Receipts_Data.xlsx')
+    ap.add_argument('--company-id', required=True, type=int,
+                     help="This environment's company_id for the Cadila tenant — check, "
+                          "don't assume, it differs between databases.")
+    ap.add_argument('--warehouse-id', required=True, type=int,
+                     help="This environment's warehouse_id to receive the stock into.")
     ap.add_argument('--commit', action='store_true',
                      help='Actually write. Without this flag, only prints a preview.')
     args = ap.parse_args()
 
     df = load_rows(args.file)
-    products = _existing_product_codes(COMPANY_ID)
-    existing_hashes = _existing_batch_hashes(COMPANY_ID)
+    products = _existing_product_codes(args.company_id)
+    existing_hashes = _existing_batch_hashes(args.company_id)
 
     ready, missing_product, already_exists = classify_rows(df, products, existing_hashes)
 
@@ -178,7 +205,7 @@ def main():
     for invoice_no, doc in sorted(docs_by_invoice.items()):
         try:
             result = service._ingest_document(  # pylint: disable=protected-access
-                doc, COMPANY_ID, WAREHOUSE_ID, user=UPLOAD_USER)
+                doc, args.company_id, args.warehouse_id, user=UPLOAD_USER)
         except service.IngestionError as e:
             failures.append((invoice_no, str(e)))
             print(f"  Invoice {invoice_no}: FAILED — {e}")

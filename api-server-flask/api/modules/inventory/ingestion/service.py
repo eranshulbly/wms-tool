@@ -85,26 +85,56 @@ def doc_type_label(doc_type):
 
 
 # ── Batch identity ───────────────────────────────────────────────────────────
-def batch_hash(sku_id, batch_number, expiry_date):
-    """Identity of a physical batch: SKU + batch number + expiry. MRP is NOT included.
+def batch_hash(sku_id, batch_number):
+    """Identity of a physical batch: SKU + batch number. MRP and expiry are NOT included.
 
-    Batch number plus expiry is the regulatory identity — one manufacturing lot, one
-    recall unit — which is the grain FEFO and returns both need. MRP is commercial: the
-    same lot can be re-priced without becoming a different lot, so it lives in
-    fc_sku_price_details. Including it would also fork a phantom batch on every credit
-    note, since the supplier prints MRP 0.00 on all of them.
+    Batch number, on a specific SKU, is the regulatory identity — one manufacturing lot,
+    one recall unit. Expiry is an ATTRIBUTE of that lot, not part of its identity: Cadila's
+    own documents disagree with each other on it often enough that hashing it in would
+    fork one physical lot into two sku_batch rows the moment a document prints the wrong
+    one. Batch EA26223 did exactly this — 05/2028 on the credit note and the PO receipts
+    export, 07/2028 on the tax invoice that actually received it — which would otherwise
+    create a phantom batch with a price but no stock ever received into it, and make a
+    perfectly in-stock batch look "not received" to any order line that happened to name
+    the other expiry (see product_upload_business._resolve_batch_ids).
+
+    MRP is excluded for the same shape of reason: the same lot can be re-priced without
+    becoming a different lot, so it lives in fc_sku_price_details, and including it would
+    fork a phantom batch on every credit note, since the supplier prints MRP 0.00 on all
+    of them.
     """
-    key = f"{int(sku_id)}|{(batch_number or '').strip().upper()}|{expiry_date or ''}"
+    key = f"{int(sku_id)}|{(batch_number or '').strip().upper()}"
     return hashlib.sha256(key.encode('utf-8')).hexdigest()
 
 
 def resolve_batch(cursor, company_id, sku_id, batch_number, expiry_date):
-    """Reuse the batch when it already exists, otherwise create it."""
-    digest = batch_hash(sku_id, batch_number, expiry_date)
-    cursor.execute("SELECT id FROM sku_batch WHERE batch_hash = %s", (digest,))
+    """Reuse the batch when it already exists, otherwise create it.
+
+    Returns (batch_id, expiry_conflict). expiry_conflict is a warning string when this
+    document's expiry disagrees with what is already on file for the batch, else None.
+
+    The stored expiry is never overwritten by a later document: the document that first
+    received the batch is the more trustworthy source (the actual goods-receipt
+    paperwork), and a disagreement is far more likely to be a Cadila printing error on
+    the LATER document than a correction — so it is surfaced for a human to check
+    against the physical batch, not silently applied.
+    """
+    digest = batch_hash(sku_id, batch_number)
+    cursor.execute(
+        """SELECT id, JSON_UNQUOTE(JSON_EXTRACT(batch_params, '$.expiry')) AS expiry
+             FROM sku_batch WHERE batch_hash = %s""", (digest,))
     row = cursor.fetchone()
     if row:
-        return row['id'] if isinstance(row, dict) else row[0]
+        batch_id = row['id'] if isinstance(row, dict) else row[0]
+        stored_expiry = row['expiry'] if isinstance(row, dict) else row[1]
+        new_expiry = str(expiry_date) if expiry_date else None
+        conflict = None
+        if stored_expiry and stored_expiry != 'null' and new_expiry and stored_expiry != new_expiry:
+            conflict = (
+                f"batch {batch_number}: this document prints expiry {new_expiry}, but "
+                f"{stored_expiry} is already on file for it — kept {stored_expiry}; "
+                "check the source documents")
+        return batch_id, conflict
 
     cursor.execute(
         """INSERT INTO sku_batch (sku_id, batch_hash, batch_params, company_id,
@@ -115,7 +145,7 @@ def resolve_batch(cursor, company_id, sku_id, batch_number, expiry_date):
             'expiry': str(expiry_date) if expiry_date else None,
             'source': 'cadila_ingestion',
         }), company_id))
-    return cursor.lastrowid
+    return cursor.lastrowid, None
 
 
 # ── Product: reuse or create ─────────────────────────────────────────────────
@@ -384,8 +414,10 @@ def _ingest_document(doc, company_id, warehouse_id, user='system', movement_effe
             sku_id, how = resolve_or_create_product(cur, company_id, prefix, line)
             if how == 'created':
                 created_products.append(line['raw_product_name'])
-            batch_id = resolve_batch(cur, company_id, sku_id, line['raw_batch'],
-                                     line['expiry_date'])
+            batch_id, expiry_conflict = resolve_batch(cur, company_id, sku_id,
+                                                       line['raw_batch'], line['expiry_date'])
+            if expiry_conflict:
+                doc['warnings'].append(expiry_conflict)
 
             if moves_stock:
                 if not duplicate:

@@ -44,10 +44,17 @@ def _money(value):
         return None
 
 
-def _batch_key(product_id, batch_number, expiry_date):
-    """Identity of a batch, matching how inventory ingestion hashes it."""
+def _batch_key(product_id, batch_number):
+    """Identity of a batch, matching how inventory ingestion hashes it.
+
+    Expiry is deliberately NOT part of this — see service.batch_hash. An order sheet
+    that prints a different expiry for the batch than the GRN that received it (Cadila's
+    own documents disagree with each other on this often enough) must still find the
+    batch; otherwise a perfectly in-stock batch is reported as "not in inventory" for no
+    reason but a mismatched date.
+    """
     from api.modules.inventory.ingestion.service import batch_hash
-    return batch_hash(product_id, batch_number, expiry_date)
+    return batch_hash(product_id, batch_number)
 
 
 def _resolve_batch_ids(order_products, products_map):
@@ -59,10 +66,10 @@ def _resolve_batch_ids(order_products, products_map):
     """
     hashes = set()
     for lines in order_products.values():
-        for part_no, _desc, _qty, batch_number, expiry_date, _mrp, _rate in lines:
+        for part_no, _desc, _qty, batch_number, _expiry_date, _mrp, _rate in lines:
             product = products_map.get(part_no)
             if product and batch_number:
-                hashes.add(_batch_key(product['product_id'], batch_number, expiry_date))
+                hashes.add(_batch_key(product['product_id'], batch_number))
     if not hashes:
         return {}
     from api.shared.db_manager import mysql_manager
@@ -215,7 +222,7 @@ def process_product_upload_dataframe(df, company_id, _user_id, _upload_batch_id=
 
     pop_rows = []
     for pot_id, lines in order_products.items():
-        for part_no, _description, qty, batch_number, expiry_date, mrp, rate in lines:
+        for part_no, _description, qty, batch_number, _expiry_date, mrp, rate in lines:
             product = products_map.get(part_no)
             if not product:
                 error_rows.append({
@@ -227,7 +234,7 @@ def process_product_upload_dataframe(df, company_id, _user_id, _upload_batch_id=
             batch_id = None
             if batch_number:
                 batch_id = batch_ids.get(
-                    _batch_key(product['product_id'], batch_number, expiry_date))
+                    _batch_key(product['product_id'], batch_number))
                 if batch_id is None:
                     error_rows.append({
                         'order_id': '', 'name': part_no,
