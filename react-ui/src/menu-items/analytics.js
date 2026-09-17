@@ -44,6 +44,14 @@ const analytics = {
             url: '/analytics/order-margin',
             icon: icons.IconReceipt2,
             breadcrumbs: false
+        },
+        {
+            id: 'analytics-sales-report',
+            title: 'Sales Report',
+            type: 'item',
+            url: '/analytics/sales-report',
+            icon: icons.IconReportAnalytics,
+            breadcrumbs: false
         }
     ]
 };

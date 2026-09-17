@@ -30,6 +30,7 @@ const InventoryReport = Loadable(lazy(() => import('../views/analytics/Inventory
 const StockMovement = Loadable(lazy(() => import('../views/analytics/StockMovement')));
 const SalesExecutives = Loadable(lazy(() => import('../views/analytics/SalesExecutives')));
 const OrderMargin = Loadable(lazy(() => import('../views/analytics/OrderMargin')));
+const SalesReport = Loadable(lazy(() => import('../views/analytics/SalesReport')));
 
 // admin routing
 const AdminControls = Loadable(lazy(() => import('../views/admin/AdminControls')));
@@ -62,6 +63,7 @@ const MainRoutes = () => {
                 '/analytics/stock-movement',
                 '/analytics/sales-executives',
                 '/analytics/order-margin',
+                '/analytics/sales-report',
                 // Admin routes
                 '/admin-controls',
                 // Supplier document ingestion (top-level, admin only)
@@ -124,6 +126,17 @@ const MainRoutes = () => {
                             <AuthGuard>
                                 <AdminGuard>
                                     <OrderMargin />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+                    {/* Sales Report — exposes landed cost, so admin-only too. */}
+                    <Route
+                        path="/analytics/sales-report"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard>
+                                    <SalesReport />
                                 </AdminGuard>
                             </AuthGuard>
                         )}
