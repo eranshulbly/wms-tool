@@ -27,6 +27,7 @@ import { makeStyles } from '@material-ui/styles';
 import { IconRefresh, IconDownload } from '@tabler/icons';
 import api from '../../../services/api';
 import { useWarehouse } from '../../../context/WarehouseContext';
+import { useColumnSearch } from '../../../hooks/useColumnSearch';
 
 const BASE = 'admin/inventory/analytics/movement';
 const BATCH_BASE = 'admin/inventory/analytics/batches';
@@ -97,6 +98,15 @@ const useStyles = makeStyles((theme) => ({
     background: '#fff',
     minWidth: 78,
   },
+  // Two header rows both stick — see Batch Costing, which established this pattern.
+  filterCell: {
+    position: 'sticky',
+    top: 37,
+    zIndex: 3,
+    background: '#fff',
+    paddingTop: 0,
+    paddingBottom: 6,
+  },
   scroll: { maxHeight: '62vh' },
   tile: { padding: 12, height: '100%' },
   tileValue: { fontWeight: 600, lineHeight: 1.2 },
@@ -149,7 +159,6 @@ const StockMovement = () => {
 
   const [batchRows, setBatchRows] = useState([]);
   const [batchLoading, setBatchLoading] = useState(false);
-  const [batchSearch, setBatchSearch] = useState('');
   const [batchSort, setBatchSort] = useState({ key: 'months_to_expiry', dir: 'asc' });
 
   const load = useCallback(async () => {
@@ -247,21 +256,14 @@ const StockMovement = () => {
   const toggleSort = (key) =>
     setSort((s) => ({ key, dir: s.key === key && s.dir === 'desc' ? 'asc' : 'desc' }));
 
-  const visibleBatches = useMemo(() => {
-    const term = batchSearch.trim().toLowerCase();
-    let out = batchRows;
-    if (term) {
-      out = out.filter((r) =>
-        [r.product_name, r.sku_code, r.batch_number, r.category]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase()
-          .includes(term)
-      );
-    }
+  // Per-column search, layered on top of the band/product filter and sort above — see
+  // useColumnSearch for why each column gets its own box rather than one shared search.
+  const productSearch = useColumnSearch(visible, COLUMNS, render);
+
+  const sortedBatches = useMemo(() => {
     const { key, dir } = batchSort;
     const sign = dir === 'asc' ? 1 : -1;
-    return [...out].sort((a, b) => {
+    return [...batchRows].sort((a, b) => {
       const x = a[key];
       const y = b[key];
       if (x === null || x === undefined) return y === null || y === undefined ? 0 : 1;
@@ -269,7 +271,10 @@ const StockMovement = () => {
       if (typeof x === 'number' && typeof y === 'number') return (x - y) * sign;
       return String(x).localeCompare(String(y)) * sign;
     });
-  }, [batchRows, batchSearch, batchSort]);
+  }, [batchRows, batchSort]);
+
+  const batchSearchCols = useColumnSearch(sortedBatches, BATCH_COLUMNS, render);
+  const visibleBatches = batchSearchCols.visible;
 
   const toggleBatchSort = (key) =>
     setBatchSort((s) => ({ key, dir: s.key === key && s.dir === 'desc' ? 'asc' : 'desc' }));
@@ -293,7 +298,7 @@ const StockMovement = () => {
     const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const csv = [
       ['SKU code', ...COLUMNS.map((c) => c.label)].map(esc).join(','),
-      ...visible.map((r) => [r.sku_code, ...COLUMNS.map((c) => r[c.key])].map(esc).join(',')),
+      ...productSearch.visible.map((r) => [r.sku_code, ...COLUMNS.map((c) => r[c.key])].map(esc).join(',')),
     ].join('\n');
     const company = companies.find((c) => c.id === selectedCompany);
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
@@ -443,7 +448,7 @@ const StockMovement = () => {
                 variant="outlined"
                 startIcon={<IconDownload size={16} />}
                 onClick={exportCsv}
-                disabled={!visible.length}
+                disabled={!productSearch.visible.length}
                 style={{ marginRight: 8 }}
               >
                 Export CSV
@@ -531,6 +536,20 @@ const StockMovement = () => {
                 </TableCell>
               ))}
             </TableRow>
+            <TableRow>
+              {COLUMNS.map((c) => (
+                <TableCell key={c.key} className={classes.filterCell}>
+                  <TextField
+                    variant="standard"
+                    placeholder="Search"
+                    value={productSearch.filters[c.key] || ''}
+                    onChange={(e) => productSearch.setFilter(c.key, e.target.value)}
+                    InputProps={{ style: { fontSize: '0.75rem' } }}
+                    fullWidth
+                  />
+                </TableCell>
+              ))}
+            </TableRow>
           </TableHead>
           <TableBody>
             {loading && (
@@ -540,7 +559,7 @@ const StockMovement = () => {
                 </TableCell>
               </TableRow>
             )}
-            {!loading && visible.length === 0 && (
+            {!loading && productSearch.visible.length === 0 && (
               <TableRow>
                 <TableCell colSpan={COLUMNS.length} align="center" className={classes.muted}>
                   {!selectedCompany
@@ -552,7 +571,7 @@ const StockMovement = () => {
               </TableRow>
             )}
             {!loading &&
-              visible.map((r) => (
+              productSearch.visible.map((r) => (
                 <TableRow key={r.product_id} hover>
                   {COLUMNS.map((c) => {
                     if (c.type === 'band') {
@@ -609,7 +628,7 @@ const StockMovement = () => {
 
       {data && (
         <Typography variant="caption" className={classes.muted} display="block" sx={{ mt: 1 }}>
-          Showing {visible.length} of {rows.length} products · sale rate measured over the last{' '}
+          Showing {productSearch.visible.length} of {rows.length} products · sale rate measured over the last{' '}
           {data.window_days} days · as of {data.as_of}. Cover is stock ÷ sale rate. Value at risk is
           the stock that will still be on hand when the earliest batch in stock expires, at landed
           cost — blank where there is no sale history to project from.
@@ -627,20 +646,21 @@ const StockMovement = () => {
       <Paper variant="outlined" className={classes.section} style={{ padding: 12 }}>
         <Grid container spacing={2} alignItems="center">
           <Grid item xs={12} sm={6}>
-            <TextField
-              fullWidth
-              size="small"
-              label="Search product / batch"
-              placeholder="Product, SKU, batch number or category"
-              value={batchSearch}
-              onChange={(e) => setBatchSearch(e.target.value)}
-            />
+            <Typography variant="body2" className={classes.muted}>
+              {batchLoading
+                ? 'Loading…'
+                : `${visibleBatches.length}${batchSearchCols.hasActive ? ` of ${batchRows.length}` : ''} batch${
+                    visibleBatches.length === 1 ? '' : 'es'
+                  }`}
+            </Typography>
           </Grid>
           <Grid item xs={12} sm={6}>
             <Box display="flex" alignItems="center" justifyContent="flex-end">
-              <Typography variant="body2" className={classes.muted} sx={{ mr: 2 }}>
-                {batchLoading ? 'Loading…' : `${visibleBatches.length} of ${batchRows.length} batches`}
-              </Typography>
+              {batchSearchCols.hasActive && (
+                <Button size="small" onClick={batchSearchCols.clearFilters} style={{ marginRight: 8 }}>
+                  Clear search
+                </Button>
+              )}
               <Button
                 size="small"
                 variant="outlined"
@@ -683,6 +703,20 @@ const StockMovement = () => {
                   >
                     {c.label}
                   </TableSortLabel>
+                </TableCell>
+              ))}
+            </TableRow>
+            <TableRow>
+              {BATCH_COLUMNS.map((c) => (
+                <TableCell key={c.key} className={classes.filterCell}>
+                  <TextField
+                    variant="standard"
+                    placeholder="Search"
+                    value={batchSearchCols.filters[c.key] || ''}
+                    onChange={(e) => batchSearchCols.setFilter(c.key, e.target.value)}
+                    InputProps={{ style: { fontSize: '0.75rem' } }}
+                    fullWidth
+                  />
                 </TableCell>
               ))}
             </TableRow>

@@ -27,6 +27,7 @@ import { makeStyles } from '@material-ui/styles';
 import { IconRefresh, IconDownload, IconAlertTriangle, IconX } from '@tabler/icons';
 import api from '../../../services/api';
 import { useWarehouse } from '../../../context/WarehouseContext';
+import { useColumnSearch } from '../../../hooks/useColumnSearch';
 
 const BASE = 'admin/order-margin';
 
@@ -72,6 +73,14 @@ const useStyles = makeStyles((theme) => ({
     background: '#fff',
   },
   scroll: { maxHeight: '60vh' },
+  filterCell: {
+    position: 'sticky',
+    top: 37,
+    zIndex: 3,
+    background: '#fff',
+    paddingTop: 0,
+    paddingBottom: 6,
+  },
   warn: { color: '#b26a00', display: 'inline-flex', alignItems: 'center', gap: 4 },
   statCard: { padding: 16, height: '100%' },
   statLabel: { color: '#7a869a', fontSize: 13 },
@@ -182,6 +191,9 @@ const OrderMargin = () => {
 
   const filtered = !!(from || to);
 
+  // Per-column search, layered on top of the date-range filter above.
+  const orderSearch = useColumnSearch(orders, ORDER_COLUMNS, render);
+
   const openOrder = async (order) => {
     setDetailOrderId(order.potential_order_id);
     setDetail(null);
@@ -211,7 +223,7 @@ const OrderMargin = () => {
     const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const csv = [
       ORDER_COLUMNS.map((c) => esc(c.label)).join(','),
-      ...orders.map((r) => ORDER_COLUMNS.map((c) => esc(r[c.key])).join(',')),
+      ...orderSearch.visible.map((r) => ORDER_COLUMNS.map((c) => esc(r[c.key])).join(',')),
     ].join('\n');
     const company = companies.find((c) => c.id === selectedCompany);
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
@@ -293,7 +305,7 @@ const OrderMargin = () => {
                 size="small"
                 startIcon={<IconDownload size={16} />}
                 onClick={exportCsv}
-                disabled={!orders.length}
+                disabled={!orderSearch.visible.length}
               >
                 Export
               </Button>
@@ -359,18 +371,36 @@ const OrderMargin = () => {
                   </TableCell>
                 ))}
               </TableRow>
+              <TableRow>
+                {ORDER_COLUMNS.map((c) => (
+                  <TableCell key={c.key} className={classes.filterCell}>
+                    <TextField
+                      variant="standard"
+                      placeholder="Search"
+                      value={orderSearch.filters[c.key] || ''}
+                      onChange={(e) => orderSearch.setFilter(c.key, e.target.value)}
+                      InputProps={{ style: { fontSize: '0.75rem' } }}
+                      fullWidth
+                    />
+                  </TableCell>
+                ))}
+              </TableRow>
             </TableHead>
             <TableBody>
-              {!orders.length && (
+              {!orderSearch.visible.length && (
                 <TableRow>
                   <TableCell colSpan={ORDER_COLUMNS.length} align="center">
                     <Typography variant="body2" className={classes.muted}>
-                      {selectedCompany ? 'No invoiced orders in this window.' : 'Select a company.'}
+                      {!selectedCompany
+                        ? 'Select a company.'
+                        : !orders.length
+                        ? 'No invoiced orders in this window.'
+                        : 'No rows match the current search.'}
                     </Typography>
                   </TableCell>
                 </TableRow>
               )}
-              {orders.map((r) => (
+              {orderSearch.visible.map((r) => (
                 <TableRow
                   key={r.potential_order_id}
                   hover

@@ -28,6 +28,7 @@ import { makeStyles } from '@material-ui/styles';
 import { IconRefresh, IconDownload, IconX } from '@tabler/icons';
 import api from '../../../services/api';
 import { useWarehouse } from '../../../context/WarehouseContext';
+import { useColumnSearch } from '../../../hooks/useColumnSearch';
 
 const BASE = 'admin/sales-report';
 
@@ -91,6 +92,14 @@ const useStyles = makeStyles((theme) => ({
     background: '#fff',
   },
   scroll: { maxHeight: '55vh' },
+  filterCell: {
+    position: 'sticky',
+    top: 37,
+    zIndex: 3,
+    background: '#fff',
+    paddingTop: 0,
+    paddingBottom: 6,
+  },
   statCard: { padding: 16, height: '100%' },
   statLabel: { color: '#7a869a', fontSize: 13 },
   statValue: { fontWeight: 600, marginTop: 4 },
@@ -230,6 +239,14 @@ const SalesReport = () => {
   const columns = tab === 'products' ? PRODUCT_COLUMNS : DEALER_COLUMNS;
   const rows = tab === 'products' ? products : dealers;
 
+  // Separate search state per tab (not one shared instance) — Products and Dealers
+  // share some column keys (revenue, margin, orders...), and reusing one filter set
+  // across the switch would silently carry a "Revenue > 50000" search from one table
+  // into the other instead of starting the new tab clean.
+  const productSearch = useColumnSearch(products, PRODUCT_COLUMNS, render);
+  const dealerSearch = useColumnSearch(dealers, DEALER_COLUMNS, render);
+  const activeSearch = tab === 'products' ? productSearch : dealerSearch;
+
   const openDrill = (kind, row) => {
     if (kind === 'product') {
       const rows2 = groupLines(
@@ -252,7 +269,7 @@ const SalesReport = () => {
     const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const csv = [
       columns.map((c) => esc(c.label)).join(','),
-      ...rows.map((r) => columns.map((c) => esc(r[c.key])).join(',')),
+      ...activeSearch.visible.map((r) => columns.map((c) => esc(r[c.key])).join(',')),
     ].join('\n');
     const company = companies.find((c) => c.id === selectedCompany);
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
@@ -326,7 +343,7 @@ const SalesReport = () => {
                 size="small"
                 startIcon={<IconDownload size={16} />}
                 onClick={exportCsv}
-                disabled={!rows.length}
+                disabled={!activeSearch.visible.length}
               >
                 Export
               </Button>
@@ -460,18 +477,36 @@ const SalesReport = () => {
                   </TableCell>
                 ))}
               </TableRow>
+              <TableRow>
+                {columns.map((c) => (
+                  <TableCell key={c.key} className={classes.filterCell}>
+                    <TextField
+                      variant="standard"
+                      placeholder="Search"
+                      value={activeSearch.filters[c.key] || ''}
+                      onChange={(e) => activeSearch.setFilter(c.key, e.target.value)}
+                      InputProps={{ style: { fontSize: '0.75rem' } }}
+                      fullWidth
+                    />
+                  </TableCell>
+                ))}
+              </TableRow>
             </TableHead>
             <TableBody>
-              {!rows.length && (
+              {!activeSearch.visible.length && (
                 <TableRow>
                   <TableCell colSpan={columns.length} align="center">
                     <Typography variant="body2" className={classes.muted}>
-                      {selectedCompany ? 'No sales in this window.' : 'Select a company.'}
+                      {!selectedCompany
+                        ? 'Select a company.'
+                        : !rows.length
+                        ? 'No sales in this window.'
+                        : 'No rows match the current search.'}
                     </Typography>
                   </TableCell>
                 </TableRow>
               )}
-              {rows.map((r) => (
+              {activeSearch.visible.map((r) => (
                 <TableRow
                   key={r.id}
                   hover

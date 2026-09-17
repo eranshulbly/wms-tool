@@ -24,6 +24,7 @@ import { makeStyles } from '@material-ui/styles';
 import { IconRefresh, IconDownload, IconMapPin, IconAlertTriangle } from '@tabler/icons';
 import api from '../../../services/api';
 import { useWarehouse } from '../../../context/WarehouseContext';
+import { useColumnSearch } from '../../../hooks/useColumnSearch';
 
 const BASE = 'admin/sales/analytics';
 
@@ -66,6 +67,14 @@ const useStyles = makeStyles((theme) => ({
     top: 0,
     zIndex: 3,
     background: '#fff',
+  },
+  filterCell: {
+    position: 'sticky',
+    top: 37,
+    zIndex: 3,
+    background: '#fff',
+    paddingTop: 0,
+    paddingBottom: 6,
   },
   scroll: { maxHeight: '42vh' },
   warn: { color: '#b26a00', display: 'inline-flex', alignItems: 'center', gap: 4 },
@@ -157,6 +166,21 @@ const SalesExecutives = () => {
     () => (focus ? visits.filter((v) => v.user_id === focus) : visits),
     [visits, focus]
   );
+
+  // Per-column search, one box per header — see useColumnSearch. Layered on top of the
+  // focus (click-a-row) filter for the visit log, not a replacement for it.
+  const execSearch = useColumnSearch(execs, SUMMARY_COLUMNS, render);
+  // 'location' has no single field of its own (the cell is built from lat/lng) — a
+  // synthetic column is added just so its search box has something real to match.
+  const searchableVisits = useMemo(
+    () =>
+      shownVisits.map((v) => ({
+        ...v,
+        location: v.check_in_lat != null ? `${v.check_in_lat}, ${v.check_in_lng}` : '',
+      })),
+    [shownVisits]
+  );
+  const visitSearch = useColumnSearch(searchableVisits, VISIT_COLUMNS, render);
 
   const focusName = useMemo(
     () => execs.find((e) => e.user_id === focus)?.executive_name,
@@ -260,8 +284,8 @@ const SalesExecutives = () => {
               <Button
                 size="small"
                 startIcon={<IconDownload size={16} />}
-                onClick={() => exportCsv(SUMMARY_COLUMNS, execs, 'Executive_Summary')}
-                disabled={!execs.length}
+                onClick={() => exportCsv(SUMMARY_COLUMNS, execSearch.visible, 'Executive_Summary')}
+                disabled={!execSearch.visible.length}
               >
                 Export
               </Button>
@@ -290,20 +314,36 @@ const SalesExecutives = () => {
                     </TableCell>
                   ))}
                 </TableRow>
+                <TableRow>
+                  {SUMMARY_COLUMNS.map((c) => (
+                    <TableCell key={c.key} className={classes.filterCell}>
+                      <TextField
+                        variant="standard"
+                        placeholder="Search"
+                        value={execSearch.filters[c.key] || ''}
+                        onChange={(e) => execSearch.setFilter(c.key, e.target.value)}
+                        InputProps={{ style: { fontSize: '0.75rem' } }}
+                        fullWidth
+                      />
+                    </TableCell>
+                  ))}
+                </TableRow>
               </TableHead>
               <TableBody>
-                {!execs.length && (
+                {!execSearch.visible.length && (
                   <TableRow>
                     <TableCell colSpan={SUMMARY_COLUMNS.length} align="center">
                       <Typography variant="body2" className={classes.muted}>
-                        {selectedCompany
+                        {!selectedCompany
+                          ? 'Select a company.'
+                          : !execs.length
                           ? 'No sales executives with activity in this window.'
-                          : 'Select a company.'}
+                          : 'No rows match the current search.'}
                       </Typography>
                     </TableCell>
                   </TableRow>
                 )}
-                {execs.map((r) => (
+                {execSearch.visible.map((r) => (
                   <TableRow
                     key={r.user_id}
                     hover
@@ -367,8 +407,8 @@ const SalesExecutives = () => {
             <Button
               size="small"
               startIcon={<IconDownload size={16} />}
-              onClick={() => exportCsv(VISIT_COLUMNS, shownVisits, 'Visit_Log')}
-              disabled={!shownVisits.length}
+              onClick={() => exportCsv(VISIT_COLUMNS, visitSearch.visible, 'Visit_Log')}
+              disabled={!visitSearch.visible.length}
             >
               Export
             </Button>
@@ -388,18 +428,32 @@ const SalesExecutives = () => {
                     </TableCell>
                   ))}
                 </TableRow>
+                <TableRow>
+                  {VISIT_COLUMNS.map((c) => (
+                    <TableCell key={c.key} className={classes.filterCell}>
+                      <TextField
+                        variant="standard"
+                        placeholder="Search"
+                        value={visitSearch.filters[c.key] || ''}
+                        onChange={(e) => visitSearch.setFilter(c.key, e.target.value)}
+                        InputProps={{ style: { fontSize: '0.75rem' } }}
+                        fullWidth
+                      />
+                    </TableCell>
+                  ))}
+                </TableRow>
               </TableHead>
               <TableBody>
-                {!shownVisits.length && (
+                {!visitSearch.visible.length && (
                   <TableRow>
                     <TableCell colSpan={VISIT_COLUMNS.length} align="center">
                       <Typography variant="body2" className={classes.muted}>
-                        No visits in this window.
+                        {!shownVisits.length ? 'No visits in this window.' : 'No rows match the current search.'}
                       </Typography>
                     </TableCell>
                   </TableRow>
                 )}
-                {shownVisits.map((v) => (
+                {visitSearch.visible.map((v) => (
                   <TableRow key={v.visit_id} hover>
                     <TableCell>{v.executive_name}</TableCell>
                     <TableCell>{v.dealer_name}</TableCell>
