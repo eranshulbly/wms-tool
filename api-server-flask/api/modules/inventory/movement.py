@@ -34,10 +34,6 @@ DAYS_PER_MONTH = 30.4375
 # Bounded so the query prunes partitions instead of scanning the archive.
 HISTORY_MONTHS = 24
 
-# A rate measured over a handful of days extrapolates wildly — one order becomes a
-# year's demand. Nothing is projected from less than this much history.
-MIN_OBSERVED_DAYS = 7
-
 WINDOW_CHOICES = (30, 60, 90, 180, 365)
 
 # Ordered worst-first: this is also the order the UI lists them in, and the order that
@@ -231,7 +227,7 @@ def _row(pid, st, mv, prod, today, window_days):
     # no history at all means nothing can be projected from it yet.
     ever_sold = out_history > 0
     rate_month = None
-    if ever_sold and observed_days >= MIN_OBSERVED_DAYS:
+    if ever_sold:
         rate_month = out_window / observed_days * DAYS_PER_MONTH
 
     months_cover = None
