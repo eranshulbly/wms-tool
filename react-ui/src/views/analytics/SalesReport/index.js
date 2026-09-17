@@ -22,6 +22,7 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
+  Autocomplete,
 } from '@material-ui/core';
 import { makeStyles } from '@material-ui/styles';
 import { IconRefresh, IconDownload, IconX } from '@tabler/icons';
@@ -183,6 +184,8 @@ const SalesReport = () => {
 
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
+  const [productFilter, setProductFilter] = useState([]); // selected product_options
+  const [dealerFilter, setDealerFilter] = useState([]); // selected dealer_options
   const [tab, setTab] = useState('products');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -199,6 +202,8 @@ const SalesReport = () => {
       const params = { company_id: selectedCompany };
       if (from) params.from = from;
       if (to) params.to = to;
+      if (productFilter.length) params.product_ids = productFilter.map((p) => p.id).join(',');
+      if (dealerFilter.length) params.dealer_ids = dealerFilter.map((d) => d.id).join(',');
       const res = await api.get(BASE, { params });
       setData(res.data);
     } catch (e) {
@@ -210,7 +215,7 @@ const SalesReport = () => {
     } finally {
       setLoading(false);
     }
-  }, [selectedCompany, from, to]);
+  }, [selectedCompany, from, to, productFilter, dealerFilter]);
 
   useEffect(() => {
     load();
@@ -326,6 +331,39 @@ const SalesReport = () => {
                 Export
               </Button>
             </Box>
+          </Grid>
+        </Grid>
+
+        <Grid container spacing={2} style={{ marginTop: 4 }}>
+          <Grid item xs={12} sm={6}>
+            <Autocomplete
+              multiple
+              size="small"
+              options={data?.product_options || []}
+              value={productFilter}
+              onChange={(e, v) => setProductFilter(v)}
+              filterSelectedOptions
+              getOptionLabel={(o) => o.name || ''}
+              isOptionEqualToValue={(o, v) => o.id === v.id}
+              renderInput={(params) => (
+                <TextField {...params} label="Filter by product" placeholder={productFilter.length ? '' : 'All products'} />
+              )}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <Autocomplete
+              multiple
+              size="small"
+              options={data?.dealer_options || []}
+              value={dealerFilter}
+              onChange={(e, v) => setDealerFilter(v)}
+              filterSelectedOptions
+              getOptionLabel={(o) => o.name || ''}
+              isOptionEqualToValue={(o, v) => o.id === v.id}
+              renderInput={(params) => (
+                <TextField {...params} label="Filter by dealer" placeholder={dealerFilter.length ? '' : 'All dealers'} />
+              )}
+            />
           </Grid>
         </Grid>
       </Paper>

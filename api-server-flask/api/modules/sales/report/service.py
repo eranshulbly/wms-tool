@@ -139,8 +139,16 @@ def _monthly_trend(lines):
     return out
 
 
-def sales_report(company_ids, date_from=None, date_to=None):
+def sales_report(company_ids, date_from=None, date_to=None, product_ids=None, dealer_ids=None):
     """Product and dealer sales breakdowns over invoiced orders in range.
+
+    product_ids / dealer_ids narrow the report to those entities — applied after the
+    date window, so `*_options` (the full picklist for the filter dropdowns) reflects
+    everything the date range has, not just what survived the OTHER filter. Margin is
+    never recomputed client-side (see order_margin.py's own note on this): a product
+    or dealer filter is just a narrower `lines` list fed through the same order_totals
+    the unfiltered report uses, so a filtered view can never disagree with what it
+    would show unfiltered.
 
     `lines` comes back too — the raw, filtered line list — so the UI can drill a
     product down to the dealers who bought it (or a dealer down to what they bought)
@@ -150,12 +158,13 @@ def sales_report(company_ids, date_from=None, date_to=None):
     if not headers:
         empty = order_totals([])
         return {'summary': empty, 'products': [], 'dealers': [], 'trend': [],
-                'lines': [], 'order_count': 0, 'dealer_count': 0, 'product_count': 0}
+                'lines': [], 'order_count': 0, 'dealer_count': 0, 'product_count': 0,
+                'product_options': [], 'dealer_options': []}
 
     header_by_id = {h['potential_order_id']: h for h in headers}
     raw_lines = _order_lines(list(header_by_id))
 
-    lines = []
+    date_filtered = []
     for l in raw_lines:
         h = header_by_id.get(l['potential_order_id'])
         if not h:
@@ -163,7 +172,7 @@ def sales_report(company_ids, date_from=None, date_to=None):
         invoice_date = _date_str(h['invoice_date'])
         if not _in_range(invoice_date, date_from, date_to):
             continue
-        lines.append({
+        date_filtered.append({
             'potential_order_id': l['potential_order_id'],
             'product_id': l['product_id'],
             'product_name': l['product_name'],
@@ -181,6 +190,22 @@ def sales_report(company_ids, date_from=None, date_to=None):
             'executive_name': h['executive_name'],
         })
 
+    product_options = sorted(
+        {(l['product_id'], l['product_name'], l['sku_code']) for l in date_filtered},
+        key=lambda x: (x[1] or ''))
+    dealer_options = sorted(
+        {(l['dealer_id'], l['dealer_name']) for l in date_filtered
+         if l['dealer_id'] is not None},
+        key=lambda x: (x[1] or ''))
+
+    lines = date_filtered
+    if product_ids:
+        wanted_p = set(product_ids)
+        lines = [l for l in lines if l['product_id'] in wanted_p]
+    if dealer_ids:
+        wanted_d = set(dealer_ids)
+        lines = [l for l in lines if l['dealer_id'] in wanted_d]
+
     return {
         'summary': order_totals(lines),
         'order_count': len({l['potential_order_id'] for l in lines}),
@@ -192,4 +217,6 @@ def sales_report(company_ids, date_from=None, date_to=None):
                               ('dealer_name', 'town', 'executive_name')),
         'trend': _monthly_trend(lines),
         'lines': lines,
+        'product_options': [{'id': i, 'name': n, 'sku_code': s} for i, n, s in product_options],
+        'dealer_options': [{'id': i, 'name': n} for i, n in dealer_options],
     }
