@@ -94,7 +94,7 @@ const dt = (v) => {
 
 const render = (type, v) => {
   if (v === null || v === undefined || v === '') return '—';
-  if (type === 'money') return nf2.format(Number(v));
+  if (type === 'money') return `₹ ${nf2.format(Number(v))}`;
   if (type === 'int') return Number(v).toLocaleString('en-IN');
   if (type === 'duration') return duration(v);
   if (type === 'datetime') return dt(v);

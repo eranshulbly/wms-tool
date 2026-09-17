@@ -41,8 +41,8 @@ const PRODUCT_COLUMNS = [
   { key: 'margin', label: 'Margin', type: 'money' },
   { key: 'margin_pct', label: 'Margin %', type: 'pct' },
   { key: 'dealers_reached', label: 'Dealers', type: 'int' },
-  { key: 'orders', label: 'Orders', type: 'int' },
-  { key: 'last_sale', label: 'Last Sale', type: 'date' },
+  { key: 'orders', label: 'Invoiced Orders', type: 'int' },
+  { key: 'last_sale', label: 'Last Invoice Date', type: 'date' },
 ];
 
 const DEALER_COLUMNS = [
@@ -54,8 +54,8 @@ const DEALER_COLUMNS = [
   { key: 'margin', label: 'Margin', type: 'money' },
   { key: 'margin_pct', label: 'Margin %', type: 'pct' },
   { key: 'products_bought', label: 'Products', type: 'int' },
-  { key: 'orders', label: 'Orders', type: 'int' },
-  { key: 'last_sale', label: 'Last Sale', type: 'date' },
+  { key: 'orders', label: 'Invoiced Orders', type: 'int' },
+  { key: 'last_sale', label: 'Last Invoice Date', type: 'date' },
 ];
 
 const DRILL_PRODUCT_COLUMNS = [
@@ -64,8 +64,8 @@ const DRILL_PRODUCT_COLUMNS = [
   { key: 'quantity', label: 'Qty', type: 'int' },
   { key: 'revenue', label: 'Revenue', type: 'money' },
   { key: 'avg_rate', label: 'Avg Rate', type: 'money' },
-  { key: 'orders', label: 'Orders', type: 'int' },
-  { key: 'last_sale', label: 'Last Sale', type: 'date' },
+  { key: 'orders', label: 'Invoiced Orders', type: 'int' },
+  { key: 'last_sale', label: 'Last Invoice Date', type: 'date' },
 ];
 
 const DRILL_DEALER_COLUMNS = [
@@ -74,8 +74,8 @@ const DRILL_DEALER_COLUMNS = [
   { key: 'quantity', label: 'Qty', type: 'int' },
   { key: 'revenue', label: 'Revenue', type: 'money' },
   { key: 'avg_rate', label: 'Avg Rate', type: 'money' },
-  { key: 'orders', label: 'Orders', type: 'int' },
-  { key: 'last_sale', label: 'Last Sale', type: 'date' },
+  { key: 'orders', label: 'Invoiced Orders', type: 'int' },
+  { key: 'last_sale', label: 'Last Invoice Date', type: 'date' },
 ];
 
 const useStyles = makeStyles((theme) => ({
@@ -109,7 +109,7 @@ const dt = (v) => {
 
 const render = (type, v) => {
   if (v === null || v === undefined || v === '') return '—';
-  if (type === 'money') return nf2.format(Number(v));
+  if (type === 'money') return `₹ ${nf2.format(Number(v))}`;
   if (type === 'pct') return `${nf2.format(Number(v))}%`;
   if (type === 'int') return Number(v).toLocaleString('en-IN');
   if (type === 'date') return dt(v);
@@ -398,7 +398,7 @@ const SalesReport = () => {
           <Table size="small">
             <TableHead>
               <TableRow>
-                <TableCell className={classes.head}>Month</TableCell>
+                <TableCell className={classes.head}>Invoice Month</TableCell>
                 <TableCell className={classes.head} align="right">
                   Revenue
                 </TableCell>
