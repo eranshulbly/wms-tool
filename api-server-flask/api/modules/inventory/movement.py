@@ -97,6 +97,31 @@ SELECT  l.entity_id                                                AS product_id
  GROUP BY l.entity_id
 """
 
+# On-hand stock, one row per (product, batch) — the detail _STOCK_SQL folds away.
+# Landing cost is net of any credit note, same as everywhere else it's read (see
+# order/pricing.py) — a batch whose price never arrived leaves landing_price null
+# rather than costing it at nothing.
+_BATCH_SQL = """
+SELECT  s.entity_id                                                AS product_id,
+        s.batch_id,
+        JSON_UNQUOTE(JSON_EXTRACT(b.batch_params, '$.batch_number')) AS batch_number,
+        NULLIF(JSON_UNQUOTE(JSON_EXTRACT(b.batch_params, '$.expiry')), 'null')
+                                                                   AS expiry,
+        SUM(s.quantity)                                            AS quantity,
+        MAX(pr.landing_price - pr.cn_rate)                         AS landing_price
+  FROM  fc_entity_stock s
+  LEFT JOIN sku_batch b
+         ON b.id = s.batch_id
+  LEFT JOIN fc_sku_price_details pr
+         ON pr.entity_id = s.entity_id
+        AND pr.batch_id  = s.batch_id
+        AND pr.company_id = s.company_id
+ WHERE  s.entity_type = 'sku'
+   AND  s.quantity > 0
+   AND  {company}
+ GROUP BY s.entity_id, s.batch_id, batch_number, expiry
+"""
+
 # Ingestion writes the description as 'PACK · MFR'; the pack size is its first part.
 _PRODUCT_SQL = """
 SELECT  p.product_id,
@@ -317,3 +342,70 @@ def _summary(rows):
         'bands': [{'band': b, 'products': len([r for r in rows if r['band'] == b])}
                   for b in BANDS],
     }
+
+
+def batch_inventory(company_ids=None, as_of=None):
+    """One row per (product, batch) currently on hand — the detail movement_report
+    folds away into one row per product.
+
+    Sorted nearest-expiry-first: a batch with 40 days left is the thing to act on
+    regardless of how much of the shelf it is, which is exactly what a product-level
+    view (MIN(expiry) per product) can hide behind a product's other, healthier batches.
+    """
+    if company_ids is not None and not company_ids:
+        return []
+
+    where, params = '1=1', []
+    if company_ids is not None:
+        where = _in_clause('s.company_id', company_ids)
+        params = list(company_ids)
+
+    batches = mysql_manager.execute_query(
+        _BATCH_SQL.format(company=where), tuple(params)) or []
+    if not batches:
+        return []
+
+    ids = sorted({int(r['product_id']) for r in batches})
+    products = {int(r['product_id']): r for r in (mysql_manager.execute_query(
+        _PRODUCT_SQL.format(ids=','.join(['%s'] * len(ids))), tuple(ids)) or [])}
+
+    today = as_of or date.today()
+    rows = []
+    for r in batches:
+        pid = int(r['product_id'])
+        prod = products.get(pid, {})
+        quantity = _f(r['quantity']) or 0.0
+        landing_price = _f(r['landing_price'])
+
+        expiry = r['expiry']
+        months_to_expiry = None
+        if expiry:
+            expiry_date = datetime.strptime(expiry[:10], '%Y-%m-%d').date()
+            months_to_expiry = _months_between(expiry_date, today)
+            expiry = expiry_date.isoformat()
+
+        rows.append({
+            'product_id': pid,
+            'product_name': prod.get('product_name') or f'#{pid}',
+            'sku_code': prod.get('sku_code'),
+            'pack': prod.get('pack') or None,
+            'uom': prod.get('uom'),
+            'category': prod.get('category'),
+
+            'batch_id': r['batch_id'],
+            'batch_number': r['batch_number'] or '(no batch)',
+            'expiry': expiry,
+            'months_to_expiry': round(months_to_expiry, 2) if months_to_expiry is not None else None,
+
+            'quantity': round(quantity, 2),
+            'landing_price': round(landing_price, 4) if landing_price is not None else None,
+            'stock_value': (round(quantity * landing_price, 2)
+                            if landing_price is not None else None),
+        })
+
+    # Nulls (no batch, or no expiry on file) sort last — they are not the ones about to
+    # expire, they are the ones nobody can say anything about, which is a different
+    # problem worth seeing but not the most urgent one.
+    rows.sort(key=lambda r: (r['months_to_expiry'] is None, r['months_to_expiry'] or 0,
+                             r['product_name'] or ''))
+    return rows

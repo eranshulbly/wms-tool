@@ -1,8 +1,8 @@
 // Analytics menu group — dashboards and reports (built out over time).
 
-import { IconReportAnalytics, IconUsers, IconReceipt2 } from '@tabler/icons';
+import { IconReportAnalytics, IconUsers, IconReceipt2, IconTrendingUp } from '@tabler/icons';
 
-const icons = { IconReportAnalytics, IconUsers, IconReceipt2 };
+const icons = { IconReportAnalytics, IconUsers, IconReceipt2, IconTrendingUp };
 
 // ==============================|| ANALYTICS MENU ITEMS ||============================== //
 
@@ -23,7 +23,7 @@ const analytics = {
         },
         {
             id: 'analytics-stock-movement',
-            title: 'Stock Movement',
+            title: 'Inventory Analysis',
             type: 'item',
             url: '/analytics/stock-movement',
             icon: icons.IconTrendingUp,

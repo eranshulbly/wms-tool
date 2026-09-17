@@ -27,6 +27,7 @@ import api from '../../../services/api';
 import { useWarehouse } from '../../../context/WarehouseContext';
 
 const BASE = 'admin/inventory/analytics/movement';
+const BATCH_BASE = 'admin/inventory/analytics/batches';
 
 const WINDOWS = [
   { value: 30, label: 'Last 30 days' },
@@ -67,6 +68,19 @@ const COLUMNS = [
   { key: 'band', label: 'Push band', type: 'band' },
 ];
 
+// One row per physical batch — what COLUMNS folds into MIN(expiry) per product. A
+// product with a healthy batch and a nearly-expired one looks fine at product level;
+// this is where the second batch is actually visible.
+const BATCH_COLUMNS = [
+  { key: 'product_name', label: 'Product', type: 'text' },
+  { key: 'batch_number', label: 'Batch', type: 'text' },
+  { key: 'quantity', label: 'Qty on hand', type: 'qty' },
+  { key: 'expiry', label: 'Expiry', type: 'date' },
+  { key: 'months_to_expiry', label: 'Months to expiry', type: 'num2' },
+  { key: 'landing_price', label: 'Landing rate', type: 'rate' },
+  { key: 'stock_value', label: 'Stock value', type: 'money' },
+];
+
 const useStyles = makeStyles((theme) => ({
   section: { marginBottom: theme.spacing(2) },
   num: { whiteSpace: 'nowrap' },
@@ -96,17 +110,26 @@ const MONTH_YEAR = (iso) => {
   return `${Number(m)}/${String(y).slice(2)}`;
 };
 
+const FULL_DATE = (iso) => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+};
+
 const render = (type, v) => {
   if (v === null || v === undefined || v === '') return '—';
   if (type === 'qty') return nf0.format(Number(v));
   if (type === 'qty1') return nf1.format(Number(v));
   if (type === 'num2') return nf2.format(Number(v));
   if (type === 'money') return `₹${nf0.format(Number(v))}`;
+  if (type === 'rate') return nf2.format(Number(v));
   if (type === 'monthyear') return MONTH_YEAR(v);
+  if (type === 'date') return FULL_DATE(v);
   return String(v);
 };
 
-const isNumeric = (t) => t === 'qty' || t === 'qty1' || t === 'num2' || t === 'money';
+const isNumeric = (t) => t === 'qty' || t === 'qty1' || t === 'num2' || t === 'money' || t === 'rate';
 
 const money = (v) => `₹${nf0.format(Number(v || 0))}`;
 
@@ -120,6 +143,11 @@ const StockMovement = () => {
   const [band, setBand] = useState('');
   const [sort, setSort] = useState({ key: 'value_at_risk', dir: 'desc' });
   const [toast, setToast] = useState(null);
+
+  const [batchRows, setBatchRows] = useState([]);
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [batchSearch, setBatchSearch] = useState('');
+  const [batchSort, setBatchSort] = useState({ key: 'months_to_expiry', dir: 'asc' });
 
   const load = useCallback(async () => {
     if (!selectedCompany) {
@@ -138,6 +166,26 @@ const StockMovement = () => {
       setLoading(false);
     }
   }, [selectedCompany, windowDays]);
+
+  const loadBatches = useCallback(async () => {
+    if (!selectedCompany) {
+      setBatchRows([]);
+      return;
+    }
+    setBatchLoading(true);
+    try {
+      const { data: d } = await api.get(BATCH_BASE, { params: { company_id: selectedCompany } });
+      setBatchRows(d.rows || []);
+    } catch (e) {
+      setToast({ severity: 'error', msg: 'Could not load batch inventory' });
+    } finally {
+      setBatchLoading(false);
+    }
+  }, [selectedCompany]);
+
+  useEffect(() => {
+    loadBatches();
+  }, [loadBatches]);
 
   useEffect(() => {
     load();
@@ -196,6 +244,48 @@ const StockMovement = () => {
   const toggleSort = (key) =>
     setSort((s) => ({ key, dir: s.key === key && s.dir === 'desc' ? 'asc' : 'desc' }));
 
+  const visibleBatches = useMemo(() => {
+    const term = batchSearch.trim().toLowerCase();
+    let out = batchRows;
+    if (term) {
+      out = out.filter((r) =>
+        [r.product_name, r.sku_code, r.batch_number, r.category]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+          .includes(term)
+      );
+    }
+    const { key, dir } = batchSort;
+    const sign = dir === 'asc' ? 1 : -1;
+    return [...out].sort((a, b) => {
+      const x = a[key];
+      const y = b[key];
+      if (x === null || x === undefined) return y === null || y === undefined ? 0 : 1;
+      if (y === null || y === undefined) return -1;
+      if (typeof x === 'number' && typeof y === 'number') return (x - y) * sign;
+      return String(x).localeCompare(String(y)) * sign;
+    });
+  }, [batchRows, batchSearch, batchSort]);
+
+  const toggleBatchSort = (key) =>
+    setBatchSort((s) => ({ key, dir: s.key === key && s.dir === 'desc' ? 'asc' : 'desc' }));
+
+  const exportBatchCsv = () => {
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const csv = [
+      ['SKU code', ...BATCH_COLUMNS.map((c) => c.label)].map(esc).join(','),
+      ...visibleBatches.map((r) => [r.sku_code, ...BATCH_COLUMNS.map((c) => r[c.key])].map(esc).join(',')),
+    ].join('\n');
+    const company = companies.find((c) => c.id === selectedCompany);
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(company?.name || 'stock').replace(/\s+/g, '_')}_Batch_Inventory.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const exportCsv = () => {
     const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const csv = [
@@ -244,7 +334,7 @@ const StockMovement = () => {
   return (
     <Box>
       <Typography variant="h4" gutterBottom>
-        Stock Movement
+        Inventory Analysis
       </Typography>
       <Typography variant="body2" className={classes.muted} sx={{ mb: 2 }}>
         What is selling, how long the stock on hand will last, and what will expire before it
@@ -509,6 +599,134 @@ const StockMovement = () => {
           cost — blank where there is no sale history to project from.
         </Typography>
       )}
+
+      {/* Batch-level on hand — what the product-level table above folds into one row
+          (MIN expiry, summed quantity) per product. A product with one healthy batch
+          and one nearly-expired one looks fine up there; this is where the second
+          batch is actually visible. */}
+      <Typography variant="h5" className={classes.section} sx={{ mt: 4 }}>
+        Batch Inventory
+      </Typography>
+
+      <Paper variant="outlined" className={classes.section} style={{ padding: 12 }}>
+        <Grid container spacing={2} alignItems="center">
+          <Grid item xs={12} sm={6}>
+            <TextField
+              fullWidth
+              size="small"
+              label="Search product / batch"
+              placeholder="Product, SKU, batch number or category"
+              value={batchSearch}
+              onChange={(e) => setBatchSearch(e.target.value)}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6}>
+            <Box display="flex" alignItems="center" justifyContent="flex-end">
+              <Typography variant="body2" className={classes.muted} sx={{ mr: 2 }}>
+                {batchLoading ? 'Loading…' : `${visibleBatches.length} of ${batchRows.length} batches`}
+              </Typography>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<IconDownload size={16} />}
+                onClick={exportBatchCsv}
+                disabled={!visibleBatches.length}
+                style={{ marginRight: 8 }}
+              >
+                Export CSV
+              </Button>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<IconRefresh size={16} />}
+                onClick={loadBatches}
+                disabled={batchLoading}
+              >
+                Refresh
+              </Button>
+            </Box>
+          </Grid>
+        </Grid>
+      </Paper>
+
+      <TableContainer component={Paper} variant="outlined" className={classes.scroll}>
+        <Table size="small" stickyHeader>
+          <TableHead>
+            <TableRow>
+              {BATCH_COLUMNS.map((c) => (
+                <TableCell
+                  key={c.key}
+                  align={isNumeric(c.type) ? 'right' : 'left'}
+                  className={classes.head}
+                  sortDirection={batchSort.key === c.key ? batchSort.dir : false}
+                >
+                  <TableSortLabel
+                    active={batchSort.key === c.key}
+                    direction={batchSort.key === c.key ? batchSort.dir : 'asc'}
+                    onClick={() => toggleBatchSort(c.key)}
+                  >
+                    {c.label}
+                  </TableSortLabel>
+                </TableCell>
+              ))}
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {batchLoading && (
+              <TableRow>
+                <TableCell colSpan={BATCH_COLUMNS.length} align="center">
+                  <CircularProgress size={22} />
+                </TableCell>
+              </TableRow>
+            )}
+            {!batchLoading && visibleBatches.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={BATCH_COLUMNS.length} align="center" className={classes.muted}>
+                  {!selectedCompany
+                    ? 'Select a company to see its batch inventory.'
+                    : batchRows.length === 0
+                    ? 'No stock on hand — receive stock under Inventory Ingestion first.'
+                    : 'No batches match the current search.'}
+                </TableCell>
+              </TableRow>
+            )}
+            {!batchLoading &&
+              visibleBatches.map((r) => (
+                <TableRow key={r.batch_id} hover>
+                  {BATCH_COLUMNS.map((c) => {
+                    if (c.key === 'product_name') {
+                      return (
+                        <TableCell key={c.key}>
+                          <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                            {r.product_name}
+                          </Typography>
+                          <Typography variant="caption" className={classes.muted}>
+                            {r.sku_code}
+                            {r.category ? ` · ${r.category}` : ''}
+                          </Typography>
+                        </TableCell>
+                      );
+                    }
+                    return (
+                      <TableCell
+                        key={c.key}
+                        align={isNumeric(c.type) ? 'right' : 'left'}
+                        className={isNumeric(c.type) ? classes.num : ''}
+                        style={
+                          c.key === 'months_to_expiry' && r.months_to_expiry !== null && r.months_to_expiry <= 6
+                            ? { color: '#b91c1c', fontWeight: 600 }
+                            : undefined
+                        }
+                      >
+                        {render(c.type, r[c.key])}
+                      </TableCell>
+                    );
+                  })}
+                </TableRow>
+              ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
 
       <Snackbar
         open={!!toast}
