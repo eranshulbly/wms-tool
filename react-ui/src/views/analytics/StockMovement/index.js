@@ -20,6 +20,8 @@ import {
   Tooltip,
   Snackbar,
   Alert,
+  Tabs,
+  Tab,
 } from '@material-ui/core';
 import { makeStyles } from '@material-ui/styles';
 import { IconRefresh, IconDownload } from '@tabler/icons';
@@ -136,6 +138,7 @@ const money = (v) => `₹${nf0.format(Number(v || 0))}`;
 const StockMovement = () => {
   const classes = useStyles();
   const { companies, selectedCompany, setSelectedCompany } = useWarehouse();
+  const [view, setView] = useState('product'); // 'product' | 'batch'
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [windowDays, setWindowDays] = useState(90);
@@ -341,6 +344,19 @@ const StockMovement = () => {
         clears. Sales are counted from stock actually dispatched, not from orders raised.
       </Typography>
 
+      <Tabs
+        value={view}
+        onChange={(e, v) => setView(v)}
+        indicatorColor="primary"
+        textColor="primary"
+        className={classes.section}
+      >
+        <Tab label="By Product" value="product" />
+        <Tab label={`Batch Inventory${batchRows.length ? ` (${batchRows.length})` : ''}`} value="batch" />
+      </Tabs>
+
+      {view === 'product' && (
+        <>
       <Paper variant="outlined" className={classes.section} style={{ padding: 12 }}>
         <Grid container spacing={2} alignItems="center">
           <Grid item xs={12} sm={3}>
@@ -599,15 +615,15 @@ const StockMovement = () => {
           cost — blank where there is no sale history to project from.
         </Typography>
       )}
+        </>
+      )}
 
-      {/* Batch-level on hand — what the product-level table above folds into one row
-          (MIN expiry, summed quantity) per product. A product with one healthy batch
-          and one nearly-expired one looks fine up there; this is where the second
-          batch is actually visible. */}
-      <Typography variant="h5" className={classes.section} sx={{ mt: 4 }}>
-        Batch Inventory
-      </Typography>
-
+      {/* Batch-level on hand — what the By Product view folds into one row (MIN expiry,
+          summed quantity) per product. A product with one healthy batch and one
+          nearly-expired one looks fine over there; this is where the second batch is
+          actually visible. */}
+      {view === 'batch' && (
+        <>
       <Paper variant="outlined" className={classes.section} style={{ padding: 12 }}>
         <Grid container spacing={2} alignItems="center">
           <Grid item xs={12} sm={6}>
@@ -727,6 +743,8 @@ const StockMovement = () => {
           </TableBody>
         </Table>
       </TableContainer>
+        </>
+      )}
 
       <Snackbar
         open={!!toast}
