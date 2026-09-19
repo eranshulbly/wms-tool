@@ -26,7 +26,7 @@ logger = get_logger(__name__)
 # silently receive an empty id list, so every SKU went out with `order_units: []`
 # — the app then showed one quantity box for a product that can only be ordered
 # by the box or the case, and nothing anywhere errored.
-SKU_COLS = """product_id, product_string AS sku_code, name, description, nickname,
+SKU_COLS = """product_id, product_string AS sku_code, name, description, product_use, nickname,
               category_id, uom, size, weight, barcode, hsn_code, price, is_active,
               created_at, company_id"""
 

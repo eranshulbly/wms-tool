@@ -24,7 +24,7 @@ import api from '../../../services/api';
 import { useWarehouse } from '../../../context/WarehouseContext';
 import UploadFormatHelp from '../UploadFormatHelp';
 
-// The nine columns, in the order the downloadable template writes them. Each note
+// The ten columns, in the order the downloadable template writes them. Each note
 // names the supplier's own heading too, because the upload accepts Cadila's rate list
 // unedited — the aliases in master_upload.COLUMNS are what make that true, so the two
 // lists have to say the same thing.
@@ -47,11 +47,12 @@ const FORMAT_SPEC = {
     { name: 'Box Pack', required: false, note: 'Label for one box, e.g. 30X10T' },
     { name: 'Description', required: false, note: 'Composition or longer description. Cadila: COMPOSITION' },
     { name: 'Division', required: false, note: "Division code, e.g. CG or CR — saved as the product's category. Cadila: DIVN CODE. A code with no category yet creates one; a blank cell leaves the category unchanged" },
+    { name: 'Product Use', required: false, note: 'What the product is used for, e.g. Antihistamine or Anthelmintic. Free text. A blank cell leaves the existing value unchanged' },
   ],
   sample: [
-    ['TBA38AU', 'ALERTRIZ 5MG TAB', '30', '66', '10', '10 T', '30X10T', 'Levocetirizine Dihydrochloride 5mg', 'CG'],
-    ['TBA15BP', 'ALBENDAZOLE TAB', '100', '60', '1', '1 T', '100X1 T', 'Albendazole IP 400mg', 'CG'],
-    ['LQA45AM', 'ADD APP SYRUP', '1', '60', '1', '200 ML', '200 ML', 'Cyproheptadine Hcl IP', 'CG'],
+    ['TBA38AU', 'ALERTRIZ 5MG TAB', '30', '66', '10', '10 T', '30X10T', 'Levocetirizine Dihydrochloride 5mg', 'CG', 'Antihistamine'],
+    ['TBA15BP', 'ALBENDAZOLE TAB', '100', '60', '1', '1 T', '100X1 T', 'Albendazole IP 400mg', 'CG', 'Anthelmintic'],
+    ['LQA45AM', 'ADD APP SYRUP', '1', '60', '1', '200 ML', '200 ML', 'Cyproheptadine Hcl IP', 'CG', 'Appetite stimulant'],
   ],
   info: (
     <>

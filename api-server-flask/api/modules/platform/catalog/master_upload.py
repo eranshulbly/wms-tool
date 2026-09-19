@@ -2,9 +2,10 @@
 """
 Product master upload — merge-upsert of the catalogue and its packaging ladder.
 
-Nine columns, and three tables written:
+Ten columns, and three tables written:
 
-    product       identity      product_string, name, description, uom, category_id
+    product       identity      product_string, name, description, product_use, uom,
+                                category_id
     product_uom   the ladder    one row per rung, rebuilt from the pack columns
     categories    divisions     one per division code, created the first time one appears
 
@@ -34,7 +35,7 @@ from api.core.logging import get_logger
 logger = get_logger(__name__)
 
 
-# ── The nine columns ─────────────────────────────────────────────────────────────
+# ── The ten columns ─────────────────────────────────────────────────────────────
 #
 # field -> (canonical header, aliases, required). Aliases carry the supplier's own
 # wording so Cadila's rate list needs no editing before upload.
@@ -54,6 +55,10 @@ COLUMNS = {
     # Cadila's list heads this DIVN CODE. Stored as the product's category: a division
     # is how Cadila groups its catalogue, which is what category_id is for.
     'division':         ('Division',        ('DIVN CODE', 'Division Code', 'Div Code'),          False),
+    # What the product is for, in the operator's own words. Free text: the supplier's list
+    # has no such column, so there is no vocabulary to validate against.
+    'product_use':      ('Product Use',     ('Use', 'Uses', 'Usage', 'Indication',
+                                             'Therapeutic Use'),                                 False),
 }
 
 # Enough of these on one row and it is the header. Two distinct hits are required, so a
@@ -141,7 +146,7 @@ def read_dataframe(uploaded_file):
 
 
 def resolve_headers(df):
-    """{field: actual column name} for whichever of the nine the file carries."""
+    """{field: actual column name} for whichever of the ten the file carries."""
     lookup = {}
     for col in df.columns:
         lookup.setdefault(_normalize_header(str(col)), col)
@@ -236,6 +241,7 @@ def parse(df):
             'product_string':   code,
             'name':             name,
             'description':      _text(row.get(headers['description'])) if 'description' in headers else None,
+            'product_use':      _text(row.get(headers['product_use'])) if 'product_use' in headers else None,
             'strips_per_box':   strips_per_box,
             'boxes_per_case':   boxes_per_case,
             'tabs_per_strip':   (_count(row.get(headers['tabs_per_strip']))
@@ -326,20 +332,21 @@ def process(uploaded_file, company_id):
                     """UPDATE product
                           SET name        = %s,
                               description = COALESCE(%s, description),
+                              product_use = COALESCE(%s, product_use),
                               uom         = %s,
                               category_id = COALESCE(%s, category_id),
                               updated_at  = NOW()
                         WHERE product_id  = %s""",
-                    (v['name'], v['description'], v['selling_unit'].lower(), category_id,
-                     product_id))
+                    (v['name'], v['description'], v['product_use'],
+                     v['selling_unit'].lower(), category_id, product_id))
                 updated += 1
             else:
                 cursor.execute(
                     """INSERT INTO product
-                         (product_string, name, description, uom, category_id, company_id,
-                          is_active, created_at, updated_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, 1, NOW(), NOW())""",
-                    (v['product_string'], v['name'], v['description'],
+                         (product_string, name, description, product_use, uom, category_id,
+                          company_id, is_active, created_at, updated_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, 1, NOW(), NOW())""",
+                    (v['product_string'], v['name'], v['description'], v['product_use'],
                      v['selling_unit'].lower(), category_id, company_id))
                 product_id = cursor.lastrowid
                 inserted += 1

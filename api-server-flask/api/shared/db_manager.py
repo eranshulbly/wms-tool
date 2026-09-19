@@ -1026,6 +1026,8 @@ def _migrate_product_columns():
       nickname        set by the Product Nickname admin tab; read by the catalog SKU list
                       and printed on supply-sheet PDFs
       litres_per_unit volume of one selling unit, for targets set in litres
+      product_use     what the product is used for (e.g. "Antibiotic", "Pain relief"),
+                      set by the Product Master upload's Product Use column
 
     These are declared in migration_v2_api.sql, which cannot be applied wholesale to a
     freshly-created schema (it carries ALTERs written against production's older lineage).
@@ -1044,6 +1046,7 @@ def _migrate_product_columns():
         ('category_id',     'INT NULL',            'idx_product_category'),
         ('nickname',        'VARCHAR(200) NULL',   None),
         ('litres_per_unit', 'DECIMAL(10,4) NULL',  None),
+        ('product_use',     'VARCHAR(500) NULL',   None),
     ]
     for column, ddl, index_name in wanted:
         try:
