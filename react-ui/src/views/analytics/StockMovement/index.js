@@ -58,6 +58,7 @@ const BAND_STYLE = {
 // a column cannot be exported on a different value from the one it displays.
 const COLUMNS = [
   { key: 'product_name', label: 'Product', type: 'text' },
+  { key: 'product_use', label: 'Product Use', type: 'text' },
   { key: 'pack', label: 'Pack', type: 'text' },
   { key: 'stock_units', label: 'Stock (units)', type: 'qty' },
   { key: 'sale_rate_month', label: 'Sale rate (units/month)', type: 'qty1' },
@@ -76,6 +77,7 @@ const COLUMNS = [
 // this is where the second batch is actually visible.
 const BATCH_COLUMNS = [
   { key: 'product_name', label: 'Product', type: 'text' },
+  { key: 'product_use', label: 'Product Use', type: 'text' },
   { key: 'batch_number', label: 'Batch', type: 'text' },
   { key: 'quantity', label: 'Qty on hand', type: 'qty' },
   { key: 'expiry', label: 'Expiry', type: 'date' },

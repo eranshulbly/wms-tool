@@ -127,6 +127,7 @@ _PRODUCT_SQL = """
 SELECT  p.product_id,
         p.name                                                     AS product_name,
         p.product_string                                           AS sku_code,
+        p.product_use                                              AS product_use,
         SUBSTRING_INDEX(COALESCE(p.description, ''), ' · ', 1)      AS pack,
         p.uom                                                      AS uom,
         c.name                                                     AS category
@@ -291,6 +292,7 @@ def _row(pid, st, mv, prod, today, window_days):
         'product_id': pid,
         'product_name': prod.get('product_name') or f'#{pid}',
         'sku_code': prod.get('sku_code'),
+        'product_use': prod.get('product_use'),
         'pack': prod.get('pack') or None,
         'uom': prod.get('uom'),
         'category': prod.get('category'),
@@ -388,6 +390,7 @@ def batch_inventory(company_ids=None, as_of=None):
             'product_id': pid,
             'product_name': prod.get('product_name') or f'#{pid}',
             'sku_code': prod.get('sku_code'),
+            'product_use': prod.get('product_use'),
             'pack': prod.get('pack') or None,
             'uom': prod.get('uom'),
             'category': prod.get('category'),
