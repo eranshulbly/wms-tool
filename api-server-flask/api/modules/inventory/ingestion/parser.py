@@ -164,6 +164,136 @@ def _labelled_value(table, label):
     return ''
 
 
+# ── The buyer's party block ──────────────────────────────────────────────────
+# GST state codes, so a state is read from the two digits in the GSTIN/party block instead
+# of from the printed name, which the layout clips ("09-UTTAR PRADES").
+GST_STATES = {
+    '01': 'Jammu & Kashmir', '02': 'Himachal Pradesh', '03': 'Punjab', '04': 'Chandigarh',
+    '05': 'Uttarakhand', '06': 'Haryana', '07': 'Delhi', '08': 'Rajasthan',
+    '09': 'Uttar Pradesh', '10': 'Bihar', '11': 'Sikkim', '12': 'Arunachal Pradesh',
+    '13': 'Nagaland', '14': 'Manipur', '15': 'Mizoram', '16': 'Tripura', '17': 'Meghalaya',
+    '18': 'Assam', '19': 'West Bengal', '20': 'Jharkhand', '21': 'Odisha',
+    '22': 'Chhattisgarh', '23': 'Madhya Pradesh', '24': 'Gujarat',
+    '26': 'Dadra & Nagar Haveli and Daman & Diu', '27': 'Maharashtra', '29': 'Karnataka',
+    '30': 'Goa', '31': 'Lakshadweep', '32': 'Kerala', '33': 'Tamil Nadu',
+    '34': 'Puducherry', '35': 'Andaman & Nicobar Islands', '36': 'Telangana',
+    '37': 'Andhra Pradesh', '38': 'Ladakh',
+}
+
+_PAN_RE = re.compile(r'^[A-Z]{5}\d{4}[A-Z]$')
+_MOBILE_RE = re.compile(r'^[6-9]\d{9}$')
+
+
+def _strip_state_tail(line, state_name):
+    """Drop trailing words that are the clipped tail of the state name ('PRADES').
+
+    Only a word strictly SHORTER than a state-name word it prefixes counts as clipped —
+    the layout truncates at a fixed width. A word equal to a state word is left alone, so
+    a dealer in DELHI or PUNJAB keeps its town; 'PRADESH' is the one full word that is
+    only ever a tail.
+    """
+    targets = [w.upper() for w in re.findall(r'[A-Za-z]+', state_name or '')]
+    words = line.split()
+    while words:
+        w = re.sub(r'[^A-Za-z]', '', words[-1]).upper()
+        if len(w) >= 4 and (w == 'PRADESH' or any(t.startswith(w) and len(w) < len(t)
+                                                   for t in targets)):
+            words.pop()
+        else:
+            break
+    return ' '.join(words)
+
+
+def parse_party_block(cell):
+    """Everything the 'Party Name' cell prints about the buyer.
+
+    The cell is a stack of lines: the name, a few address lines, then labelled PHONE. /
+    D.L.No. / GSTIN lines. Lines are classified by what they say, never by position —
+    different invoices wrap the address differently and the labelled lines do not always
+    come last — and every field is optional, so a sparse block yields a sparse result.
+
+    Returns keys: name, address, town, state, pincode, phone, alt_phone, gstin, pan,
+    drug_license_numbers.
+    """
+    lines = [l.strip() for l in (cell or '').split('\n') if l.strip()]
+    if lines and re.match(r'Party Name', lines[0], re.I):
+        head = re.sub(r'^Party Name\s*:?\s*', '', lines[0], flags=re.I).strip()
+        lines = ([head] if head else []) + lines[1:]
+    name = lines[0] if lines else ''
+
+    phone_raw, dl_raw, gstin, addr = [], [], '', []
+    for ln in lines[1:]:
+        if re.match(r'PHONE\b', ln, re.I):
+            phone_raw.append(re.sub(r'^PHONE\.?\s*:?\s*', '', ln, flags=re.I))
+        elif re.match(r'D\.?\s?L\.?\s?No', ln, re.I):
+            dl_raw.append(re.sub(r'^D\.?\s?L\.?\s?No\.?\s*:?\s*', '', ln, flags=re.I))
+        elif re.match(r'GSTIN\b', ln, re.I):
+            m = re.search(r'\b([0-9]{2}[A-Z0-9]{13})\b', ln.upper())
+            gstin = m.group(1) if m else gstin
+        else:
+            addr.append(ln)
+
+    # State: the code printed as "09-UTTAR PRADES" somewhere in the address, else the
+    # GSTIN's own prefix. The name comes from the code table, not from the clipped text.
+    code = ''
+    for i, ln in enumerate(addr):
+        m = re.search(r'\b(\d{2})\s*-\s*[A-Za-z][A-Za-z &]*', ln)
+        if m:
+            code = m.group(1)
+            addr[i] = (ln[:m.start()] + ' ' + ln[m.end():]).strip()
+            break
+    if not code and gstin:
+        code = gstin[:2]
+    state = GST_STATES.get(code, '')
+    addr = [a for a in (_strip_state_tail(a, state) for a in addr) if a.strip(' ,')]
+
+    address = re.sub(r'\s+', ' ', ' '.join(addr)).strip(' ,')
+    address = re.sub(r'\s+,', ',', address)
+    address = re.sub(r',(?=\S)', ', ', address)
+
+    # Town: the last address line when it is short and unpunctuated ("RAMPUR (U.P)",
+    # "SAMBHAL U.P"), with the state abbreviation dropped. A long last line is a street
+    # fragment, not a town, and guessing from it would file nonsense.
+    town = ''
+    if addr:
+        last = addr[-1].strip(' ,')
+        words = last.split()
+        if 0 < len(words) <= 3 and ',' not in last:
+            last = re.sub(r'\s*\(?\b[A-Za-z](?:\.?[A-Za-z]){0,2}\.?\)?\s*$', '', last) \
+                if len(words) > 1 else last
+            town = re.sub(r'[()]', '', last).strip(' ,.')
+    pin = re.search(r'\b[1-9]\d{5}\b', address)
+
+    mobiles = []
+    for tok in re.split(r'[,\s/]+', ' '.join(phone_raw)):
+        if _MOBILE_RE.match(tok) and tok not in mobiles:
+            mobiles.append(tok)
+
+    licences = []
+    for tok in re.split(r'[,\s]+', ' '.join(dl_raw)):
+        if tok and tok not in licences:
+            licences.append(tok)
+
+    pan = gstin[2:12] if len(gstin) == 15 and _PAN_RE.match(gstin[2:12]) else ''
+    return {
+        'name': name, 'address': address, 'town': town, 'state': state,
+        'pincode': pin.group(0) if pin else '',
+        'phone': mobiles[0] if mobiles else '',
+        'alt_phone': mobiles[1] if len(mobiles) > 1 else '',
+        'gstin': gstin, 'pan': pan,
+        'drug_license_numbers': ', '.join(licences),
+    }
+
+
+def _sale_type(title_cell, doc_type):
+    """CREDIT or CASH, as printed under the GST INVOICE title. Sales invoices only — on
+    a credit NOTE the same word means something else entirely."""
+    if doc_type != 'INVOICE':
+        return ''
+    m = re.search(r'\b(CREDIT|CASH)\b', (title_cell or '').replace('GST INVOICE', ''), re.I)
+    return m.group(1).upper() if m else ''
+
+
 def _find_doc_type(text):
     for title, code in DOC_TITLES.items():
         if title in text:
@@ -364,6 +494,11 @@ def parse_pdf(stream, filename=''):
     due_date = _parse_date(date_cell[1]) if len(date_cell) > 1 else None
 
     gstins = re.findall(r'GSTIN\s*:\s*([0-9A-Z]{15})', text)
+    party = parse_party_block(_find_cell(table, 'Party Name'))
+    sale_type = _sale_type(_find_cell(table, 'GST INVOICE'), doc_type)
+    # Credit days only when the due date really is after the invoice date: a due date
+    # equal to (or, as on some invoices, before) the invoice date carries no terms.
+    credit_days = (due_date - doc_date).days if doc_date and due_date and due_date > doc_date else None
     subtotal = sum(l['amount'] for l in lines)
 
     # Totals sit on the LAST page. Page one of a multi-page invoice carries running
@@ -428,7 +563,19 @@ def parse_pdf(stream, filename=''):
         'supplier_gstin': gstins[0] if gstins else '',
         'party_name': next((s for s in _segments(_labelled_value(table, 'Party Name :'))
                             if s), '') or _party_from_text(text),
-        'party_gstin': gstins[1] if len(gstins) > 1 else '',
+        # Read from the party block itself; the second GSTIN on the page is only the
+        # fallback, since a page with a third GSTIN in its footer would shift it.
+        'party_gstin': party['gstin'] or (gstins[1] if len(gstins) > 1 else ''),
+        'party_address': party['address'],
+        'party_town': party['town'],
+        'party_state': party['state'],
+        'party_pincode': party['pincode'],
+        'party_phone': party['phone'],
+        'party_alt_phone': party['alt_phone'],
+        'party_pan': party['pan'],
+        'party_drug_license_numbers': party['drug_license_numbers'],
+        'sale_type': sale_type,
+        'credit_days': credit_days,
         'lr_number': _labelled_value(table, 'L.R. No.'),
         'transport': _labelled_value(table, 'Transport'),
         'cases': int(_num(re.sub(r'.*Cases', '', _labelled_value(table, 'Cases') or '')) or 0),

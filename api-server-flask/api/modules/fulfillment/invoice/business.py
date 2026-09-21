@@ -38,7 +38,8 @@ Total DB round-trips: ~6 regardless of row count.
 from datetime import datetime
 
 from api.models import Invoice, Order
-from api.modules.platform.catalog.dealer_business import get_or_create_dealer
+from api.modules.platform.catalog.dealer_business import (
+    get_or_create_dealer, dealer_details_from_row)
 from api.modules.fulfillment.order.state_machine import OrderStateMachine
 from api.repositories import order_repo, invoice_repo
 from api.core.logging import get_logger
@@ -312,7 +313,8 @@ def _resolve_dealer(row, index, company_id=None):
 
     try:
         return get_or_create_dealer(dealer_name=account_name or dealer_code,
-                                    dealer_code=dealer_code, company_id=company_id)
+                                    dealer_code=dealer_code, company_id=company_id,
+                                    details=dealer_details_from_row(row))
     except Exception as e:
         logger.warning("Error resolving dealer",
                        extra={'row': index, 'dealer_code': dealer_code, 'error': str(e)})

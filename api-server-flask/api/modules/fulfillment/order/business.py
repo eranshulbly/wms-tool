@@ -105,7 +105,8 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
             if purchaser_name:
                 try:
                     dealer_id = dealer_business.get_or_create_dealer(
-                        purchaser_name, company_id=company_id)
+                        purchaser_name, company_id=company_id,
+                        details=dealer_business.dealer_details_from_row(row))
                     logger.debug("Resolved dealer", extra={'row': index, 'dealer_id': dealer_id})
                 except Exception as e:
                     logger.warning("Error resolving dealer", extra={'row': index, 'error': str(e)})

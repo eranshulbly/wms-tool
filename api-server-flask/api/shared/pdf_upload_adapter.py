@@ -133,6 +133,19 @@ def pdf_to_dataframe(path, company_id=None, upload_type=None):
             'Cash Customer Name': party,
             'Purchaser SAP Code': doc.get('party_gstin') or '',
             'Code': doc.get('party_gstin') or '',
+            # The rest of the buyer's party block. Read by dealer_business, which files
+            # it on the dealer — blanks only, never over what the dealer master holds.
+            'Party GSTIN': doc.get('party_gstin') or '',
+            'Party Address': doc.get('party_address') or '',
+            'Party Town': doc.get('party_town') or '',
+            'Party State': doc.get('party_state') or '',
+            'Party Pincode': doc.get('party_pincode') or '',
+            'Party Phone': doc.get('party_phone') or '',
+            'Party Alt Phone': doc.get('party_alt_phone') or '',
+            'Party PAN': doc.get('party_pan') or '',
+            'Party Drug Licenses': doc.get('party_drug_license_numbers') or '',
+            'Sale Type': doc.get('sale_type') or '',
+            'Credit Days': doc.get('credit_days') if doc.get('credit_days') is not None else '',
 
             # ── the line itself ──────────────────────────────────────────────
             'Part #': _part_number(company_id, prefix, line),

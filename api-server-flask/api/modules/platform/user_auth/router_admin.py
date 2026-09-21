@@ -27,6 +27,7 @@ Invoice uploads:
     for audit.
 """
 
+import re
 from datetime import datetime
 from flask import request
 from flask_restx import Resource
@@ -646,8 +647,16 @@ def _restore_invoice_stock(potential_order_id: int) -> bool:
 DEALER_ALL_COLUMNS = [
     'name', 'dealer_code', 'town', 'latitude', 'longitude',
     'phone', 'address', 'gstin',
+    # Optional identity/terms detail — the same fields a Marg invoice's party block prints.
+    # A blank cell means "not supplied" and leaves what the dealer already has.
+    'state', 'pincode', 'pan', 'drug_license_numbers', 'alt_phone', 'sale_type',
+    'credit_days',
 ]
 DEALER_REQUIRED_COLUMNS = ['name', 'town', 'phone', 'address', 'gstin']
+# Written only when the file supplies them, so re-uploading an older, narrower file can
+# never blank out detail an invoice or a previous upload filled in.
+DEALER_OPTIONAL_DETAIL = ['dealer_code', 'state', 'pincode', 'pan', 'drug_license_numbers',
+                          'alt_phone', 'sale_type', 'credit_days']
 
 # An invalid file usually has the SAME mistake on every row. Listing all of them
 # makes the message unreadable without telling the admin anything new, so the
@@ -706,6 +715,19 @@ def _validate_dealer_rows(df, code_owner):
                 continue
             if not lo <= val <= hi:
                 problems.append(f'{coord} must be between {lo} and {hi}')
+
+        if row['pincode'] and not re.fullmatch(r'[1-9]\d{5}', row['pincode']):
+            problems.append(f"pincode '{row['pincode']}' is not a 6-digit pincode")
+        if row['pan'] and not re.fullmatch(r'[A-Za-z]{5}\d{4}[A-Za-z]', row['pan']):
+            problems.append(f"pan '{row['pan']}' is not a valid PAN")
+        if row['sale_type'] and row['sale_type'].upper() not in ('CREDIT', 'CASH'):
+            problems.append(f"sale_type '{row['sale_type']}' must be CREDIT or CASH")
+        if row['credit_days']:
+            try:
+                if int(float(row['credit_days'])) < 0:
+                    raise ValueError
+            except ValueError:
+                problems.append(f"credit_days '{row['credit_days']}' must be a whole number of days")
 
         if row['dealer_code']:
             owner = code_owner(row['dealer_code'])
@@ -845,6 +867,12 @@ class DealerTownUpload(Resource):
         for idx, row in df.iterrows():
             row_num = idx + 2
             values = {c: (row[c] or None) for c in DEALER_ALL_COLUMNS}
+            if values['pan']:
+                values['pan'] = values['pan'].upper()
+            if values['sale_type']:
+                values['sale_type'] = values['sale_type'].upper()
+            if values['credit_days']:
+                values['credit_days'] = int(float(values['credit_days']))
 
             try:
                 # Matched within the chosen company: by code where the file gives
@@ -865,8 +893,7 @@ class DealerTownUpload(Resource):
                     # the dealer already has would orphan it from its orders.
                     fields = ['name', 'town', 'latitude', 'longitude',
                               'phone', 'address', 'gstin']
-                    if values['dealer_code']:
-                        fields.append('dealer_code')
+                    fields += [f for f in DEALER_OPTIONAL_DETAIL if values[f]]
                     mysql_manager.execute_query(
                         'UPDATE dealer SET ' +
                         ', '.join(f'{f} = %s' for f in fields) +
@@ -880,11 +907,17 @@ class DealerTownUpload(Resource):
                         cursor.execute(
                             """INSERT INTO dealer (name, dealer_code, town, latitude,
                                                    longitude, phone, address, gstin,
+                                                   state, pincode, pan, drug_license_numbers,
+                                                   alt_phone, sale_type, credit_days,
                                                    company_id, created_at, updated_at)
-                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
+                                       %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                             (values['name'], values['dealer_code'], values['town'],
                              values['latitude'], values['longitude'], values['phone'],
-                             values['address'], values['gstin'], company_id,
+                             values['address'], values['gstin'],
+                             values['state'], values['pincode'], values['pan'],
+                             values['drug_license_numbers'], values['alt_phone'],
+                             values['sale_type'], values['credit_days'], company_id,
                              datetime.utcnow(), datetime.utcnow()))
                     created += 1
             except Exception as e:

@@ -60,15 +60,23 @@ const FORMAT_SPEC = {
     { name: 'phone', required: true, note: 'Contact number' },
     { name: 'address', required: true, note: 'Full postal address' },
     { name: 'gstin', required: true, note: '15-character GSTIN' },
+    { name: 'state', required: false, note: 'Optional. Full state name, e.g. Uttar Pradesh' },
+    { name: 'pincode', required: false, note: 'Optional. 6-digit pincode' },
+    { name: 'pan', required: false, note: 'Optional. 10-character PAN (also the middle of the GSTIN)' },
+    { name: 'drug_license_numbers', required: false, note: 'Optional. Drug licence number(s), separated by commas' },
+    { name: 'alt_phone', required: false, note: 'Optional. A second contact number' },
+    { name: 'sale_type', required: false, note: 'Optional. CREDIT or CASH' },
+    { name: 'credit_days', required: false, note: 'Optional. Whole days of credit given' },
   ],
   // Shaped on real rows from the pharma dealer master. The second leaves dealer_code and
   // the coordinates blank, because those are optional and a template that fills every
   // column teaches the operator that all of them are required.
   sample: [
     ['CHIKITSA 24.', 'D-1042', 'Bareilly', '28.3670', '79.4304', '6398296265',
-     'Basement H No-7/124 Nawada Jogiyan', '09GAXPD0902H1ZK'],
+     'Basement H No-7/124 Nawada Jogiyan', '09GAXPD0902H1ZK',
+     'Uttar Pradesh', '243006', 'GAXPD0902H', 'UP2520B001111, UP2521B001111', '9412345678', 'CREDIT', '30'],
     ['ANAND MEDICAL AGENCY', '', 'Puranpur', '', '', '9759010188',
-     'Near Charlie Tailors Mohall Chowk', '09AHUPG0097L1ZP'],
+     'Near Charlie Tailors Mohall Chowk', '09AHUPG0097L1ZP', '', '', '', '', '', '', ''],
   ],
   info: (
     <>
@@ -77,8 +85,12 @@ const FORMAT_SPEC = {
       <br /><br />
       <strong>name</strong>, <strong>town</strong>, <strong>phone</strong>,{' '}
       <strong>address</strong> and <strong>gstin</strong> are mandatory;{' '}
-      <strong>dealer_code</strong>, <strong>latitude</strong> and <strong>longitude</strong>{' '}
-      are optional.
+      <strong>dealer_code</strong>, <strong>latitude</strong>, <strong>longitude</strong>,{' '}
+      <strong>state</strong>, <strong>pincode</strong>, <strong>pan</strong>,{' '}
+      <strong>drug_license_numbers</strong>, <strong>alt_phone</strong>,{' '}
+      <strong>sale_type</strong> and <strong>credit_days</strong> are optional. A blank
+      optional cell leaves whatever the dealer already has — including detail an invoice
+      filled in — so an older, narrower file never wipes it.
       <br /><br />
       The whole file is validated <strong>before anything is written</strong>. A missing
       mandatory column, a blank mandatory value on any row, an unreadable coordinate, or a

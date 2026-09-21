@@ -982,6 +982,11 @@ def _migrate_dealer_columns():
       town               logistics/supply_sheet — printed on the supply sheet
       latitude/longitude platform/user_auth — set when a location submission is approved
 
+    The identity block below is filled from the party details a Marg invoice prints and
+    from the dealer master upload (see dealer_business.DEALER_DETAIL_FIELDS):
+      state, pincode, pan, drug_license_numbers, alt_phone, sale_type, credit_days
+    All nullable, so a dealer created from an order that carries none of it is unaffected.
+
     `town` also lives in migration_supply_sheet.sql as a bare ADD COLUMN, which throws on a
     second run; this is the idempotent equivalent. Checks information_schema rather than
     swallowing exceptions, so a genuine ALTER failure is logged rather than hidden.
@@ -992,6 +997,15 @@ def _migrate_dealer_columns():
         ('town',               'VARCHAR(100) NULL',  None),
         ('latitude',           'DECIMAL(10,7) NULL', None),
         ('longitude',          'DECIMAL(10,7) NULL', None),
+        ('state',              'VARCHAR(60) NULL',   None),
+        ('pincode',            'VARCHAR(10) NULL',   None),
+        ('pan',                'VARCHAR(12) NULL',   None),
+        # Comma-separated: a dealer holds several licences (a wholesale and a retail one is
+        # typical), and nothing here queries by licence number.
+        ('drug_license_numbers', 'VARCHAR(500) NULL', None),
+        ('alt_phone',          'VARCHAR(32) NULL',   None),
+        ('sale_type',          'VARCHAR(10) NULL',   None),   # CREDIT | CASH
+        ('credit_days',        'INT NULL',           None),
     ]
     for column, ddl, index_name in wanted:
         try:
