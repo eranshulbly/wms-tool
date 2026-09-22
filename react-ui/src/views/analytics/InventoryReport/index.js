@@ -33,6 +33,7 @@ const BASE = 'admin/inventory/ingestion';
 const COLUMNS = [
   { key: 'product_name', label: 'Product', type: 'text' },
   { key: 'batch_number', label: 'Batch', type: 'mono' },
+  { key: 'invoice_date', label: 'Invoice Date', type: 'date' },
   { key: 'qty', label: 'Qty', type: 'qty' },
   { key: 'rate_invoice', label: 'Rate / Unit (Invoice)', type: 'rate' },
   { key: 'rate_cn', label: 'Rate / Unit (CN/DN)', type: 'rate' },
@@ -83,6 +84,12 @@ const render = (type, v) => {
   if (type === 'money') return nf2.format(Number(v));
   if (type === 'rate') return nf4.format(Number(v));
   if (type === 'qty') return Number(v).toLocaleString('en-IN');
+  if (type === 'date') {
+    const d = new Date(v);
+    return Number.isNaN(d.getTime())
+      ? String(v)
+      : d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  }
   return String(v);
 };
 

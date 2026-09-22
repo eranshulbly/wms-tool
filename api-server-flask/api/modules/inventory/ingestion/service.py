@@ -706,10 +706,28 @@ SELECT  p.name                                        AS product_name,
 
         TRIM(BOTH ', ' FROM CONCAT_WS(', ', NULLIF(pr.grn_reference, ''),
                                             NULLIF(pr.cn_reference, '')))    AS doc_nos,
+
+        -- The invoice's own printed date, from the FIRST receipt of this batch (a batch
+        -- is entered once; a later top-up would be a second document, not a new entry
+        -- date). Falls back to when we recorded the receipt when the PDF carried no
+        -- readable date, so the column is never blank for stock that is actually here.
+        COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(t.meta_info, '$.date')), ''),
+                 DATE_FORMAT(t.created_on, '%%Y-%%m-%%d'))                   AS invoice_date,
+
         pr.company_id, pr.entity_id AS sku_id, pr.batch_id
   FROM  fc_sku_price_details pr
   JOIN  product   p ON p.product_id = pr.entity_id
   LEFT JOIN sku_batch b ON b.id = pr.batch_id
+  -- One row per batch even if it was ever received twice: the earliest receipt is the
+  -- entry date, and a plain join here would otherwise silently duplicate the batch's
+  -- costing row for every extra receipt found.
+  LEFT JOIN (
+      SELECT company_id, entity_id, batch_id, meta_info, created_on,
+             ROW_NUMBER() OVER (PARTITION BY company_id, entity_id, batch_id
+                                ORDER BY id) AS rn
+        FROM transferin_info
+  ) t ON t.company_id = pr.company_id AND t.entity_id = pr.entity_id
+     AND t.batch_id = pr.batch_id AND t.rn = 1
  WHERE  {where}
  ORDER BY p.name, batch_number
  LIMIT %s OFFSET %s
