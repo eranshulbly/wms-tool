@@ -704,6 +704,15 @@ SELECT  p.name                                        AS product_name,
         ROUND((pr.landing_price - pr.cn_rate)
               * (1 + pr.gst_rate / 100) * 1.15, 4)                           AS margin_15,
 
+        -- The landed cost of a whole box, from the product's own packaging ladder (see
+        -- catalog/product_pack.py) rather than a guessed multiplier: BOX's factor and the
+        -- priced rung's factor are both in the same base unit (tablets, ml...), so their
+        -- ratio is exactly how many priced units make one box, whatever that unit is.
+        -- NULL, not 1, when the product has no ladder — a missing conversion must read as
+        -- unknown, not as "one box holds one unit".
+        ROUND((pr.landing_price - pr.cn_rate) * (pu.box_factor / pu.unit_factor), 2)
+                                                                              AS rate_per_box,
+
         TRIM(BOTH ', ' FROM CONCAT_WS(', ', NULLIF(pr.grn_reference, ''),
                                             NULLIF(pr.cn_reference, '')))    AS doc_nos,
 
@@ -718,6 +727,14 @@ SELECT  p.name                                        AS product_name,
   FROM  fc_sku_price_details pr
   JOIN  product   p ON p.product_id = pr.entity_id
   LEFT JOIN sku_batch b ON b.id = pr.batch_id
+  LEFT JOIN (
+      SELECT product_id,
+             MAX(CASE WHEN uom_code = 'BOX' THEN factor_to_base END)   AS box_factor,
+             MAX(CASE WHEN is_price_unit = 1 THEN factor_to_base END)  AS unit_factor
+        FROM product_uom
+       GROUP BY product_id
+  ) pu ON pu.product_id = pr.entity_id
+       AND pu.box_factor IS NOT NULL AND pu.unit_factor > 0
   -- One row per batch even if it was ever received twice: the earliest receipt is the
   -- entry date, and a plain join here would otherwise silently duplicate the batch's
   -- costing row for every extra receipt found.

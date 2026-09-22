@@ -39,6 +39,7 @@ const COLUMNS = [
   { key: 'rate_cn', label: 'Rate / Unit (CN/DN)', type: 'rate' },
   { key: 'landed_ex_gst', label: 'Landed Cost / Unit (ex-GST)', type: 'rate' },
   { key: 'landed_inc_gst', label: 'Landed Cost / Unit (inc-GST)', type: 'rate' },
+  { key: 'rate_per_box', label: 'Landed Cost / Box (ex-GST)', type: 'money' },
   { key: 'mrp', label: 'MRP / Unit', type: 'money' },
   { key: 'margin_5', label: 'Margin @+5%', type: 'rate' },
   { key: 'margin_10', label: 'Margin @+10%', type: 'rate' },
