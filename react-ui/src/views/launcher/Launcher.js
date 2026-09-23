@@ -86,8 +86,7 @@ const Launcher = () => {
             color: theme.palette.error.dark,
             tint: theme.palette.error.light,
             path: '/analytics/inventory-report',
-            // Visible to everyone for now; gate with a permission when analytics grow.
-            show: true
+            show: isAdmin
         },
         {
             key: 'admin',

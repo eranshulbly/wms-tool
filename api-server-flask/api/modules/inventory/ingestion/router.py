@@ -149,11 +149,17 @@ class IngestionReceived(Resource):
 
 @rest_api.route(f'{BASE}/report')
 class IngestionReport(Resource):
-    """Batch costing report — one row per SKU and batch, for any company in scope."""
+    """Batch costing report — one row per SKU and batch, for any company in scope.
+
+    Admin-only, same rule as Order Margin and Sales Report: this exposes landed cost.
+    """
 
     @token_required
     @active_required
     def get(self, current_user):
+        if getattr(current_user, 'role', None) != 'admin':
+            return {'success': False, 'msg': 'Admin access required.'}, 403
+
         from api.permissions import resolve_company_scope, CompanyAccessDenied
         try:
             scope = resolve_company_scope(current_user, request.args.get('company_id'))

@@ -39,11 +39,18 @@ def _dates():
 
 @rest_api.route(f'{BASE}/executives')
 class SalesExecutiveSummary(Resource):
-    """Per-executive activity summary for the selected window."""
+    """Per-executive activity summary for the selected window.
+
+    Admin-only — the Analytics section as a whole is, same as Order Margin, Sales
+    Report and the two inventory reports.
+    """
 
     @token_required
     @active_required
     def get(self, current_user):
+        if getattr(current_user, 'role', None) != 'admin':
+            return {'success': False, 'msg': 'Admin access required.'}, 403
+
         from api.permissions import CompanyAccessDenied
         try:
             scope = _scope(current_user)
@@ -71,11 +78,17 @@ class SalesExecutiveSummary(Resource):
 
 @rest_api.route(f'{BASE}/visits')
 class SalesExecutiveVisits(Resource):
-    """The visit log — where each executive was, when, and for how long."""
+    """The visit log — where each executive was, when, and for how long.
+
+    Admin-only, same rule as SalesExecutiveSummary above.
+    """
 
     @token_required
     @active_required
     def get(self, current_user):
+        if getattr(current_user, 'role', None) != 'admin':
+            return {'success': False, 'msg': 'Admin access required.'}, 403
+
         from api.permissions import CompanyAccessDenied
         try:
             scope = _scope(current_user)

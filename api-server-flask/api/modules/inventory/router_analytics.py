@@ -23,9 +23,14 @@ BASE = '/api/admin/inventory/analytics'
 
 @rest_api.route(f'{BASE}/movement')
 class MovementReport(Resource):
+    """Admin-only, same rule as Order Margin and Sales Report: this exposes landed cost."""
+
     @token_required
     @active_required
     def get(self, current_user):
+        if getattr(current_user, 'role', None) != 'admin':
+            return {'success': False, 'msg': 'Admin access required.'}, 403
+
         from api.permissions import resolve_company_scope
 
         # An unscoped admin gets None (every company); a scoped one gets their list. A
@@ -50,11 +55,17 @@ class MovementReport(Resource):
 
 @rest_api.route(f'{BASE}/batches')
 class BatchInventoryReport(Resource):
-    """On-hand stock, one row per product + batch — what movement_report folds away."""
+    """On-hand stock, one row per product + batch — what movement_report folds away.
+
+    Admin-only, same rule as Order Margin and Sales Report: this exposes landed cost.
+    """
 
     @token_required
     @active_required
     def get(self, current_user):
+        if getattr(current_user, 'role', None) != 'admin':
+            return {'success': False, 'msg': 'Admin access required.'}, 403
+
         from api.permissions import resolve_company_scope
 
         company_ids = resolve_company_scope(current_user, request.args.get('company_id'))
