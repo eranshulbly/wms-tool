@@ -159,13 +159,21 @@ def _order_for_picklist(order_id, company_ids):
 
 
 def _order_lines(order_id):
+    # batch_number comes off sku_batch.batch_params — same JSON_UNQUOTE(JSON_EXTRACT(...))
+    # idiom used everywhere else in this codebase a human-readable batch number is read
+    # (e.g. sales/report/service.py, inventory/ingestion/service.py's batch_costing_report).
+    # Scoped via potential_order.company_id, NOT pop.company_id — that column is never
+    # populated by the order-upload pipeline (always NULL), which sales/report/service.py
+    # already had to work around the same way.
     return mysql_manager.execute_query(
-        """SELECT pop.product_id, pop.quantity,
+        """SELECT pop.product_id, pop.quantity, pop.batch_id,
                   COALESCE(p.product_string, pop.sku_code) AS sku_code,
                   COALESCE(p.name, pop.product_name)        AS product_name,
-                  p.hsn_code
+                  JSON_UNQUOTE(JSON_EXTRACT(b.batch_params, '$.batch_number')) AS batch_number
              FROM potential_order_product pop
+             JOIN potential_order po ON po.potential_order_id = pop.potential_order_id
              LEFT JOIN product p ON p.product_id = pop.product_id
+             LEFT JOIN sku_batch b ON b.id = pop.batch_id AND b.company_id = po.company_id
             WHERE pop.potential_order_id = %s
             ORDER BY pop.potential_order_product_id""",
         (order_id,)) or []
@@ -313,7 +321,7 @@ def _render_pdf(order, lines, stock_by_product, rungs_by_product):
     elements.append(Spacer(1, 8))
 
     # ── Items table ──────────────────────────────────────────────────────
-    columns = ['S.No', 'Bin Location', 'Part Number', 'Description', 'HSN No.',
+    columns = ['S.No', 'Bin Location', 'SKU Code', 'Description', 'Batch',
                'Stock on Hand', 'Order Qty', 'Cases', 'Picked Qty']
     table_data = [[P(c, **head_cell) for c in columns]]
 
@@ -327,7 +335,7 @@ def _render_pdf(order, lines, stock_by_product, rungs_by_product):
             P(bin_location or '', **body_cell),
             P(l['sku_code'] or '', **body_cell),
             P(l['product_name'] or '', **body_left),
-            P(l['hsn_code'] or '', **body_cell),
+            P(l['batch_number'] or '', **body_cell),
             P(int(stock_qty) if stock_qty is not None else '—', **body_cell),
             P(l['quantity'], **body_cell),
             P(cases_text, **body_cell),
@@ -335,7 +343,7 @@ def _render_pdf(order, lines, stock_by_product, rungs_by_product):
         ])
 
     page_w_mm = (landscape(A4)[0] - 24 * mm) / mm
-    pref = [10, 26, 26, 62, 18, 22, 18, 18, 18]  # mm, sums to 218 — scaled to fill the page
+    pref = [10, 26, 26, 60, 20, 22, 18, 18, 18]  # mm, sums to 218 — scaled to fill the page
     scale = page_w_mm / sum(pref)
     col_widths = [(w * scale) * mm for w in pref]
 

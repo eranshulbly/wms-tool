@@ -261,8 +261,8 @@ class OrdersPicklistZip(Resource):
 
 @rest_api.route('/api/orders/<int:order_id>/picklist')
 class OrderPicklistDownload(Resource):
-    """One order's picklist as a PDF — bin location, part, HSN, stock on
-    hand, order qty, and a Cases figure derived off the product's own
+    """One order's picklist as a PDF — bin location, SKU code, batch, stock
+    on hand, order qty, and a Cases figure derived off the product's own
     packaging ladder. See picklist.py for what each column is sourced from."""
 
     @token_required
