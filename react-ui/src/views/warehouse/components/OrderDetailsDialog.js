@@ -28,7 +28,8 @@ import {
   IconCalendar,
   IconUser,
   IconClock,
-  IconCheck
+  IconCheck,
+  IconDownload
 } from '@tabler/icons';
 import { formatDate, getTimeInState } from '../utils';
 import StatusChip from './StatusChip';
@@ -97,6 +98,27 @@ const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) =
     };
     setActiveStep(stepMap[slug] ?? 0);
   }, [order]);
+
+  // The products table doubles as the warehouse's picklist while an order is Open/
+  // Picking — this puts a copy in someone's hand off-screen, same shape as the table.
+  const downloadPicklist = () => {
+    if (!order?.products?.length) return;
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const rows = [
+      ['Product', 'SKU', 'Description', 'Quantity', 'Rate', 'Line total'].map(esc).join(','),
+      ...order.products.map((p) =>
+        [p.name, p.product_string, p.description, orderedQty(p), money(p.price), money(p.total_price)]
+          .map(esc)
+          .join(',')
+      )
+    ].join('\n');
+    const url = URL.createObjectURL(new Blob([rows], { type: 'text/csv;charset=utf-8;' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Picklist_${order.order_request_id}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const handleMoveToPacked = async () => {
     const boxes = parseInt(numberOfBoxes, 10);
@@ -216,7 +238,18 @@ const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) =
             </Grid>
 
             <Divider style={{ margin: '16px 0' }} />
-            <Typography variant="h6" gutterBottom>Products</Typography>
+            <Box display="flex" alignItems="center" justifyContent="space-between">
+              <Typography variant="h6" gutterBottom>Products</Typography>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<IconDownload size={16} />}
+                onClick={downloadPicklist}
+                disabled={!order.products?.length}
+              >
+                Download
+              </Button>
+            </Box>
             <TableContainer component={Paper}>
               <Table size="small">
                 <TableHead>
