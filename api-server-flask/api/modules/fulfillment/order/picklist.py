@@ -117,26 +117,73 @@ def _uom_rungs(product_ids):
     return by_product
 
 
-def _cases_display(quantity, rungs):
-    """('<n>', n) for a quantity that divides evenly into whole cases, or
-    ('<qty> loose', 0) otherwise — no CASE rung, no stock rung, or a
-    remainder left over. The second value is what "Total No of Cases"
-    sums, so a "loose" line (by definition not a whole case) never adds to it,
-    matching a physical pick list's own convention.
+# Same generic labels the cart picker uses (react-ui/DownloadDmsInput.js's
+# GENERIC_UOM_WORD) — kept in sync by convention, not shared code, same as the rest of
+# this app's frontend/backend UOM-label pairs.
+GENERIC_UOM_WORD = {'STRIP': 'Strip', 'BOX': 'Box', 'CASE': 'Case', 'TAB': 'Tablet', 'UNIT': 'Unit'}
+
+
+def _uom_word(code):
+    if not code:
+        return ''
+    return GENERIC_UOM_WORD.get(code, code[:1] + code[1:].lower())
+
+
+def _pluralize(word, n):
+    if n == 1 or not word:
+        return word
+    return word + ('es' if word.lower().endswith(('s', 'x', 'ch', 'sh')) else 's')
+
+
+def _decompose_quantity(quantity, rungs):
+    """A quantity already expressed in the product's stock unit (strips, bottles,
+    vials…) broken into whole Case / Box / stock-unit counts, largest denomination
+    first. Same algorithm as order/router.py's _decompose_quantity, kept local per
+    _uom_rungs' own note above. Returns [] when the product has no stock rung on file —
+    nothing to decompose into.
     """
-    if quantity is None:
-        return '', 0
+    if quantity is None or not rungs:
+        return []
     stock = next((r for r in rungs if r['is_stock_unit']), None)
-    case = next((r for r in rungs if r['uom_code'] == 'CASE'), None)
-    if not stock or not stock['factor_to_base'] or not case or not case['factor_to_base']:
-        return f'{quantity} loose', 0
-    per_case = int(case['factor_to_base'] / stock['factor_to_base'])
-    if per_case <= 0:
-        return f'{quantity} loose', 0
-    n, rem = divmod(int(quantity), per_case)
-    if rem == 0 and n > 0:
-        return str(n), n
-    return f'{quantity} loose', 0
+    if not stock or not stock['factor_to_base']:
+        return []
+    stock_factor = stock['factor_to_base']
+    remaining = int(quantity)
+    parts = []
+    for code in ('CASE', 'BOX'):
+        rung = next((r for r in rungs if r['uom_code'] == code), None)
+        if not rung or not rung['factor_to_base']:
+            continue
+        per_unit = int(rung['factor_to_base'] / stock_factor)
+        if per_unit <= 0:
+            continue
+        n, remaining = divmod(remaining, per_unit)
+        if n:
+            parts.append({'uom': code, 'qty': n})
+    if remaining or not parts:
+        parts.append({'uom': stock['uom_code'], 'qty': remaining})
+    return parts
+
+
+def _cases_display(quantity, rungs):
+    """("2 Cases, 3 Boxes and 6 Strips", cases_n) — every denomination the quantity
+    breaks into, largest first, in whatever the product's own ladder actually has
+    (CASE/BOX only where the product has that rung; the stock unit itself is whatever
+    it is — STRIP, BOTTLE, VIAL, TUBE...). cases_n is the CASE count alone (0 when
+    the product has no CASE rung or the quantity doesn't reach one), which is what
+    "Total No of Cases" sums.
+
+    Falls back to the bare number when the product has no packaging ladder on file at
+    all — nothing to name the unit as.
+    """
+    parts = _decompose_quantity(quantity, rungs)
+    if not parts:
+        return (str(quantity) if quantity is not None else ''), 0
+
+    words = [f"{p['qty']} {_pluralize(_uom_word(p['uom']), p['qty'])}" for p in parts]
+    text = words[0] if len(words) == 1 else ', '.join(words[:-1]) + ' and ' + words[-1]
+    cases_n = next((p['qty'] for p in parts if p['uom'] == 'CASE'), 0)
+    return text, cases_n
 
 
 def _order_for_picklist(order_id, company_ids):
@@ -338,12 +385,16 @@ def _render_pdf(order, lines, stock_by_product, rungs_by_product):
             P(l['batch_number'] or '', **body_cell),
             P(int(stock_qty) if stock_qty is not None else '—', **body_cell),
             P(l['quantity'], **body_cell),
-            P(cases_text, **body_cell),
+            P(cases_text, **body_left),
             P('', **body_cell),
         ])
 
+    # Cases now carries a full "2 Cases, 3 Boxes and 6 Strips" breakdown rather than a
+    # bare number, so it gets noticeably more room than the other narrow columns —
+    # taken from Description and Picked Qty (a blank column the picker fills by hand,
+    # so it doesn't need to be wide).
     page_w_mm = (landscape(A4)[0] - 24 * mm) / mm
-    pref = [10, 26, 26, 60, 20, 22, 18, 18, 18]  # mm, sums to 218 — scaled to fill the page
+    pref = [10, 26, 26, 48, 20, 20, 16, 34, 18]  # mm, sums to 218 — scaled to fill the page
     scale = page_w_mm / sum(pref)
     col_widths = [(w * scale) * mm for w in pref]
 
