@@ -60,6 +60,21 @@ const DEALER_COLUMNS = [
   { key: 'last_sale', label: 'Last Invoice Date', type: 'date' },
 ];
 
+const BATCH_COLUMNS = [
+  { key: 'batch_number', label: 'Batch #', type: 'text' },
+  { key: 'product_name', label: 'Product', type: 'text' },
+  { key: 'sku_code', label: 'SKU', type: 'text' },
+  { key: 'expiry', label: 'Expiry', type: 'date' },
+  { key: 'quantity', label: 'Qty', type: 'int' },
+  { key: 'revenue', label: 'Revenue', type: 'money' },
+  { key: 'avg_rate', label: 'Avg Rate', type: 'money' },
+  { key: 'margin', label: 'Margin', type: 'money' },
+  { key: 'margin_pct', label: 'Margin %', type: 'pct' },
+  { key: 'dealers_reached', label: 'Dealers', type: 'int' },
+  { key: 'orders', label: 'Invoiced Orders', type: 'int' },
+  { key: 'last_sale', label: 'Last Invoice Date', type: 'date' },
+];
+
 const DRILL_PRODUCT_COLUMNS = [
   { key: 'dealer_name', label: 'Dealer', type: 'text' },
   { key: 'quantity', label: 'Qty', type: 'int' },
@@ -68,6 +83,10 @@ const DRILL_PRODUCT_COLUMNS = [
   { key: 'orders', label: 'Invoiced Orders', type: 'int' },
   { key: 'last_sale', label: 'Last Invoice Date', type: 'date' },
 ];
+
+// Same shape as the product drill (a batch is just a product narrowed to one lot) —
+// who bought this exact batch.
+const DRILL_BATCH_COLUMNS = DRILL_PRODUCT_COLUMNS;
 
 const DRILL_DEALER_COLUMNS = [
   { key: 'product_name', label: 'Product', type: 'text' },
@@ -126,6 +145,12 @@ const render = (type, v) => {
 };
 
 const isNumeric = (t) => t === 'money' || t === 'pct' || t === 'int';
+
+const drillColumns = (kind) => {
+  if (kind === 'dealer') return DRILL_DEALER_COLUMNS;
+  if (kind === 'batch') return DRILL_BATCH_COLUMNS;
+  return DRILL_PRODUCT_COLUMNS;
+};
 
 const StatCard = ({ label, value, sub }) => {
   const classes = useStyles();
@@ -199,7 +224,7 @@ const SalesReport = () => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
-  const [drill, setDrill] = useState(null); // { kind: 'product'|'dealer', id, label }
+  const [drill, setDrill] = useState(null); // { kind: 'product'|'dealer'|'batch', id, label }
 
   const load = useCallback(async () => {
     if (!selectedCompany) {
@@ -241,26 +266,32 @@ const SalesReport = () => {
   );
   const trend = data?.trend || [];
   const lines = useMemo(() => data?.lines || [], [data]);
+  const batches = data?.batches || [];
 
-  const columns = tab === 'products' ? PRODUCT_COLUMNS : DEALER_COLUMNS;
-  const rows = tab === 'products' ? products : dealers;
+  const columns = tab === 'products' ? PRODUCT_COLUMNS : tab === 'dealers' ? DEALER_COLUMNS : BATCH_COLUMNS;
+  const rows = tab === 'products' ? products : tab === 'dealers' ? dealers : batches;
 
-  // Separate search state per tab (not one shared instance) — Products and Dealers
-  // share some column keys (revenue, margin, orders...), and reusing one filter set
-  // across the switch would silently carry a "Revenue > 50000" search from one table
-  // into the other instead of starting the new tab clean.
+  // Separate search state per tab (not one shared instance) — Products, Dealers and
+  // Batches share some column keys (revenue, margin, orders...), and reusing one filter
+  // set across the switch would silently carry a "Revenue > 50000" search from one
+  // table into the other instead of starting the new tab clean.
   const productSearch = useColumnSearch(products, PRODUCT_COLUMNS, render);
   const dealerSearch = useColumnSearch(dealers, DEALER_COLUMNS, render);
-  const activeSearch = tab === 'products' ? productSearch : dealerSearch;
+  const batchSearch = useColumnSearch(batches, BATCH_COLUMNS, render);
+  const activeSearch = tab === 'products' ? productSearch : tab === 'dealers' ? dealerSearch : batchSearch;
 
   const openDrill = (kind, row) => {
-    if (kind === 'product') {
+    if (kind === 'product' || kind === 'batch') {
+      // Batch rows narrow the same product/dealer line filter down to one batch_id —
+      // both drills land on "who bought this", just at a different grain.
+      const filterKey = kind === 'batch' ? 'batch_id' : 'product_id';
       const rows2 = groupLines(
-        lines.filter((l) => l.product_id === row.id),
+        lines.filter((l) => l[filterKey] === row.id),
         'dealer_id',
         ['dealer_name', 'town']
       ).map((r) => ({ ...r, dealer_name: dealerLabel(r.dealer_name, r.town) }));
-      setDrill({ kind, label: row.product_name, sub: row.sku_code, rows: rows2 });
+      const label = kind === 'batch' ? `${row.product_name} — Batch ${row.batch_number || row.id}` : row.product_name;
+      setDrill({ kind, label, sub: row.sku_code, rows: rows2 });
     } else {
       const rows2 = groupLines(
         lines.filter((l) => l.dealer_id === row.id),
@@ -462,6 +493,7 @@ const SalesReport = () => {
       <Tabs value={tab} onChange={(e, v) => setTab(v)} className={classes.section}>
         <Tab label="By Product" value="products" />
         <Tab label="By Dealer" value="dealers" />
+        <Tab label="By Batch" value="batches" />
       </Tabs>
 
       {loading && !rows.length ? (
@@ -524,7 +556,7 @@ const SalesReport = () => {
                   key={r.id}
                   hover
                   className={classes.clickableRow}
-                  onClick={() => openDrill(tab === 'products' ? 'product' : 'dealer', r)}
+                  onClick={() => openDrill(tab === 'products' ? 'product' : tab === 'dealers' ? 'dealer' : 'batch', r)}
                 >
                   {columns.map((c) => (
                     <TableCell
@@ -564,7 +596,7 @@ const SalesReport = () => {
             <Table size="small">
               <TableHead>
                 <TableRow>
-                  {(drill?.kind === 'product' ? DRILL_PRODUCT_COLUMNS : DRILL_DEALER_COLUMNS).map((c) => (
+                  {drillColumns(drill?.kind).map((c) => (
                     <TableCell key={c.key} className={classes.head} align={isNumeric(c.type) ? 'right' : 'left'}>
                       {c.label}
                     </TableCell>
@@ -574,7 +606,7 @@ const SalesReport = () => {
               <TableBody>
                 {(drill?.rows || []).map((r) => (
                   <TableRow key={r.id}>
-                    {(drill?.kind === 'product' ? DRILL_PRODUCT_COLUMNS : DRILL_DEALER_COLUMNS).map((c) => (
+                    {drillColumns(drill?.kind).map((c) => (
                       <TableCell key={c.key} align={isNumeric(c.type) ? 'right' : 'left'}>
                         {render(c.type, r[c.key])}
                       </TableCell>
