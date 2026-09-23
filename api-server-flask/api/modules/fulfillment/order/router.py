@@ -216,6 +216,49 @@ class OrdersPicklistList(Resource):
             return {'success': False, 'msg': f'Error listing picklist orders: {str(e)}'}, 400
 
 
+@rest_api.route('/api/orders/picklist/zip')
+class OrdersPicklistZip(Resource):
+    """The list page's "Download Picklist" button — one or more selected
+    orders, bundled into a single zip (one PDF per order)."""
+
+    @token_required
+    @active_required
+    @upload_permission_required('orders')
+    def get(self, current_user):
+        raw_ids = request.args.get('order_ids', '')
+        order_ids = []
+        for part in raw_ids.split(','):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                order_ids.append(int(part))
+            except ValueError:
+                continue
+        if not order_ids:
+            return {'success': False, 'msg': 'order_ids is required.'}, 400
+
+        try:
+            scope = resolve_company_scope(current_user, request.args.get('company_id'))
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
+
+        try:
+            zip_bytes = picklist_svc.build_picklist_zip(order_ids, scope)
+        except picklist_svc.PicklistError as e:
+            return {'success': False, 'msg': str(e)}, 404
+        except Exception as e:
+            logger.exception('Error generating picklist zip', extra={'order_ids': order_ids})
+            return {'success': False, 'msg': f'Error generating picklists: {str(e)}'}, 400
+
+        return send_file(
+            BytesIO(zip_bytes),
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name='picklists.zip',
+        )
+
+
 @rest_api.route('/api/orders/<int:order_id>/picklist')
 class OrderPicklistDownload(Resource):
     """One order's picklist as a PDF — bin location, part, HSN, stock on

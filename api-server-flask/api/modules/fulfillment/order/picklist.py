@@ -38,19 +38,29 @@ class PicklistError(Exception):
     caller's company, or not created by a file upload."""
 
 
+# Orders still worth handing a picker a sheet for. Once an order is Packed or
+# past it, picking is already done — the order stays in the system, just not
+# in this list, so the list doesn't grow forever with orders nobody would
+# ever pick again.
+PICKABLE_STATUSES = ('Open', 'Picking')
+
+
 # --------------------------------------------------------------------------- #
-# Listing — Download Picklist tab                                             #
+# Listing — Download Picklist page                                            #
 # --------------------------------------------------------------------------- #
 
 def list_picklist_orders(company_ids, warehouse_id=None):
-    """One row per order eligible for a picklist download.
+    """One row per order that is open and ready to pick.
 
-    Newest upload first (ties broken by order id) so a just-uploaded file's
-    orders land at the top of the tab, matching where the operator is looking
-    right after the upload finishes.
+    Newest first (ties broken by order id) so a just-uploaded file's orders
+    land at the top, matching where the operator is looking right after the
+    upload finishes.
     """
     cf_sql, cf_params = company_filter_sql(company_ids, alias='po')
-    params = list(cf_params)
+    status_ph = ','.join(['%s'] * len(PICKABLE_STATUSES))
+    # Params must line up left-to-right with the placeholders as they appear in the SQL
+    # text below: status list first, then the company filter, then (optionally) warehouse.
+    params = list(PICKABLE_STATUSES) + list(cf_params)
     wh_clause = ''
     if warehouse_id:
         wh_clause = ' AND po.warehouse_id = %s'
@@ -60,14 +70,14 @@ def list_picklist_orders(company_ids, warehouse_id=None):
         f"""SELECT po.potential_order_id, po.original_order_id, po.order_date,
                    po.status, po.warehouse_id, po.company_id,
                    d.name AS dealer_name, d.town AS dealer_town,
-                   ub.filename AS upload_filename, ub.uploaded_at,
                    (SELECT COUNT(*) FROM potential_order_product pop
                      WHERE pop.potential_order_id = po.potential_order_id) AS item_count
               FROM potential_order po
               LEFT JOIN dealer d ON d.dealer_id = po.dealer_id
-              LEFT JOIN upload_batches ub ON ub.id = po.upload_batch_id
-             WHERE po.upload_batch_id IS NOT NULL AND {cf_sql}{wh_clause}
-             ORDER BY ub.uploaded_at DESC, po.potential_order_id DESC""",
+             WHERE po.upload_batch_id IS NOT NULL
+               AND po.status IN ({status_ph})
+               AND {cf_sql}{wh_clause}
+             ORDER BY po.order_date DESC, po.potential_order_id DESC""",
         tuple(params)) or []
 
     out = []
@@ -82,8 +92,6 @@ def list_picklist_orders(company_ids, warehouse_id=None):
             'warehouse_id': r['warehouse_id'],
             'company_id': r['company_id'],
             'item_count': r['item_count'] or 0,
-            'upload_filename': r['upload_filename'],
-            'uploaded_at': r['uploaded_at'].isoformat() if r['uploaded_at'] else None,
         })
     return out
 
@@ -195,6 +203,51 @@ def build_picklist_pdf(order_id, company_ids):
     rungs_by_product = _uom_rungs(product_ids)
 
     return _render_pdf(order, lines, stock_by_product, rungs_by_product)
+
+
+def build_picklist_zip(order_ids, company_ids):
+    """One PDF per order, bundled into a zip — what the "Download Picklist"
+    button on the list page actually calls when one or more orders are
+    selected, one file each, so a multi-order selection is still one click
+    and one download.
+
+    Orders that no longer resolve (wrong company, deleted, or simply not a
+    file-upload order — the selection came from the client and could be
+    stale) are silently left out rather than failing the whole batch; the
+    zip just ends up with fewer files than were selected. Raises
+    PicklistError only when NONE of the requested orders resolved, so the
+    caller isn't handed an empty zip with nothing to open.
+    """
+    import zipfile
+
+    buf = BytesIO()
+    included = 0
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        seen_names = set()
+        for order_id in order_ids:
+            order = _order_for_picklist(order_id, company_ids)
+            if not order:
+                continue
+            try:
+                pdf_bytes = build_picklist_pdf(order_id, company_ids)
+            except Exception:
+                # One bad order shouldn't sink the rest of the selection.
+                continue
+
+            order_no = order['original_order_id'] or f"PO{order['potential_order_id']}"
+            name = f'picklist_{order_no}.pdf'
+            # original_order_id isn't guaranteed unique across companies, and two
+            # orders sharing a name would silently overwrite one another in the zip.
+            if name in seen_names:
+                name = f'picklist_{order_no}_{order["potential_order_id"]}.pdf'
+            seen_names.add(name)
+            zf.writestr(name, pdf_bytes)
+            included += 1
+
+    if included == 0:
+        raise PicklistError('None of the selected orders have a picklist to download.')
+
+    return buf.getvalue()
 
 
 def _render_pdf(order, lines, stock_by_product, rungs_by_product):

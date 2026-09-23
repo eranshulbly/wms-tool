@@ -1,11 +1,11 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Box,
   Button,
   Card,
   CardContent,
+  Checkbox,
   CircularProgress,
-  IconButton,
   Table,
   TableBody,
   TableCell,
@@ -20,13 +20,13 @@ import { makeStyles } from '@material-ui/styles';
 import { IconRefresh, IconFileDownload } from '@tabler/icons';
 import { useWarehouse } from '../../../context/WarehouseContext';
 import { useSnackbar } from '../../../hooks/useSnackbar';
-import { getPicklistOrders, downloadPicklist } from '../../../services/orderService';
-import { dealerLabel } from '../../../utils/dealerLabel';
+import { getPicklistOrders, downloadPicklistZip } from '../../../services/orderService';
 
 const useStyles = makeStyles((theme) => ({
   head: { fontWeight: 600, whiteSpace: 'nowrap' },
   num: { whiteSpace: 'nowrap' },
-  empty: { padding: theme.spacing(4), textAlign: 'center' }
+  empty: { padding: theme.spacing(4), textAlign: 'center' },
+  checkboxCell: { width: 42 }
 }));
 
 const dt = (v) => {
@@ -34,13 +34,6 @@ const dt = (v) => {
   const d = new Date(v);
   if (Number.isNaN(d.getTime())) return String(v);
   return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-};
-
-const dtTime = (v) => {
-  if (!v) return '—';
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return String(v);
-  return d.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 };
 
 const saveBlob = (blob, filename) => {
@@ -55,11 +48,12 @@ const saveBlob = (blob, filename) => {
 };
 
 /**
- * Every order an "Upload Orders" file created, one row each — appears here the moment
- * that upload finishes (see api/modules/fulfillment/order/picklist.py: eligibility is
- * just "has an upload_batch_id"). Each row downloads its own picklist PDF: bin
- * location, part, HSN, stock on hand, order qty and a Cases figure, laid out for a
- * picker to work off and sign.
+ * Every order that's open and ready to pick, one row each — appears here the moment an
+ * "Upload Orders" file creates it (see api/modules/fulfillment/order/picklist.py) and
+ * drops off once it moves past Picking, so this never grows into a list of orders
+ * already picked. Select any number of rows and "Download Picklist" fetches one zip
+ * with one PDF per order (bin location, part, HSN, stock on hand, order qty and a Cases
+ * figure, laid out for a picker to work off and sign).
  */
 const DownloadPicklist = () => {
   const classes = useStyles();
@@ -68,7 +62,8 @@ const DownloadPicklist = () => {
 
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [downloadingId, setDownloadingId] = useState(null);
+  const [selected, setSelected] = useState([]); // order_ids
+  const [downloading, setDownloading] = useState(false);
 
   const load = useCallback(async () => {
     if (!selectedCompany) {
@@ -79,7 +74,10 @@ const DownloadPicklist = () => {
     try {
       const data = await getPicklistOrders(selectedCompany, selectedWarehouse);
       if (data.success) {
+        const ids = new Set((data.orders || []).map((o) => o.order_id));
         setOrders(data.orders || []);
+        // Drop selections for rows that no longer qualify (e.g. picked since the last load).
+        setSelected((sel) => sel.filter((id) => ids.has(id)));
       } else {
         showSnackbar(data.msg || 'Could not load picklist orders', 'error');
         setOrders([]);
@@ -97,31 +95,54 @@ const DownloadPicklist = () => {
     load();
   }, [load]);
 
-  const handleDownload = async (order) => {
-    setDownloadingId(order.order_id);
+  const allSelected = orders.length > 0 && selected.length === orders.length;
+  const someSelected = selected.length > 0 && !allSelected;
+
+  const toggleAll = () => setSelected(allSelected ? [] : orders.map((o) => o.order_id));
+  const toggleOne = (orderId) =>
+    setSelected((sel) => (sel.includes(orderId) ? sel.filter((id) => id !== orderId) : [...sel, orderId]));
+
+  const handleDownload = async () => {
+    if (!selected.length) return;
+    setDownloading(true);
     try {
-      const blob = await downloadPicklist(order.order_id, order.company_id);
-      saveBlob(blob, `picklist_${order.order_number}.pdf`);
+      const blob = await downloadPicklistZip(selected, selectedCompany);
+      saveBlob(blob, `picklists_${new Date().toISOString().slice(0, 10)}.zip`);
     } catch (e) {
-      showSnackbar(e?.response?.data?.msg || 'Could not download this picklist', 'error');
+      showSnackbar(e?.response?.data?.msg || 'Could not download these picklists', 'error');
     } finally {
-      setDownloadingId(null);
+      setDownloading(false);
     }
   };
+
+  const rows = useMemo(() => orders, [orders]);
 
   return (
     <Card>
       <CardContent>
-        <Box display="flex" alignItems="center" mb={2}>
-          <Typography variant="h4">Download Picklist</Typography>
+        <Typography variant="h4" gutterBottom>Download Picklist</Typography>
+        <Typography variant="body2" color="textSecondary" gutterBottom>
+          Pick lists for orders that are open and ready to pick. Quantities print in stock
+          units, with the number of full cases beside them. Select several orders to
+          download a zip containing one PDF each.
+        </Typography>
+
+        <Box display="flex" alignItems="center" mt={2} mb={1}>
           <Box flexGrow={1} />
-          <Button size="small" startIcon={<IconRefresh size={16} />} onClick={load} disabled={loading}>
+          <Button size="small" startIcon={<IconRefresh size={16} />} onClick={load} disabled={loading} style={{ marginRight: 8 }}>
             Refresh
           </Button>
+          <Button
+            variant="contained"
+            color="primary"
+            size="small"
+            startIcon={downloading ? <CircularProgress size={16} color="inherit" /> : <IconFileDownload size={16} />}
+            onClick={handleDownload}
+            disabled={!selected.length || downloading}
+          >
+            {downloading ? 'Preparing…' : 'Download Picklist'}
+          </Button>
         </Box>
-        <Typography variant="body2" color="textSecondary" gutterBottom>
-          Every order the file you upload creates shows up here — download its picklist to hand to a picker.
-        </Typography>
 
         {!selectedCompany ? (
           <Box className={classes.empty}>
@@ -134,7 +155,7 @@ const DownloadPicklist = () => {
         ) : !orders.length ? (
           <Box className={classes.empty}>
             <Typography variant="body2" color="textSecondary">
-              No orders yet — they appear here as soon as an order file is uploaded.
+              No orders open and ready to pick right now.
             </Typography>
           </Box>
         ) : (
@@ -142,38 +163,36 @@ const DownloadPicklist = () => {
             <Table size="small">
               <TableHead>
                 <TableRow>
+                  <TableCell className={classes.checkboxCell} padding="checkbox">
+                    <Checkbox
+                      indeterminate={someSelected}
+                      checked={allSelected}
+                      onChange={toggleAll}
+                      size="small"
+                    />
+                  </TableCell>
                   <TableCell className={classes.head}>Order No</TableCell>
                   <TableCell className={classes.head}>Dealer</TableCell>
+                  <TableCell className={classes.head}>City</TableCell>
                   <TableCell className={classes.head}>Order Date</TableCell>
-                  <TableCell className={classes.head} align="right">Items</TableCell>
-                  <TableCell className={classes.head}>Status</TableCell>
-                  <TableCell className={classes.head}>Uploaded</TableCell>
-                  <TableCell className={classes.head} align="center">Download</TableCell>
+                  <TableCell className={classes.head} align="right">Lines</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {orders.map((o) => (
-                  <TableRow key={o.order_id} hover>
+                {rows.map((o) => (
+                  <TableRow key={o.order_id} hover onClick={() => toggleOne(o.order_id)} style={{ cursor: 'pointer' }}>
+                    <TableCell padding="checkbox" onClick={(e) => e.stopPropagation()}>
+                      <Checkbox
+                        checked={selected.includes(o.order_id)}
+                        onChange={() => toggleOne(o.order_id)}
+                        size="small"
+                      />
+                    </TableCell>
                     <TableCell>{o.order_number}</TableCell>
-                    <TableCell>{dealerLabel(o.dealer_name, o.dealer_town)}</TableCell>
+                    <TableCell>{o.dealer_name}</TableCell>
+                    <TableCell>{o.dealer_town || '—'}</TableCell>
                     <TableCell>{dt(o.order_date)}</TableCell>
                     <TableCell align="right" className={classes.num}>{o.item_count}</TableCell>
-                    <TableCell>{o.status}</TableCell>
-                    <TableCell>
-                      <Typography variant="body2">{dtTime(o.uploaded_at)}</Typography>
-                      {o.upload_filename && (
-                        <Typography variant="caption" color="textSecondary">{o.upload_filename}</Typography>
-                      )}
-                    </TableCell>
-                    <TableCell align="center">
-                      <IconButton
-                        size="small"
-                        onClick={() => handleDownload(o)}
-                        disabled={downloadingId === o.order_id}
-                      >
-                        {downloadingId === o.order_id ? <CircularProgress size={18} /> : <IconFileDownload size={18} />}
-                      </IconButton>
-                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>

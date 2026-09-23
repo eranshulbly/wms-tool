@@ -142,12 +142,14 @@ export const getPicklistOrders = (companyId, warehouseId = null) => {
   return api.get('orders/picklist', { params }).then((res) => res.data);
 };
 
-// One order's picklist PDF — fetched as an authenticated blob (a plain <a href> can't
-// send the bearer token), then handed to the browser as a download.
-export const downloadPicklist = (orderId, companyId) => {
-  const params = {};
+// One or more orders' picklists, bundled as a zip (one PDF per order) — fetched as an
+// authenticated blob (a plain <a href> can't send the bearer token), then handed to the
+// browser as a download. orderIds is an array; the backend skips any that no longer
+// qualify (e.g. picked since the list was last loaded) rather than failing the batch.
+export const downloadPicklistZip = (orderIds, companyId) => {
+  const params = { order_ids: orderIds.join(',') };
   if (companyId && companyId !== 'all') params.company_id = companyId;
-  return api.get(`orders/${orderId}/picklist`, { params, responseType: 'blob' }).then((res) => res.data);
+  return api.get('orders/picklist/zip', { params, responseType: 'blob' }).then((res) => res.data);
 };
 
 export const getRecentActivity = (warehouseId, companyId, limit = 100) => {
