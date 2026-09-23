@@ -108,25 +108,6 @@ export const getOrderDealers = (companyId) => {
   return api.get('orders/dealers', { params }).then((res) => res.data);
 };
 
-// Raise an order by hand with its parts taken from an uploaded sheet — for parts that
-// arrived outside the app (phone/WhatsApp). The result is an ordinary submitted order
-// that appears in this list like any other, so its DMS file is then downloaded through
-// the normal per-order route.
-export const createManualOrder = ({ file, dealerId, companyId, warehouseId, notes, expectedDate }) => {
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('dealer_id', dealerId);
-  formData.append('company_id', companyId);
-  if (warehouseId && warehouseId !== 'all') formData.append('warehouse_id', warehouseId);
-  if (notes) formData.append('notes', notes);
-  if (expectedDate) formData.append('expected_delivery_date', expectedDate);
-  return api
-    .post('orders/submitted/manual', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    })
-    .then((res) => res.data);
-};
-
 // Products for the cart picker on "Add Order", each with the packaging units
 // (STRIP/BOX/CASE, whatever it actually has) it can be ordered in. `search` narrows by
 // name/SKU as the operator types, so the list stays short on a catalogue of thousands.
@@ -137,9 +118,7 @@ export const getOrderProducts = (companyId, search = '') => {
 };
 
 // Raise an order by hand with its lines picked from the catalogue — a product, a unit
-// and a quantity per line — instead of an uploaded sheet. `items` is
-// [{ productId, uom, quantity }]. Otherwise the same order details and the same result
-// shape as createManualOrder, since both land in the same Submitted Orders list.
+// and a quantity per line. `items` is [{ productId, uom, quantity }].
 export const createCartOrder = ({ items, dealerId, companyId, warehouseId, notes, expectedDate }) => {
   const body = {
     dealer_id: dealerId,

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Grid,
   Box,
@@ -28,12 +28,10 @@ import {
   IconButton,
   Snackbar,
   Alert,
-  Tabs,
-  Tab,
   Autocomplete
 } from '@material-ui/core';
 import {
-  IconPhoto, IconX, IconPlus, IconUpload, IconChevronRight, IconDownload, IconBan
+  IconPhoto, IconX, IconPlus, IconChevronRight, IconDownload, IconBan
 } from '@tabler/icons';
 import SubmittedOrderItems from './components/SubmittedOrderItems';
 
@@ -45,7 +43,6 @@ import {
   fetchSubmittedOrderPhoto,
   getSubmittedOrderItems,
   rejectSubmittedOrder,
-  createManualOrder,
   createCartOrder,
   getOrderDealers,
   getOrderProducts
@@ -70,9 +67,9 @@ const csvCell = (v) => {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
-// Submitted Orders — orders raised by hand here (Add Order, file or cart) or brought in
-// from the app. Viewing, creating, downloading a plain product/quantity list, and
-// rejecting; no DMS file generation or stock-upload step lives on this screen.
+// Submitted Orders — orders raised by hand here (Add Order, built from the catalogue) or
+// brought in from the app. Viewing, creating, downloading a plain product/quantity list,
+// and rejecting; no DMS file generation or stock-upload step lives on this screen.
 
 // The grid's column headers show the plain word a rep actually says ("Box", "Case")
 // rather than the pack-specific code the catalogue stores ("30X10T").
@@ -109,20 +106,15 @@ const DownloadDmsInput = () => {
   const [rejectNote, setRejectNote] = useState('');
   const [rejecting, setRejecting] = useState(false);
 
-  // Add-order dialog — raise an order by hand from a parts sheet, for parts that came
-  // in outside the app. It becomes an ordinary order in this same list.
+  // Add-order dialog — raise an order by hand, built line by line from the catalogue.
+  // It becomes an ordinary order in this same list.
   const BLANK_ORDER = { companyId: '', dealerId: '', warehouseId: '', notes: '', expectedDate: '' };
   const [addOpen, setAddOpen] = useState(false);
   const [newOrder, setNewOrder] = useState(BLANK_ORDER);
-  const [newFile, setNewFile] = useState(null);
   const [creating, setCreating] = useState(false);
   const [dealers, setDealers] = useState([]);
   const [dealersLoading, setDealersLoading] = useState(false);
-  const fileInputRef = useRef(null);
 
-  // 'file' — the original parts-sheet upload. 'cart' — a grid: one row per product,
-  // one column per unit (Strip/Box/Case) it can be ordered in, filled in directly.
-  const [orderMode, setOrderMode] = useState('file');
   // [{ key, product, qtyByUom: { STRIP: '2', BOX: '', CASE: '1' } }] — a row per
   // product, however many of its units the operator actually filled in.
   const [cartRows, setCartRows] = useState([]);
@@ -138,8 +130,6 @@ const DownloadDmsInput = () => {
       companyId: companyFilter !== 'all' ? companyFilter : companies.length === 1 ? companies[0].id : '',
       warehouseId: warehouseFilter !== 'all' ? warehouseFilter : ''
     });
-    setNewFile(null);
-    setOrderMode('file');
     setCartRows([]);
     setProductSearch('');
     setAddOpen(true);
@@ -149,7 +139,7 @@ const DownloadDmsInput = () => {
   // the chosen company — a product must be orderable against the company the order is
   // raised for, same as the dealer picker just above.
   useEffect(() => {
-    if (!addOpen || orderMode !== 'cart' || !newOrder.companyId) {
+    if (!addOpen || !newOrder.companyId) {
       setProductOptions([]);
       return;
     }
@@ -171,7 +161,7 @@ const DownloadDmsInput = () => {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [addOpen, orderMode, newOrder.companyId, productSearch]);
+  }, [addOpen, newOrder.companyId, productSearch]);
 
   // Picking a product adds its row to the grid straight away — there's nothing to
   // configure first, since every unit it has gets its own cell right there. Picking
@@ -260,39 +250,24 @@ const DownloadDmsInput = () => {
   }, [addOpen, newOrder.companyId]);
 
   const canCreate =
-    !!newOrder.companyId &&
-    !!newOrder.dealerId &&
-    !creating &&
-    (orderMode === 'file' ? !!newFile : cartPayloadItems.length > 0);
+    !!newOrder.companyId && !!newOrder.dealerId && !creating && cartPayloadItems.length > 0;
 
   const submitNewOrder = async () => {
     if (!canCreate) return;
     setCreating(true);
     try {
-      const data =
-        orderMode === 'file'
-          ? await createManualOrder({
-              file: newFile,
-              dealerId: newOrder.dealerId,
-              companyId: newOrder.companyId,
-              warehouseId: newOrder.warehouseId,
-              notes: newOrder.notes,
-              expectedDate: newOrder.expectedDate
-            })
-          : await createCartOrder({
-              items: cartPayloadItems,
-              dealerId: newOrder.dealerId,
-              companyId: newOrder.companyId,
-              warehouseId: newOrder.warehouseId,
-              notes: newOrder.notes,
-              expectedDate: newOrder.expectedDate
-            });
+      const data = await createCartOrder({
+        items: cartPayloadItems,
+        dealerId: newOrder.dealerId,
+        companyId: newOrder.companyId,
+        warehouseId: newOrder.warehouseId,
+        notes: newOrder.notes,
+        expectedDate: newOrder.expectedDate
+      });
       if (data.success) {
         notify(`${data.order_number} created with ${data.item_count} part${data.item_count === 1 ? '' : 's'}`);
         setAddOpen(false);
-        setNewFile(null);
         setCartRows([]);
-        if (fileInputRef.current) fileInputRef.current.value = '';
         await fetchOrders();
       } else {
         notify(data.msg || 'Could not create the order.', 'error');
@@ -630,15 +605,14 @@ const DownloadDmsInput = () => {
         </DialogActions>
       </Dialog>
 
-      {/* Add Order — order details plus either a parts sheet or a hand-built cart. Either
-          way the order is created and appears in the list above. */}
+      {/* Add Order — order details plus a hand-built cart. The order is created and
+          appears in the list above as soon as it's submitted. */}
       <Dialog open={addOpen} onClose={() => !creating && setAddOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Add Order</DialogTitle>
         <DialogContent dividers>
           <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
             For orders that came in outside the app — a phone or WhatsApp order the rep never
-            entered. Either attach the parts sheet it arrived as, or build it line by line from
-            the catalogue below.
+            entered. Build it line by line from the catalogue below.
           </Typography>
           <Grid container spacing={2}>
             <Grid item xs={12} sm={6}>
@@ -763,177 +737,142 @@ const DownloadDmsInput = () => {
               />
             </Grid>
             <Grid item xs={12}>
-              <Tabs
-                value={orderMode}
-                onChange={(e, v) => setOrderMode(v)}
-                variant="fullWidth"
-                sx={{ minHeight: 36, mb: 1, borderBottom: 1, borderColor: 'divider' }}
-              >
-                <Tab value="file" label="Upload Parts Excel" sx={{ minHeight: 36 }} />
-                <Tab value="cart" label="Build From Catalogue" sx={{ minHeight: 36 }} />
-              </Tabs>
-            </Grid>
-
-            {orderMode === 'file' ? (
-              <Grid item xs={12}>
-                <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
-                  PART# and QTY required; DESC. and MRP optional.
-                </Typography>
-                <Stack direction="row" spacing={2} alignItems="center">
-                  <Button variant="outlined" startIcon={<IconUpload size={16} />} onClick={() => fileInputRef.current?.click()}>
-                    {newFile ? 'Change file' : 'Choose parts Excel'}
-                  </Button>
-                  <Typography variant="body2" color={newFile ? 'textPrimary' : 'textSecondary'} noWrap>
-                    {newFile ? newFile.name : 'No file chosen'}
-                  </Typography>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    hidden
-                    accept=".xlsx,.xlsm,.xls"
-                    onChange={(e) => setNewFile(e.target.files?.[0] || null)}
-                  />
-                </Stack>
-              </Grid>
-            ) : (
-              <Grid item xs={12}>
-                <Stack spacing={1.5}>
-                  <Autocomplete
-                    size="small"
-                    options={productOptions.filter(
-                      (p) => !cartRows.some((r) => r.product.product_id === p.product_id)
-                    )}
-                    // Selecting a product adds its row immediately — nothing else to
-                    // configure first, so there's no value to hold onto afterwards.
-                    value={null}
-                    onChange={(e, v) => addProductRow(v)}
-                    // inputValue is fully controlled (rather than left to MUI) so a
-                    // selection reliably clears the box: addProductRow already sets
-                    // productSearch back to '', and since the box shows exactly that
-                    // value, it goes blank instead of settling on the picked label.
-                    inputValue={productSearch}
-                    onInputChange={(e, v, reason) => {
-                      if (reason === 'input') setProductSearch(v);
-                    }}
-                    getOptionLabel={(o) => (o ? `${o.name}${o.sku_code ? ` (${o.sku_code})` : ''}` : '')}
-                    isOptionEqualToValue={(o, v) => o.product_id === v.product_id}
-                    loading={productsLoading}
-                    disabled={!newOrder.companyId}
-                    noOptionsText={newOrder.companyId ? 'No matching products' : 'Choose a company first'}
-                    renderInput={(params) => (
-                      <TextField
-                        {...params}
-                        label="Add a product"
-                        placeholder={newOrder.companyId ? 'Search by name or SKU' : ''}
-                        InputProps={{
-                          ...params.InputProps,
-                          endAdornment: (
-                            <>
-                              {productsLoading ? <CircularProgress size={16} /> : null}
-                              {params.InputProps.endAdornment}
-                            </>
-                          )
-                        }}
-                      />
-                    )}
-                  />
-
-                  {cartRows.length > 0 ? (
-                    <TableContainer component={Paper} variant="outlined">
-                      <Table size="small">
-                        <TableHead>
-                          <TableRow>
-                            <TableCell>Product</TableCell>
-                            {CART_SLOTS.map((slot) => (
-                              <TableCell key={slot.header} align="center">
-                                {slot.header}
-                              </TableCell>
-                            ))}
-                            <TableCell align="right">Total</TableCell>
-                            <TableCell sx={{ width: 40 }} />
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {cartRows.map((row) => {
-                            const preview = rowPreview(row);
-                            return (
-                              <TableRow key={row.key}>
-                                <TableCell>
-                                  {row.product.name}
-                                  {row.product.sku_code ? (
-                                    <Typography variant="caption" color="textSecondary" display="block">
-                                      {row.product.sku_code}
-                                    </Typography>
-                                  ) : null}
-                                </TableCell>
-                                {CART_SLOTS.map((slot) => {
-                                  const uomEntry = row.product.uoms.find(slot.match);
-                                  return (
-                                    <TableCell key={slot.header} align="center">
-                                      {uomEntry ? (
-                                        <Box>
-                                          <TextField
-                                            variant="standard"
-                                            type="number"
-                                            value={row.qtyByUom[uomEntry.uom_code] || ''}
-                                            onChange={(e) => setRowQty(row.key, uomEntry.uom_code, e.target.value)}
-                                            inputProps={{ min: 0, step: 1, style: { textAlign: 'center', width: 48 } }}
-                                          />
-                                          {/* Qty's real unit varies by product (Strip, Bottle,
-                                              Vial…) — named small here since the header can't
-                                              say it for every row at once. */}
-                                          {slot.header === 'Qty' && (
-                                            <Typography variant="caption" color="textSecondary" display="block">
-                                              {uomWord(uomEntry.uom_code)}
-                                            </Typography>
-                                          )}
-                                        </Box>
-                                      ) : (
-                                        <Typography variant="body2" color="textSecondary">
-                                          —
-                                        </Typography>
-                                      )}
-                                    </TableCell>
-                                  );
-                                })}
-                                <TableCell align="right">
-                                  {preview ? (
-                                    <Typography
-                                      variant="body2"
-                                      color={preview.exact ? 'textPrimary' : 'error'}
-                                      noWrap
-                                    >
-                                      {preview.exact
-                                        ? `${preview.whole} ${preview.word}${preview.whole === 1 ? '' : 's'}`
-                                        : 'uneven qty'}
-                                    </Typography>
-                                  ) : (
-                                    <Typography variant="body2" color="textSecondary">
-                                      —
-                                    </Typography>
-                                  )}
-                                </TableCell>
-                                <TableCell>
-                                  <IconButton size="small" onClick={() => removeCartRow(row.key)} aria-label="Remove">
-                                    <IconX size={16} />
-                                  </IconButton>
-                                </TableCell>
-                              </TableRow>
-                            );
-                          })}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
-                  ) : (
-                    <Typography variant="body2" color="textSecondary">
-                      No products added yet — search above to add a row, then fill in whichever
-                      units it's being ordered in (Case and Box, plus whatever that product is
-                      priced in — Strip, Bottle, Vial, Tube… — any or all of them).
-                    </Typography>
+              <Stack spacing={1.5}>
+                <Autocomplete
+                  size="small"
+                  options={productOptions.filter(
+                    (p) => !cartRows.some((r) => r.product.product_id === p.product_id)
                   )}
-                </Stack>
-              </Grid>
-            )}
+                  // Selecting a product adds its row immediately — nothing else to
+                  // configure first, so there's no value to hold onto afterwards.
+                  value={null}
+                  onChange={(e, v) => addProductRow(v)}
+                  // inputValue is fully controlled (rather than left to MUI) so a
+                  // selection reliably clears the box: addProductRow already sets
+                  // productSearch back to '', and since the box shows exactly that
+                  // value, it goes blank instead of settling on the picked label.
+                  inputValue={productSearch}
+                  onInputChange={(e, v, reason) => {
+                    if (reason === 'input') setProductSearch(v);
+                  }}
+                  getOptionLabel={(o) => (o ? `${o.name}${o.sku_code ? ` (${o.sku_code})` : ''}` : '')}
+                  isOptionEqualToValue={(o, v) => o.product_id === v.product_id}
+                  loading={productsLoading}
+                  disabled={!newOrder.companyId}
+                  noOptionsText={newOrder.companyId ? 'No matching products' : 'Choose a company first'}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Add a product"
+                      placeholder={newOrder.companyId ? 'Search by name or SKU' : ''}
+                      InputProps={{
+                        ...params.InputProps,
+                        endAdornment: (
+                          <>
+                            {productsLoading ? <CircularProgress size={16} /> : null}
+                            {params.InputProps.endAdornment}
+                          </>
+                        )
+                      }}
+                    />
+                  )}
+                />
+
+                {cartRows.length > 0 ? (
+                  <TableContainer component={Paper} variant="outlined">
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Product</TableCell>
+                          {CART_SLOTS.map((slot) => (
+                            <TableCell key={slot.header} align="center">
+                              {slot.header}
+                            </TableCell>
+                          ))}
+                          <TableCell align="right">Total</TableCell>
+                          <TableCell sx={{ width: 40 }} />
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {cartRows.map((row) => {
+                          const preview = rowPreview(row);
+                          return (
+                            <TableRow key={row.key}>
+                              <TableCell>
+                                {row.product.name}
+                                {row.product.sku_code ? (
+                                  <Typography variant="caption" color="textSecondary" display="block">
+                                    {row.product.sku_code}
+                                  </Typography>
+                                ) : null}
+                              </TableCell>
+                              {CART_SLOTS.map((slot) => {
+                                const uomEntry = row.product.uoms.find(slot.match);
+                                return (
+                                  <TableCell key={slot.header} align="center">
+                                    {uomEntry ? (
+                                      <Box>
+                                        <TextField
+                                          variant="standard"
+                                          type="number"
+                                          value={row.qtyByUom[uomEntry.uom_code] || ''}
+                                          onChange={(e) => setRowQty(row.key, uomEntry.uom_code, e.target.value)}
+                                          inputProps={{ min: 0, step: 1, style: { textAlign: 'center', width: 48 } }}
+                                        />
+                                        {/* Qty's real unit varies by product (Strip, Bottle,
+                                            Vial…) — named small here since the header can't
+                                            say it for every row at once. */}
+                                        {slot.header === 'Qty' && (
+                                          <Typography variant="caption" color="textSecondary" display="block">
+                                            {uomWord(uomEntry.uom_code)}
+                                          </Typography>
+                                        )}
+                                      </Box>
+                                    ) : (
+                                      <Typography variant="body2" color="textSecondary">
+                                        —
+                                      </Typography>
+                                    )}
+                                  </TableCell>
+                                );
+                              })}
+                              <TableCell align="right">
+                                {preview ? (
+                                  <Typography
+                                    variant="body2"
+                                    color={preview.exact ? 'textPrimary' : 'error'}
+                                    noWrap
+                                  >
+                                    {preview.exact
+                                      ? `${preview.whole} ${preview.word}${preview.whole === 1 ? '' : 's'}`
+                                      : 'uneven qty'}
+                                  </Typography>
+                                ) : (
+                                  <Typography variant="body2" color="textSecondary">
+                                    —
+                                  </Typography>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <IconButton size="small" onClick={() => removeCartRow(row.key)} aria-label="Remove">
+                                  <IconX size={16} />
+                                </IconButton>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                ) : (
+                  <Typography variant="body2" color="textSecondary">
+                    No products added yet — search above to add a row, then fill in whichever
+                    units it's being ordered in (Case and Box, plus whatever that product is
+                    priced in — Strip, Bottle, Vial, Tube… — any or all of them).
+                  </Typography>
+                )}
+              </Stack>
+            </Grid>
           </Grid>
         </DialogContent>
         <DialogActions>
