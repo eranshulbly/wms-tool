@@ -32,10 +32,31 @@ const filterOrderTracking = (group, allowedUploads) => {
     };
 };
 
+// The admin group's three items each have their own rule — Admin Controls is
+// admin-only, Margin Check is also open to manager-type roles (backend:
+// fulfillment/invoice/router.py::MarginCheck), Inventory Ingestion follows the
+// 'ingestion' upload permission like any other upload screen.
+const filterAdminGroup = (group, isAdmin, isManager, allowedUploads) => {
+    if (!group.children) return group;
+    return {
+        ...group,
+        children: group.children.filter((child) => {
+            if (child.id === 'admin-controls') return isAdmin;
+            if (child.id === 'margin-check') return isAdmin || isManager;
+            if (child.id === 'inventory-ingestion') {
+                return isAdmin || (allowedUploads !== null && allowedUploads.includes('ingestion'));
+            }
+            return true;
+        })
+    };
+};
+
 const MenuList = () => {
     const user = useSelector((state) => state.account.user);
     const { pathname } = useLocation();
     const allowedUploads = user?.permissions?.uploads || null;
+    const isAdmin = user?.role === 'admin';
+    const isManager = user?.role === 'manager' || user?.role === 'cadila_manager';
 
     // Only the current section's menu is shown (plus a Home link back to the
     // launcher). The launcher itself (/home) hides the sidebar entirely.
@@ -55,6 +76,16 @@ const MenuList = () => {
                 children: sectionGroup.children.filter((c) => c.id === scope.menuId)
             };
         }
+    }
+
+    if (sectionGroup && sectionGroup.id === 'admin') {
+        sectionGroup = filterAdminGroup(sectionGroup, isAdmin, isManager, allowedUploads);
+    }
+
+    // Analytics is admin-only outright — AuthGuard also bounces a direct URL visit,
+    // this is just so the sidebar itself never offers the link.
+    if (sectionGroup && sectionGroup.id === 'analytics' && !isAdmin) {
+        sectionGroup = null;
     }
 
     const groups = [scope ? null : homeGroup, sectionGroup].filter(Boolean);

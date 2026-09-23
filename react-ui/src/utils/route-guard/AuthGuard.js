@@ -24,6 +24,18 @@ const AuthGuard = ({ children }) => {
         return <Redirect to={scope.home} />;
     }
 
+    // Analytics and Admin Controls are admin-only (see the matching 403s in
+    // inventory/router_analytics.py, sales/report/router.py, sales/analytics/router.py,
+    // inventory/ingestion/router.py::IngestionReport and
+    // platform/catalog/router.py::ProductMasterUpload) — bounced here too, so a
+    // non-admin never lands on a page that only shows its own "Admin access required"
+    // errors. Margin Check and Inventory Ingestion, the other two paths under the same
+    // sidebar group, are not blocked here; they have their own, narrower rules.
+    if (user && user.role !== 'admin' &&
+        (location.pathname.startsWith('/analytics') || location.pathname.startsWith('/admin-controls'))) {
+        return <Redirect to="/home" />;
+    }
+
     if (user && user.status === 'pending') {
         return (
             <Box display="flex" alignItems="center" justifyContent="center" minHeight="100vh" bgcolor="#f5f5f5">

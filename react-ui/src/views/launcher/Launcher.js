@@ -16,7 +16,8 @@ import {
     IconClipboardList,
     IconChartBar,
     IconSettings,
-    IconArrowRight
+    IconArrowRight,
+    IconReceipt2
 } from '@tabler/icons';
 
 import { scopeForRole } from '../../utils/roleScope';
@@ -29,6 +30,10 @@ const Launcher = () => {
     const { user } = useSelector((state) => state.account);
 
     const isAdmin = user?.role === 'admin';
+    // Manager-type roles: the generic seeded 'manager' role, and Cadila's own
+    // 'cadila_manager'. Kept as an explicit name list, same as isAdmin above, rather
+    // than a DB-driven flag — there is no third manager-shaped role yet to justify one.
+    const isManager = user?.role === 'manager' || user?.role === 'cadila_manager';
     const perms = user?.permissions || {};
 
     // A single-screen role gets exactly one tile, built from the same table the sidebar
@@ -97,6 +102,18 @@ const Launcher = () => {
             tint: theme.palette.warning.light,
             path: '/admin-controls',
             show: isAdmin
+        },
+        {
+            key: 'margin-check',
+            title: 'Margin Check',
+            description: "Upload an invoice and see the margin on each product before it's invoiced.",
+            icon: IconReceipt2,
+            color: theme.palette.info.dark,
+            tint: theme.palette.info.light,
+            path: '/margin-check',
+            // The one Admin-group tool open to manager-type roles, not just admin — see
+            // the backend check in fulfillment/invoice/router.py::MarginCheck.
+            show: isAdmin || isManager
         }
     ];
 

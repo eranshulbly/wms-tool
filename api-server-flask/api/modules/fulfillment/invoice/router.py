@@ -325,8 +325,12 @@ class MarginCheck(Resource):
     def post(self, current_user):
         from api.modules.fulfillment.invoice import margin_check
 
-        # Same rule as the other admin tools: margin exposes landed cost.
-        if getattr(current_user, 'role', None) != 'admin':
+        # Unlike the other admin tools (Order Margin, Sales Report, the inventory
+        # reports), manager-type roles keep this one — a manager checking a single
+        # invoice's margin before it is invoiced is exactly the point of the tool, per
+        # direct request. It still reads nothing but the uploaded PDF and stores
+        # nothing, same as before.
+        if getattr(current_user, 'role', None) not in ('admin', 'manager', 'cadila_manager'):
             return {'success': False, 'msg': 'Admin access required.'}, 403
 
         files = request.files.getlist('files') or (
