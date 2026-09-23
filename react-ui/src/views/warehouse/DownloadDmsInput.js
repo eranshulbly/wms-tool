@@ -837,21 +837,59 @@ const DownloadDmsInput = () => {
               </FormControl>
             </Grid>
             <Grid item xs={12} sm={6}>
-              <FormControl fullWidth size="small" required disabled={!newOrder.companyId || dealersLoading}>
-                <InputLabel>Dealer</InputLabel>
-                <Select
-                  value={newOrder.dealerId}
-                  label="Dealer"
-                  onChange={(e) => setNewOrder((o) => ({ ...o, dealerId: e.target.value }))}
-                >
-                  {dealers.map((d) => (
-                    <MenuItem key={d.dealer_id} value={d.dealer_id}>
-                      {d.name}
-                      {d.dealer_code ? ` (${d.dealer_code})` : ''}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
+              <Autocomplete
+                fullWidth
+                size="small"
+                options={dealers}
+                value={dealers.find((d) => d.dealer_id === newOrder.dealerId) || null}
+                onChange={(e, v) => setNewOrder((o) => ({ ...o, dealerId: v ? v.dealer_id : '' }))}
+                getOptionLabel={(d) => `${d.name}${d.dealer_code ? ` (${d.dealer_code})` : ''}`}
+                isOptionEqualToValue={(o, v) => o.dealer_id === v.dealer_id}
+                // Matches name, code and town, so typing a town narrows a long dealer list
+                // just as well as typing the name does.
+                filterOptions={(opts, { inputValue }) => {
+                  const t = inputValue.trim().toLowerCase();
+                  if (!t) return opts;
+                  return opts.filter((d) =>
+                    `${d.name} ${d.dealer_code || ''} ${d.town || ''}`.toLowerCase().includes(t)
+                  );
+                }}
+                renderOption={(props, d) => (
+                  <li {...props} key={d.dealer_id}>
+                    <Box>
+                      <Typography variant="body2">
+                        {d.name}
+                        {d.dealer_code ? ` (${d.dealer_code})` : ''}
+                      </Typography>
+                      {d.town && (
+                        <Typography variant="caption" color="textSecondary">
+                          {d.town}
+                        </Typography>
+                      )}
+                    </Box>
+                  </li>
+                )}
+                loading={dealersLoading}
+                disabled={!newOrder.companyId || dealersLoading}
+                noOptionsText={newOrder.companyId ? 'No active dealers for this company' : 'Choose a company first'}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    required
+                    label="Dealer"
+                    placeholder={newOrder.companyId ? 'Search by name or town' : ''}
+                    InputProps={{
+                      ...params.InputProps,
+                      endAdornment: (
+                        <>
+                          {dealersLoading ? <CircularProgress size={16} /> : null}
+                          {params.InputProps.endAdornment}
+                        </>
+                      )
+                    }}
+                  />
+                )}
+              />
               {newOrder.companyId && !dealersLoading && dealers.length === 0 && (
                 <Typography variant="caption" color="error">
                   No active dealers for this company.
