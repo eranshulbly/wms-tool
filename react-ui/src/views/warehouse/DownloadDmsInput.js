@@ -259,22 +259,36 @@ const DownloadDmsInput = () => {
   const addToCart = () => {
     if (!pickedProduct || !pickedUom || !pickedQty || Number(pickedQty) <= 0) return;
     const uomInfo = pickedProduct.uoms.find((u) => u.uom_code === pickedUom);
-    setCartItems((items) => [
-      ...items,
-      {
-        key: `${pickedProduct.product_id}-${pickedUom}-${Date.now()}`,
-        productId: pickedProduct.product_id,
-        skuCode: pickedProduct.sku_code,
-        name: pickedProduct.name,
-        uom: pickedUom,
-        uomLabel: uomInfo ? uomMenuLabel(uomInfo) : uomWord(pickedUom),
-        quantity: Number(pickedQty)
+    const productId = pickedProduct.product_id;
+    const qty = Number(pickedQty);
+    setCartItems((items) => {
+      // Same product, same unit added again (2 Case, then another 3 Case) — add onto
+      // that line instead of a second identical one. Same product in a DIFFERENT unit
+      // (2 Case, then 6 Box) stays as its own line here, since that's more legible than
+      // one row trying to show two units at once; the two still combine into a single
+      // order line when the order is actually submitted.
+      const dupe = items.find((i) => i.productId === productId && i.uom === pickedUom);
+      if (dupe) {
+        return items.map((i) => (i.key === dupe.key ? { ...i, quantity: i.quantity + qty } : i));
       }
-    ]);
-    setPickedProduct(null);
-    setPickedUom('');
+      return [
+        ...items,
+        {
+          key: `${productId}-${pickedUom}-${Date.now()}`,
+          productId,
+          skuCode: pickedProduct.sku_code,
+          name: pickedProduct.name,
+          uom: pickedUom,
+          uomLabel: uomInfo ? uomMenuLabel(uomInfo) : uomWord(pickedUom),
+          quantity: qty
+        }
+      ];
+    });
+    // The product stays picked — adding "2 Case" then "6 Box" of the same item is the
+    // common case, and re-searching for it a second time would be pure friction. Only
+    // the quantity clears; the unit is left as-is since it's just as likely the next
+    // line repeats it (another batch of the same unit) as it is to change.
     setPickedQty('');
-    setProductSearch('');
   };
 
   const removeCartItem = (key) => setCartItems((items) => items.filter((i) => i.key !== key));
