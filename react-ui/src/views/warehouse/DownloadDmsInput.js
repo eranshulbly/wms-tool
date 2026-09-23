@@ -241,22 +241,16 @@ const DownloadDmsInput = () => {
 
   const removeCartRow = (key) => setCartRows((rows) => rows.filter((r) => r.key !== key));
 
-  // The unit columns to show — whichever units the products actually in the cart have,
-  // in Strip/Box/Case order (their natural small-to-large reading order), so the grid
-  // never shows a column nothing in it can use.
-  const cartColumns = useMemo(() => {
-    const codes = new Set();
-    cartRows.forEach((r) => r.product.uoms.forEach((u) => codes.add(u.uom_code)));
-    const order = ['STRIP', 'BOX', 'CASE'];
-    return Array.from(codes).sort((a, b) => {
-      const ai = order.indexOf(a);
-      const bi = order.indexOf(b);
-      if (ai === -1 && bi === -1) return a.localeCompare(b);
-      if (ai === -1) return 1;
-      if (bi === -1) return -1;
-      return ai - bi;
-    });
-  }, [cartRows]);
+  // Three fixed columns, not one per unit name. A product's own priced/stocked unit
+  // varies (Strip for a tablet, Bottle for a syrup, Vial for an injectable) — showing
+  // each as its own column meant a cart mixing product types grew a column per name.
+  // "Qty" always means that row's own base unit, whatever it's actually called; Box
+  // and Case are genuinely shared across the catalog, so they stay as themselves.
+  const CART_SLOTS = [
+    { header: 'Qty', match: (u) => u.is_stock_unit },
+    { header: 'Box', match: (u) => u.uom_code === 'BOX' },
+    { header: 'Case', match: (u) => u.uom_code === 'CASE' }
+  ];
 
   // How many stock units (strips, usually) a row's filled-in cells come to — shown per
   // row so "2 Case + 6 Box" reads as a total before the order is even submitted.
@@ -1031,9 +1025,9 @@ const DownloadDmsInput = () => {
                         <TableHead>
                           <TableRow>
                             <TableCell>Product</TableCell>
-                            {cartColumns.map((col) => (
-                              <TableCell key={col} align="center">
-                                {uomWord(col)}
+                            {CART_SLOTS.map((slot) => (
+                              <TableCell key={slot.header} align="center">
+                                {slot.header}
                               </TableCell>
                             ))}
                             <TableCell align="right">Total</TableCell>
@@ -1053,18 +1047,28 @@ const DownloadDmsInput = () => {
                                     </Typography>
                                   ) : null}
                                 </TableCell>
-                                {cartColumns.map((col) => {
-                                  const has = row.product.uoms.some((u) => u.uom_code === col);
+                                {CART_SLOTS.map((slot) => {
+                                  const uomEntry = row.product.uoms.find(slot.match);
                                   return (
-                                    <TableCell key={col} align="center">
-                                      {has ? (
-                                        <TextField
-                                          variant="standard"
-                                          type="number"
-                                          value={row.qtyByUom[col] || ''}
-                                          onChange={(e) => setRowQty(row.key, col, e.target.value)}
-                                          inputProps={{ min: 0, step: 1, style: { textAlign: 'center', width: 48 } }}
-                                        />
+                                    <TableCell key={slot.header} align="center">
+                                      {uomEntry ? (
+                                        <Box>
+                                          <TextField
+                                            variant="standard"
+                                            type="number"
+                                            value={row.qtyByUom[uomEntry.uom_code] || ''}
+                                            onChange={(e) => setRowQty(row.key, uomEntry.uom_code, e.target.value)}
+                                            inputProps={{ min: 0, step: 1, style: { textAlign: 'center', width: 48 } }}
+                                          />
+                                          {/* Qty's real unit varies by product (Strip, Bottle,
+                                              Vial…) — named small here since the header can't
+                                              say it for every row at once. */}
+                                          {slot.header === 'Qty' && (
+                                            <Typography variant="caption" color="textSecondary" display="block">
+                                              {uomWord(uomEntry.uom_code)}
+                                            </Typography>
+                                          )}
+                                        </Box>
                                       ) : (
                                         <Typography variant="body2" color="textSecondary">
                                           —

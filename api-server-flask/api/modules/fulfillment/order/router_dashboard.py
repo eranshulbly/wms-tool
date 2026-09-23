@@ -1030,10 +1030,15 @@ class SubmittedOrderItems(Resource):
                 'product_id': r['product_id'],
                 'sku_code': r['sku_code'],
                 'product_name': r['product_name'],
-                'uom': r['order_uom'] or r['uom'],
+                # The unit `quantity` is actually expressed in — always the product's
+                # lowest/stock unit (strips, bottles, vials…), never the pack the
+                # operator ordered in. order_uom/order_quantity below carry that
+                # as-entered figure separately, for anything that wants it.
+                'uom': r['uom'],
                 'quantity': r['quantity'],
                 'order_quantity': (float(r['order_quantity'])
                                    if r['order_quantity'] is not None else None),
+                'order_uom': r['order_uom'],
                 'mrp': float(r['mrp']) if r['mrp'] is not None else None,
                 'net_rate': float(r['net_rate']) if r['net_rate'] is not None else None,
                 # What stock could actually cover, stamped at download time. None until

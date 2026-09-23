@@ -27,14 +27,20 @@ const money = (v) => {
 };
 const qty = (v) => (v === null || v === undefined ? '—' : Number(v).toLocaleString('en-IN'));
 
-// What the rep actually ordered, in the unit they ordered it in — "6 BOX", not the
-// stock-unit number underneath. `uom` already carries a composite label ("2 CASE + 6
-// BOX") when a product was ordered in more than one unit on this order, in which case
-// order_quantity is left blank server-side and the label alone is shown.
+// Plain words for a unit code, lowercase and pluralized — "strip"/"strips",
+// "bottle"/"bottles", "box"/"boxes" — matching how a rep would actually say it.
+const UOM_WORD = { STRIP: 'strip', BOX: 'box', CASE: 'case', BOTTLE: 'bottle', VIAL: 'vial', TUBE: 'tube', TAB: 'tablet', UNIT: 'unit' };
+const uomWord = (code) => UOM_WORD[code] || (code ? code.toLowerCase() : '');
+const pluralize = (word, n) => (Math.abs(n) === 1 ? word : /[sxz]$|[cs]h$/i.test(word) ? `${word}es` : `${word}s`);
+
+// The ordered quantity in the product's lowest unit — "100 strips", "249 bottles" —
+// regardless of what pack it was actually ordered in (2 Case + 6 Box still reads as
+// however many strips that comes to). `quantity` and `uom` are always this pair: the
+// count and the unit it's genuinely counted in, never the pack it arrived as an order.
 const ordered = (it) => {
-  if (it.order_quantity != null && it.uom) return `${qty(it.order_quantity)} ${it.uom}`;
-  if (it.uom) return it.uom;
-  return qty(it.quantity);
+  if (it.quantity == null) return '—';
+  const word = it.uom ? uomWord(it.uom) : '';
+  return word ? `${qty(it.quantity)} ${pluralize(word, it.quantity)}` : qty(it.quantity);
 };
 
 const SubmittedOrderItems = ({ orderId }) => {
