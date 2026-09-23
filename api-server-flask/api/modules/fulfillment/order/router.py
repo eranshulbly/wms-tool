@@ -327,7 +327,7 @@ class OrderDetailWithProducts(Resource):
 
             pf_sql, pf_params = partition_filter('potential_order', alias='po')
             order_query = mysql_manager.execute_query(
-                f"""SELECT po.*, d.name as dealer_name
+                f"""SELECT po.*, d.name as dealer_name, d.town as dealer_town
                    FROM potential_order po
                    LEFT JOIN dealer d ON po.dealer_id = d.dealer_id
                    WHERE po.potential_order_id = %s AND {pf_sql}""",
@@ -415,6 +415,7 @@ class OrderDetailWithProducts(Resource):
                 'order_request_id':  f"PO{order_data['potential_order_id']}",
                 'original_order_id': order_data['original_order_id'],
                 'dealer_name':       order_data['dealer_name'] or 'Unknown Dealer',
+                'dealer_town':       order_data.get('dealer_town'),
                 'order_date':        order_data['order_date'].isoformat() if order_data['order_date'] else None,
                 'status':            frontend_status,
                 'current_state_time': current_state_time.isoformat(),

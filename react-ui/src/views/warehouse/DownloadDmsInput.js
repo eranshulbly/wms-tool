@@ -55,6 +55,7 @@ import {
   uploadDmsInventory,
   readBlobError
 } from '../../services/orderService';
+import { dealerLabel } from '../../utils/dealerLabel';
 
 // Push a blob at the browser as a download. Shared by the per-order download and the
 // direct converter so both behave identically (and both revoke the URL afterwards).
@@ -389,7 +390,7 @@ const DownloadDmsInput = () => {
     const seen = new Map();
     orders.forEach((o) => {
       if (o.dealer_id != null && !seen.has(o.dealer_id)) {
-        seen.set(o.dealer_id, o.dealer_name || `Dealer ${o.dealer_id}`);
+        seen.set(o.dealer_id, dealerLabel(o.dealer_name, o.dealer_town) || `Dealer ${o.dealer_id}`);
       }
     });
     return Array.from(seen, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
@@ -648,7 +649,7 @@ const DownloadDmsInput = () => {
                           <IconChevronRight size={18} style={{ color: '#9e9e9e' }} />
                         </TableCell>
                         <TableCell>{o.order_number || `#${o.order_id}`}</TableCell>
-                        <TableCell>{o.dealer_name}</TableCell>
+                        <TableCell>{dealerLabel(o.dealer_name, o.dealer_town)}</TableCell>
                         {/* Who raised it in the app. Not the dealer's assigned executive —
                             that can be a different person from whoever actually placed it. */}
                         <TableCell>{o.sales_executive_name || '—'}</TableCell>
@@ -745,7 +746,9 @@ const DownloadDmsInput = () => {
         <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span>
             {detailOrder && (detailOrder.order_number || `#${detailOrder.order_id}`)}
-            {detailOrder && detailOrder.dealer_name ? ` · ${detailOrder.dealer_name}` : ''}
+            {detailOrder && detailOrder.dealer_name
+              ? ` · ${dealerLabel(detailOrder.dealer_name, detailOrder.dealer_town)}`
+              : ''}
           </span>
           <IconButton size="small" onClick={() => setDetailOrder(null)} aria-label="Close">
             <IconX size={18} />
@@ -849,7 +852,7 @@ const DownloadDmsInput = () => {
                 options={dealers}
                 value={dealers.find((d) => d.dealer_id === newOrder.dealerId) || null}
                 onChange={(e, v) => setNewOrder((o) => ({ ...o, dealerId: v ? v.dealer_id : '' }))}
-                getOptionLabel={(d) => `${d.name}${d.dealer_code ? ` (${d.dealer_code})` : ''}`}
+                getOptionLabel={(d) => dealerLabel(`${d.name}${d.dealer_code ? ` (${d.dealer_code})` : ''}`, d.town)}
                 isOptionEqualToValue={(o, v) => o.dealer_id === v.dealer_id}
                 // Matches name, code and town, so typing a town narrows a long dealer list
                 // just as well as typing the name does.

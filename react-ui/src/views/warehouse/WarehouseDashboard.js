@@ -21,6 +21,7 @@ import CompactStatusSummary from './components/CompactStatusSummary';
 import StatusCard from './components/StatusCard';
 import OrdersTable from './components/OrdersTable';
 import OrderDetailsDialog from './components/OrderDetailsDialog';
+import { dealerLabel } from '../../utils/dealerLabel';
 
 import { useSelector } from 'react-redux';
 
@@ -72,7 +73,14 @@ const WarehouseDashboard = () => {
         ]);
         if (!mounted) return;
         if (statusData.success) setStatusCounts(statusData.status_counts);
-        if (recentData.success) setRecentOrders(recentData.recent_orders);
+        if (recentData.success) {
+          setRecentOrders(
+            (recentData.recent_orders || []).map((o) => ({
+              ...o,
+              dealer_name: dealerLabel(o.dealer_name, o.dealer_town)
+            }))
+          );
+        }
       } catch (error) {
         console.error('Error fetching order data:', error);
       } finally {
@@ -93,7 +101,10 @@ const WarehouseDashboard = () => {
     try {
       const response = await getOrderDetails(order.order_request_id);
       if (response.success) {
-        setSelectedOrder(response.order);
+        setSelectedOrder({
+          ...response.order,
+          dealer_name: dealerLabel(response.order.dealer_name, response.order.dealer_town)
+        });
         setOrderDetailsOpen(true);
       }
     } catch (error) {

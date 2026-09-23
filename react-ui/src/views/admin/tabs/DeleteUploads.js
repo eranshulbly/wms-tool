@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { dealerLabel } from '../../../utils/dealerLabel';
 import {
     Box,
     Grid,
@@ -188,7 +189,7 @@ function OrderDetailTable({ records, classes }) {
                         <TableRow key={r.potential_order_id} hover>
                             <TableCell>{r.potential_order_id}</TableCell>
                             <TableCell>{r.original_order_id || '—'}</TableCell>
-                            <TableCell>{r.dealer_name || '—'}</TableCell>
+                            <TableCell>{dealerLabel(r.dealer_name, r.dealer_town) || '—'}</TableCell>
                             <TableCell>{r.dealer_code || '—'}</TableCell>
                             <TableCell>
                                 <Chip size="small" label={r.status || '—'} style={{ fontSize: 11 }} />
@@ -247,7 +248,7 @@ function InvoiceDetailTable({ records, classes }) {
                             <TableCell>{r.invoice_type || '—'}</TableCell>
                             <TableCell>{r.invoice_header_type || '—'}</TableCell>
                             <TableCell>{currency(r.total_invoice_amount)}</TableCell>
-                            <TableCell>{r.dealer_name || '—'}</TableCell>
+                            <TableCell>{dealerLabel(r.dealer_name, r.dealer_town) || '—'}</TableCell>
                             <TableCell>{r.dealer_code || '—'}</TableCell>
                             <TableCell>{r.warehouse_name || '—'}</TableCell>
                             <TableCell>{r.company_name || '—'}</TableCell>

@@ -41,7 +41,7 @@ def _order_headers(company_ids):
     cf_sql, cf_params = company_filter_sql(company_ids, alias='po')
     return mysql_manager.execute_query(
         f"""SELECT po.potential_order_id, po.original_order_id, po.order_date, po.status,
-                   po.company_id, d.dealer_id, d.name AS dealer_name,
+                   po.company_id, d.dealer_id, d.name AS dealer_name, d.town AS dealer_town,
                    MIN(i.invoice_number) AS invoice_number,
                    MIN(i.invoice_date)   AS invoice_date
               FROM potential_order po
@@ -50,7 +50,7 @@ def _order_headers(company_ids):
               LEFT JOIN dealer d ON d.dealer_id = po.dealer_id
              WHERE {cf_sql}
              GROUP BY po.potential_order_id, po.original_order_id, po.order_date,
-                      po.status, po.company_id, d.dealer_id, d.name""",
+                      po.status, po.company_id, d.dealer_id, d.name, d.town""",
         cf_params) or []
 
 
@@ -87,7 +87,7 @@ def _order_header(order_id):
     """One order's identity + invoice info, or None if it has no live invoice."""
     rows = mysql_manager.execute_query(
         """SELECT po.potential_order_id, po.original_order_id, po.order_date, po.status,
-                  po.company_id, d.dealer_id, d.name AS dealer_name,
+                  po.company_id, d.dealer_id, d.name AS dealer_name, d.town AS dealer_town,
                   MIN(i.invoice_number) AS invoice_number,
                   MIN(i.invoice_date)   AS invoice_date
              FROM potential_order po
@@ -96,7 +96,7 @@ def _order_header(order_id):
              LEFT JOIN dealer d ON d.dealer_id = po.dealer_id
             WHERE po.potential_order_id = %s
             GROUP BY po.potential_order_id, po.original_order_id, po.order_date,
-                     po.status, po.company_id, d.dealer_id, d.name""",
+                     po.status, po.company_id, d.dealer_id, d.name, d.town""",
         (order_id,))
     return rows[0] if rows else None
 
@@ -169,6 +169,7 @@ def order_margin_detail(company_ids, order_id):
         'potential_order_id': header['potential_order_id'],
         'order_number':       header['original_order_id'] or f"PO{order_id}",
         'dealer_name':        header['dealer_name'],
+        'dealer_town':        header['dealer_town'],
         'invoice_number':     header['invoice_number'],
         'invoice_date':       _date_str(header['invoice_date']),
         'order_date':         _date_str(header['order_date']),
@@ -208,6 +209,7 @@ def order_margin_report(company_ids, date_from=None, date_to=None):
             'potential_order_id': oid,
             'order_number':       h['original_order_id'] or f"PO{oid}",
             'dealer_name':        h['dealer_name'],
+            'dealer_town':        h['dealer_town'],
             'invoice_number':     h['invoice_number'],
             'invoice_date':       invoice_date,
             'order_date':         _date_str(h['order_date']),

@@ -194,7 +194,7 @@ def sales_report(company_ids, date_from=None, date_to=None, product_ids=None, de
         {(l['product_id'], l['product_name'], l['sku_code']) for l in date_filtered},
         key=lambda x: (x[1] or ''))
     dealer_options = sorted(
-        {(l['dealer_id'], l['dealer_name']) for l in date_filtered
+        {(l['dealer_id'], l['dealer_name'], l['town']) for l in date_filtered
          if l['dealer_id'] is not None},
         key=lambda x: (x[1] or ''))
 
@@ -218,5 +218,5 @@ def sales_report(company_ids, date_from=None, date_to=None, product_ids=None, de
         'trend': _monthly_trend(lines),
         'lines': lines,
         'product_options': [{'id': i, 'name': n, 'sku_code': s} for i, n, s in product_options],
-        'dealer_options': [{'id': i, 'name': n} for i, n in dealer_options],
+        'dealer_options': [{'id': i, 'name': n, 'town': t} for i, n, t in dealer_options],
     }

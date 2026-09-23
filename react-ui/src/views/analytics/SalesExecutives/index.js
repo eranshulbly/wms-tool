@@ -26,6 +26,7 @@ import { IconRefresh, IconDownload, IconMapPin, IconAlertTriangle } from '@table
 import api from '../../../services/api';
 import { useWarehouse } from '../../../context/WarehouseContext';
 import { useColumnSearch } from '../../../hooks/useColumnSearch';
+import { dealerLabel } from '../../../utils/dealerLabel';
 
 const BASE = 'admin/sales/analytics';
 
@@ -48,7 +49,6 @@ const SUMMARY_COLUMNS = [
 const VISIT_COLUMNS = [
   { key: 'executive_name', label: 'Sales Executive', type: 'text' },
   { key: 'dealer_name', label: 'Dealer', type: 'text' },
-  { key: 'town', label: 'Town', type: 'text' },
   { key: 'check_in_at', label: 'Check-in', type: 'datetime' },
   { key: 'check_out_at', label: 'Check-out', type: 'datetime' },
   { key: 'minutes', label: 'Duration', type: 'duration' },
@@ -177,6 +177,7 @@ const SalesExecutives = () => {
     () =>
       shownVisits.map((v) => ({
         ...v,
+        dealer_name: dealerLabel(v.dealer_name, v.town),
         location: v.check_in_lat != null ? `${v.check_in_lat}, ${v.check_in_lng}` : '',
       })),
     [shownVisits]

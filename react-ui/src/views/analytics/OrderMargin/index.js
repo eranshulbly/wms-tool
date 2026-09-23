@@ -29,6 +29,7 @@ import { IconRefresh, IconDownload, IconAlertTriangle, IconX } from '@tabler/ico
 import api from '../../../services/api';
 import { useWarehouse } from '../../../context/WarehouseContext';
 import { useColumnSearch } from '../../../hooks/useColumnSearch';
+import { dealerLabel } from '../../../utils/dealerLabel';
 
 const BASE = 'admin/order-margin';
 
@@ -172,7 +173,9 @@ const OrderMargin = () => {
       if (from) params.from = from;
       if (to) params.to = to;
       const res = await api.get(BASE, { params });
-      setOrders(res.data.orders || []);
+      setOrders(
+        (res.data.orders || []).map((o) => ({ ...o, dealer_name: dealerLabel(o.dealer_name, o.dealer_town) }))
+      );
       setPeriodTotals(res.data.period_totals || emptyTotals);
       setOverall(res.data.overall || emptyTotals);
       setOrderCount(res.data.order_count || 0);
@@ -203,7 +206,7 @@ const OrderMargin = () => {
       const res = await api.get(`${BASE}/${order.potential_order_id}`, {
         params: { company_id: selectedCompany },
       });
-      setDetail(res.data);
+      setDetail({ ...res.data, dealer_name: dealerLabel(res.data.dealer_name, res.data.dealer_town) });
     } catch (e) {
       setToast({
         severity: 'error',

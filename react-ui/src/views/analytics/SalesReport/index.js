@@ -30,6 +30,7 @@ import { IconRefresh, IconDownload, IconX } from '@tabler/icons';
 import api from '../../../services/api';
 import { useWarehouse } from '../../../context/WarehouseContext';
 import { useColumnSearch } from '../../../hooks/useColumnSearch';
+import { dealerLabel } from '../../../utils/dealerLabel';
 
 const BASE = 'admin/sales-report';
 
@@ -49,7 +50,6 @@ const PRODUCT_COLUMNS = [
 
 const DEALER_COLUMNS = [
   { key: 'dealer_name', label: 'Dealer', type: 'text' },
-  { key: 'town', label: 'Town', type: 'text' },
   { key: 'executive_name', label: 'Executive', type: 'text' },
   { key: 'quantity', label: 'Qty', type: 'int' },
   { key: 'revenue', label: 'Revenue', type: 'money' },
@@ -62,7 +62,6 @@ const DEALER_COLUMNS = [
 
 const DRILL_PRODUCT_COLUMNS = [
   { key: 'dealer_name', label: 'Dealer', type: 'text' },
-  { key: 'town', label: 'Town', type: 'text' },
   { key: 'quantity', label: 'Qty', type: 'int' },
   { key: 'revenue', label: 'Revenue', type: 'money' },
   { key: 'avg_rate', label: 'Avg Rate', type: 'money' },
@@ -233,7 +232,13 @@ const SalesReport = () => {
 
   const summary = data?.summary || emptySummary;
   const products = data?.products || [];
-  const dealers = data?.dealers || [];
+  // Dealer name folds in the town right here ("M.S DISTRIBUTORS - Rajkot") — the one
+  // place every dealer-name display in this screen (the table, the drill titles, the
+  // filter) draws from, so the town can't show up in one and not another.
+  const dealers = useMemo(
+    () => (data?.dealers || []).map((d) => ({ ...d, dealer_name: dealerLabel(d.dealer_name, d.town) })),
+    [data]
+  );
   const trend = data?.trend || [];
   const lines = useMemo(() => data?.lines || [], [data]);
 
@@ -254,7 +259,7 @@ const SalesReport = () => {
         lines.filter((l) => l.product_id === row.id),
         'dealer_id',
         ['dealer_name', 'town']
-      );
+      ).map((r) => ({ ...r, dealer_name: dealerLabel(r.dealer_name, r.town) }));
       setDrill({ kind, label: row.product_name, sub: row.sku_code, rows: rows2 });
     } else {
       const rows2 = groupLines(
@@ -262,7 +267,7 @@ const SalesReport = () => {
         'product_id',
         ['product_name', 'sku_code']
       );
-      setDrill({ kind, label: row.dealer_name, sub: row.town, rows: rows2 });
+      setDrill({ kind, label: row.dealer_name, rows: rows2 });
     }
   };
 
@@ -376,7 +381,7 @@ const SalesReport = () => {
               value={dealerFilter}
               onChange={(e, v) => setDealerFilter(v)}
               filterSelectedOptions
-              getOptionLabel={(o) => o.name || ''}
+              getOptionLabel={(o) => dealerLabel(o.name, o.town)}
               isOptionEqualToValue={(o, v) => o.id === v.id}
               renderInput={(params) => (
                 <TextField {...params} label="Filter by dealer" placeholder={dealerFilter.length ? '' : 'All dealers'} />

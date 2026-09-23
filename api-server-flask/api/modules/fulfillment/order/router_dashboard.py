@@ -95,6 +95,7 @@ order_model = rest_api.model('Order', {
     'order_request_id':  fields.String(description='Order request ID'),
     'original_order_id': fields.String(description='Original order ID'),
     'dealer_name':       fields.String(description='Dealer name'),
+    'dealer_town':       fields.String(description="Dealer's town"),
     'order_date':        fields.String(description='Order date'),
     'status':            fields.String(description='Current status'),
     'current_state_time': fields.String(description='Time of current state'),
@@ -119,6 +120,7 @@ order_detail_response = rest_api.model('OrderDetailResponse', {
 recent_order_model = rest_api.model('RecentOrder', {
     'order_request_id':  fields.String(description='Order request ID'),
     'dealer_name':       fields.String(description='Dealer name'),
+    'dealer_town':       fields.String(description="Dealer's town"),
     'status':            fields.String(description='Current status'),
     'order_date':        fields.String(description='Order date'),
     'current_state_time': fields.String(description='Time of current state'),
@@ -384,6 +386,7 @@ class OrdersList(Resource):
                         'order_request_id':  f"PO{order_data['potential_order_id']}",
                         'original_order_id': order_data['original_order_id'],
                         'dealer_name':       dealer_name,
+                        'dealer_town':       order_data.get('dealer_town'),
                         'order_date':        order_date_str,
                         'status':            frontend_status,
                         'current_state_time': current_state_time_str,
@@ -690,6 +693,7 @@ class OrderDetail(Resource):
             if potential_order.dealer_id:
                 dealer = Dealer.get_by_id(potential_order.dealer_id)
             dealer_name = dealer.name if dealer else 'Unknown Dealer'
+            dealer_town = dealer.town if dealer else None
 
             product_count = PotentialOrderProduct.count_by_order(numeric_id)
 
@@ -717,6 +721,7 @@ class OrderDetail(Resource):
                 'order_request_id':  f"PO{potential_order.potential_order_id}",
                 'original_order_id': potential_order.original_order_id,
                 'dealer_name':       dealer_name,
+                'dealer_town':       dealer_town,
                 'order_date':        potential_order.order_date.isoformat(),
                 'status':            status,
                 'current_state_time': current_state_time.isoformat(),
@@ -809,6 +814,7 @@ class RecentOrders(Resource):
                 orders.append({
                     'order_request_id':  f"PO{order_data['potential_order_id']}",
                     'dealer_name':       dealer_name,
+                    'dealer_town':       order_data.get('dealer_town'),
                     'status':            status,
                     'order_date':        order_data['order_date'].isoformat(),
                     'current_state_time': current_state_time.isoformat(),
@@ -871,7 +877,7 @@ class SubmittedOrdersList(Resource):
             rows = mysql_manager.execute_query(
                 f"""SELECT so.submitted_order_id AS order_id, so.order_number, so.status,
                            so.dms_status, so.reject_note,
-                           so.source, so.dealer_id, d.name AS dealer_name,
+                           so.source, so.dealer_id, d.name AS dealer_name, d.town AS dealer_town,
                            so.company_id, c.name AS company_name,
                            so.warehouse_id, w.name AS warehouse_name,
                            so.notes, so.created_at, so.submitted_at, so.expected_delivery_date,
@@ -933,6 +939,7 @@ class SubmittedOrdersList(Resource):
                 'dms_available':          dms.has_dms_format(r['company_name']),
                 'dealer_id':              r['dealer_id'],
                 'dealer_name':            r['dealer_name'] or f"Dealer {r['dealer_id']}",
+                'dealer_town':            r['dealer_town'],
                 'company_id':             r['company_id'],
                 'company_name':           r['company_name'],
                 'warehouse_id':           r['warehouse_id'],

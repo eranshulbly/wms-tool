@@ -17,6 +17,7 @@ import FilterControls from './components/FilterControls';
 import OrdersTable from './components/OrdersTable';
 import OrderDetailsDialog from './components/OrderDetailsDialog';
 import BulkActionsBar from './components/BulkActionsBar';
+import { dealerLabel } from '../../utils/dealerLabel';
 
 const OrderManagement = () => {
   const classes = useOrderManagementStyles();
@@ -60,7 +61,7 @@ const OrderManagement = () => {
           ...order,
           status: order.status || 'open',
           current_state_time: order.current_state_time || new Date().toISOString(),
-          dealer_name: order.dealer_name || 'Unknown Dealer',
+          dealer_name: dealerLabel(order.dealer_name, order.dealer_town) || 'Unknown Dealer',
           assigned_to: order.assigned_to || 'Unassigned'
         }));
         setFilteredOrders(processed);
@@ -82,12 +83,16 @@ const OrderManagement = () => {
 
   useEffect(() => { fetchOrders(true); }, [fetchOrders]);
 
+  // Both getOrderDetails responses below carry dealer_name/dealer_town raw, same as the
+  // list fetch above — folded together here too so the dialog matches the table.
+  const withDealerLabel = (order) => ({ ...order, dealer_name: dealerLabel(order.dealer_name, order.dealer_town) });
+
   const handleOrderClick = async (order) => {
     setLoading(true);
     try {
       const response = await getOrderDetails(order.order_request_id);
       if (response.success) {
-        setSelectedOrder(response.order);
+        setSelectedOrder(withDealerLabel(response.order));
         setOrderDetailsOpen(true);
       } else {
         showSnackbar('Error fetching order details: ' + response.msg, 'error');
@@ -182,7 +187,7 @@ const OrderManagement = () => {
         // Refresh the dialog with updated order data
         try {
           const updated = await getOrderDetails(order.order_request_id);
-          if (updated.success) setSelectedOrder(updated.order);
+          if (updated.success) setSelectedOrder(withDealerLabel(updated.order));
         } catch {
           handleOrderDetailsClose();
         }
