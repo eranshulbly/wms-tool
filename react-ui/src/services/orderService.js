@@ -152,6 +152,31 @@ export const createManualOrder = ({ file, dealerId, companyId, warehouseId, note
     .then((res) => res.data);
 };
 
+// Products for the cart picker on "Add Order", each with the packaging units
+// (STRIP/BOX/CASE, whatever it actually has) it can be ordered in. `search` narrows by
+// name/SKU as the operator types, so the list stays short on a catalogue of thousands.
+export const getOrderProducts = (companyId, search = '') => {
+  const params = { company_id: companyId };
+  if (search) params.search = search;
+  return api.get('orders/products', { params }).then((res) => res.data);
+};
+
+// Raise an order by hand with its lines picked from the catalogue — a product, a unit
+// and a quantity per line — instead of an uploaded sheet. `items` is
+// [{ productId, uom, quantity }]. Otherwise the same order details and the same result
+// shape as createManualOrder, since both land in the same Submitted Orders list.
+export const createCartOrder = ({ items, dealerId, companyId, warehouseId, notes, expectedDate }) => {
+  const body = {
+    dealer_id: dealerId,
+    company_id: companyId,
+    items: items.map((i) => ({ product_id: i.productId, uom: i.uom, quantity: i.quantity }))
+  };
+  if (warehouseId && warehouseId !== 'all') body.warehouse_id = warehouseId;
+  if (notes) body.notes = notes;
+  if (expectedDate) body.expected_delivery_date = expectedDate;
+  return api.post('orders/submitted/manual-cart', body).then((res) => res.data);
+};
+
 // Best-effort extraction of a JSON error message from an axios error whose response
 // body is a Blob (because we requested responseType: 'blob').
 export const readBlobError = async (error) => {

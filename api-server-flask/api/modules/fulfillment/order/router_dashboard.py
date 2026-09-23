@@ -12,6 +12,7 @@ Dashboard / listing routes:
 """
 
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from collections import defaultdict
 
 import io
@@ -1215,6 +1216,38 @@ class OrderDealerOptions(Resource):
         } for r in rows]}, 200
 
 
+def _validate_order_context(dealer_id, company_id, warehouse_id):
+    """The dealer/company/warehouse checks shared by every "raise an order by hand"
+    endpoint, so the manual-upload and cart paths can't drift apart on what counts as
+    valid. Returns (dealer_row, company_row, error) — error is a (msg, status) pair
+    when validation failed, otherwise None.
+    """
+    if dealer_id is None:
+        return None, None, ('a dealer is required', 422)
+    if company_id is None:
+        return None, None, ('a company is required', 422)
+
+    dealer = mysql_manager.execute_query(
+        "SELECT dealer_id, name, status, company_id FROM dealer WHERE dealer_id = %s",
+        (dealer_id,))
+    if not dealer or (dealer[0].get('status') or 'active') != 'active':
+        return None, None, (f'dealer {dealer_id} not found or inactive', 422)
+    # Mirrors create_order: an order whose dealer belongs to another company would be
+    # invisible to the people who could act on it.
+    if dealer[0].get('company_id') not in (None, company_id):
+        return None, None, (f"{dealer[0]['name']} does not belong to the selected company", 422)
+
+    company = mysql_manager.execute_query(
+        "SELECT company_id, name FROM company WHERE company_id = %s", (company_id,))
+    if not company:
+        return None, None, (f'company {company_id} not found', 422)
+    if warehouse_id is not None and not mysql_manager.execute_query(
+            "SELECT warehouse_id FROM warehouse WHERE warehouse_id = %s", (warehouse_id,)):
+        return None, None, (f'warehouse {warehouse_id} not found', 422)
+
+    return dealer[0], company[0], None
+
+
 @rest_api.route('/api/orders/submitted/manual')
 class SubmittedOrderManualCreate(Resource):
     """Raise an order from the web side, with its parts taken from an uploaded sheet.
@@ -1262,30 +1295,9 @@ class SubmittedOrderManualCreate(Resource):
         warehouse_id, err3 = _int('warehouse_id')
         if err3:
             return {'success': False, 'msg': err3}, 422
-        if dealer_id is None:
-            return {'success': False, 'msg': 'a dealer is required'}, 422
-        if company_id is None:
-            return {'success': False, 'msg': 'a company is required'}, 422
-
-        dealer = mysql_manager.execute_query(
-            "SELECT dealer_id, name, status, company_id FROM dealer WHERE dealer_id = %s",
-            (dealer_id,))
-        if not dealer or (dealer[0].get('status') or 'active') != 'active':
-            return {'success': False,
-                    'msg': f'dealer {dealer_id} not found or inactive'}, 422
-        # Mirrors create_order: an order whose dealer belongs to another company would be
-        # invisible to the people who could act on it.
-        if dealer[0].get('company_id') not in (None, company_id):
-            return {'success': False,
-                    'msg': f"{dealer[0]['name']} does not belong to the selected company"}, 422
-
-        company = mysql_manager.execute_query(
-            "SELECT company_id, name FROM company WHERE company_id = %s", (company_id,))
-        if not company:
-            return {'success': False, 'msg': f'company {company_id} not found'}, 422
-        if warehouse_id is not None and not mysql_manager.execute_query(
-                "SELECT warehouse_id FROM warehouse WHERE warehouse_id = %s", (warehouse_id,)):
-            return {'success': False, 'msg': f'warehouse {warehouse_id} not found'}, 422
+        dealer, company, err = _validate_order_context(dealer_id, company_id, warehouse_id)
+        if err:
+            return {'success': False, 'msg': err[0]}, err[1]
 
         # Parsed before anything is written, so a sheet we can't read leaves no order
         # behind. Unknown part numbers are deliberately NOT rejected — same as the
@@ -1335,7 +1347,264 @@ class SubmittedOrderManualCreate(Resource):
 
         return {'success': True, 'order_id': order_id, 'order_number': order_number,
                 'item_count': len(items),
-                'dms_available': dms.has_dms_format(company[0]['name'])}, 201
+                'dms_available': dms.has_dms_format(company['name'])}, 201
+
+
+@rest_api.route('/api/orders/products')
+class OrderProductOptions(Resource):
+    """Products for the cart picker on "Add Order", with their packaging ladder.
+
+    A dedicated route rather than /api/admin/products for the same reason
+    /api/orders/dealers exists separately from /api/admin/dealers: the operator raising
+    a cart order is not necessarily an admin. Each product carries its orderable UOM
+    rungs (STRIP/BOX/CASE, whatever it actually has) so the frontend's unit picker never
+    has to guess what's valid for a given product.
+    """
+
+    @rest_api.response(400, 'Error', dash_error_response)
+    @token_required
+    @active_required
+    def get(self, current_user):
+        raw = (request.args.get('company_id') or '').strip()
+        if not raw:
+            return {'success': False, 'msg': 'company_id is required'}, 422
+        try:
+            company_id = int(raw)
+        except ValueError:
+            return {'success': False, 'msg': 'company_id must be a number'}, 422
+
+        where, params = ['p.company_id = %s', '(p.is_active IS NULL OR p.is_active = 1)'], [company_id]
+        search = (request.args.get('search') or '').strip()
+        if search:
+            where.append('(LOWER(p.name) LIKE %s OR LOWER(p.product_string) LIKE %s)')
+            params += [f'%{search.lower()}%'] * 2
+
+        limit = min(int(request.args.get('limit', 50) or 50), 200)
+        rows = mysql_manager.execute_query(
+            f"""SELECT p.product_id, p.product_string, p.name, p.uom
+                  FROM product p
+                 WHERE {' AND '.join(where)}
+                 ORDER BY p.name
+                 LIMIT %s""",
+            (*params, limit)) or []
+        if not rows:
+            return {'success': True, 'products': []}, 200
+
+        ids = [r['product_id'] for r in rows]
+        ph = ','.join(['%s'] * len(ids))
+        ladder_rows = mysql_manager.execute_query(
+            f"""SELECT product_id, uom_code, label, is_order_unit, is_stock_unit
+                  FROM product_uom
+                 WHERE product_id IN ({ph}) AND level_no > 0
+                 ORDER BY product_id, level_no""", tuple(ids)) or []
+        ladders = defaultdict(list)
+        for r in ladder_rows:
+            ladders[r['product_id']].append({
+                'uom_code': r['uom_code'],
+                'label': r['label'] or r['uom_code'],
+                # Order-and-stock rungs are shown to the picker; the base (tablet/unit)
+                # rung is excluded above (level_no > 0) since nothing is ever ordered in it.
+                'is_order_unit': bool(r['is_order_unit']),
+                'is_stock_unit': bool(r['is_stock_unit']),
+            })
+
+        products = []
+        for r in rows:
+            rungs = ladders.get(r['product_id'])
+            # No ladder at all: the product predates this model, or was never given a
+            # pack. It is still orderable — in whatever plain unit its master carries.
+            uoms = rungs or [{'uom_code': (r['uom'] or 'UNIT').upper(), 'label': r['uom'] or 'Unit',
+                              'is_order_unit': True, 'is_stock_unit': True}]
+            products.append({
+                'product_id': r['product_id'],
+                'sku_code': r['product_string'] or '',
+                'name': r['name'] or '',
+                'uoms': uoms,
+            })
+        return {'success': True, 'products': products}, 200
+
+
+def _resolve_cart_line(product_id, product_name, sku_code, company_id, order_uom, order_qty):
+    """Turn one cart line (a product plus the unit and quantity a rep picked) into the
+    columns submitted_order_products stores, converting through the product's packaging
+    ladder — the same model product_pack.order_value() prices an order line with.
+
+    Deliberately doesn't require a price: a product with no received batch yet is still
+    a real, orderable line (parity with the parts-sheet upload, which never rejects an
+    unknown or unpriced part number either) — it just carries no net_rate/mrp until
+    stock arrives. Raises ValueError with a message meant to be shown to the operator.
+    """
+    from api.modules.platform.catalog import product_pack
+
+    order_uom = (order_uom or '').strip().upper()
+    try:
+        qty = Decimal(str(order_qty))
+    except (InvalidOperation, TypeError):
+        raise ValueError(f'{product_name}: quantity must be a number')
+    if qty <= 0:
+        raise ValueError(f'{product_name}: quantity must be greater than zero')
+
+    rungs = mysql_manager.execute_query(
+        """SELECT uom_code, factor_to_base, is_stock_unit FROM product_uom
+            WHERE product_id = %s""", (product_id,)) or []
+
+    if rungs:
+        by_code = {r['uom_code']: r['factor_to_base'] for r in rungs}
+        stock = next((r for r in rungs if r['is_stock_unit']), None)
+        if not stock:
+            raise ValueError(f'{product_name} has no stock unit configured')
+        if order_uom not in by_code:
+            raise ValueError(f'{order_uom or "(blank)"} is not a valid unit for {product_name}')
+        base_qty = (qty * by_code[order_uom]) / by_code[stock['uom_code']]
+        rounded = base_qty.to_integral_value()
+        if abs(base_qty - rounded) > Decimal('0.001'):
+            raise ValueError(
+                f'{order_qty} {order_uom} of {product_name} does not divide evenly '
+                f'into whole {stock["uom_code"]}s')
+        quantity = int(rounded)
+        stock_uom = stock['uom_code']
+    else:
+        # No ladder: a product that predates this model. Ordered directly in its plain
+        # master unit, one-for-one — the same as before the packaging ladder existed.
+        product_row = mysql_manager.execute_query(
+            "SELECT uom FROM product WHERE product_id = %s", (product_id,))
+        stock_uom = ((product_row[0]['uom'] if product_row else None) or order_uom or None)
+        if stock_uom:
+            stock_uom = stock_uom.upper()
+        quantity = int(qty.to_integral_value())
+
+    price = product_pack.price_for(product_id, company_id)
+    net_rate = price['amount'] if price else None
+    mrp = price['mrp'] if price else None
+
+    return {
+        'product_id': product_id,
+        'sku_code': sku_code,
+        'product_name': product_name,
+        'uom': stock_uom,
+        'quantity': max(quantity, 0),
+        'order_quantity': qty,
+        'order_uom': order_uom or stock_uom,
+        'net_rate': net_rate,
+        'mrp': mrp,
+    }
+
+
+@rest_api.route('/api/orders/submitted/manual-cart')
+class SubmittedOrderCartCreate(Resource):
+    """Raise an order from the web side, with its lines picked by hand rather than
+    taken from an uploaded sheet — a product, a unit (strip/box/case) and a quantity
+    per line, chosen from the catalogue instead of typed into a spreadsheet first.
+
+    Shares its dealer/company/warehouse validation and header creation with
+    SubmittedOrderManualCreate; the two differ only in where the lines come from.
+
+    JSON body: dealer_id, company_id, warehouse_id (optional), notes (optional),
+    expected_delivery_date (optional), items: [{product_id, uom, quantity}, ...].
+    """
+
+    @rest_api.response(400, 'Error', dash_error_response)
+    @token_required
+    @active_required
+    def post(self, current_user):
+        from api.modules.fulfillment.order import dms
+        from api.modules.fulfillment.order.constants import OrderStatus
+
+        data = request.get_json(silent=True) or {}
+
+        def _int(val):
+            if val in (None, ''):
+                return None, None
+            try:
+                return int(val), None
+            except (ValueError, TypeError):
+                return None, 'must be a number'
+
+        dealer_id, err = _int(data.get('dealer_id'))
+        if err:
+            return {'success': False, 'msg': f'dealer_id {err}'}, 422
+        company_id, err = _int(data.get('company_id'))
+        if err:
+            return {'success': False, 'msg': f'company_id {err}'}, 422
+        warehouse_id, err = _int(data.get('warehouse_id'))
+        if err:
+            return {'success': False, 'msg': f'warehouse_id {err}'}, 422
+
+        dealer, company, err = _validate_order_context(dealer_id, company_id, warehouse_id)
+        if err:
+            return {'success': False, 'msg': err[0]}, err[1]
+
+        raw_items = data.get('items')
+        if not isinstance(raw_items, list) or not raw_items:
+            return {'success': False, 'msg': 'at least one item is required'}, 422
+
+        product_ids = []
+        for it in raw_items:
+            pid, err = _int((it or {}).get('product_id'))
+            if err or pid is None:
+                return {'success': False, 'msg': 'each item needs a product_id'}, 422
+            product_ids.append(pid)
+
+        ph = ','.join(['%s'] * len(product_ids))
+        found = {r['product_id']: r for r in (mysql_manager.execute_query(
+            f"""SELECT product_id, product_string, name, company_id
+                  FROM product WHERE product_id IN ({ph})""", tuple(product_ids)) or [])}
+
+        lines = []
+        for it in raw_items:
+            pid = int(it['product_id'])
+            product = found.get(pid)
+            if not product:
+                return {'success': False, 'msg': f'product {pid} not found'}, 422
+            if product['company_id'] not in (None, company_id):
+                return {'success': False,
+                        'msg': f"{product['name']} does not belong to the selected company"}, 422
+            try:
+                lines.append(_resolve_cart_line(
+                    pid, product['name'], product['product_string'],
+                    company_id, it.get('uom'), it.get('quantity')))
+            except ValueError as e:
+                return {'success': False, 'msg': str(e)}, 422
+
+        expected = (data.get('expected_delivery_date') or '').strip() or None
+        notes = (data.get('notes') or '').strip() or None
+        created_by = getattr(current_user, 'id', None)
+        now = datetime.utcnow()
+
+        with mysql_manager.get_cursor() as cursor:
+            cursor.execute(
+                """INSERT INTO submitted_orders
+                     (dealer_id, warehouse_id, company_id, status, source, dms_status,
+                      requested_by, created_by, submitted_at, expected_delivery_date,
+                      notes, created_at, updated_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (dealer_id, warehouse_id, company_id, OrderStatus.SUBMITTED.value,
+                 'itemised', 'ready', created_by, created_by, now, expected, notes,
+                 now, now))
+            order_id = cursor.lastrowid
+            order_number = f"ORD-{order_id:06d}"
+            cursor.execute(
+                "UPDATE submitted_orders SET order_number = %s WHERE submitted_order_id = %s",
+                (order_number, order_id))
+            for ln in lines:
+                cursor.execute(
+                    """INSERT INTO submitted_order_products
+                         (submitted_order_id, product_id, sku_code, product_name, uom,
+                          quantity, mrp, net_rate, order_quantity, order_uom,
+                          created_at, updated_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (order_id, ln['product_id'], ln['sku_code'], ln['product_name'],
+                     ln['uom'], ln['quantity'], ln['mrp'], ln['net_rate'],
+                     ln['order_quantity'], ln['order_uom'], now, now))
+            cursor.execute(
+                """INSERT INTO submitted_order_status_history
+                     (submitted_order_id, status, changed_by, changed_at)
+                   VALUES (%s, 'ready', %s, %s)""",
+                (order_id, created_by, now))
+
+        return {'success': True, 'order_id': order_id, 'order_number': order_number,
+                'item_count': len(lines),
+                'dms_available': dms.has_dms_format(company['name'])}, 201
 
 
 @rest_api.route('/api/orders/submitted/<int:order_id>/dms-file')

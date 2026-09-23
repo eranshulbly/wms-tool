@@ -28,7 +28,10 @@ import {
   DialogActions,
   IconButton,
   Snackbar,
-  Alert
+  Alert,
+  Tabs,
+  Tab,
+  Autocomplete
 } from '@material-ui/core';
 import {
   IconPhoto, IconX, IconDownload, IconBan, IconPlus, IconUpload, IconBuildingWarehouse,
@@ -45,7 +48,9 @@ import {
   downloadDmsFile,
   rejectSubmittedOrder,
   createManualOrder,
+  createCartOrder,
   getOrderDealers,
+  getOrderProducts,
   getDmsInventory,
   uploadDmsInventory,
   readBlobError
@@ -160,6 +165,17 @@ const DownloadDmsInput = () => {
   const [dealersLoading, setDealersLoading] = useState(false);
   const fileInputRef = useRef(null);
 
+  // 'file' — the original parts-sheet upload. 'cart' — pick a product, a unit
+  // (strip/box/case) and a quantity per line, straight from the catalogue.
+  const [orderMode, setOrderMode] = useState('file');
+  const [cartItems, setCartItems] = useState([]);
+  const [productOptions, setProductOptions] = useState([]);
+  const [productSearch, setProductSearch] = useState('');
+  const [productsLoading, setProductsLoading] = useState(false);
+  const [pickedProduct, setPickedProduct] = useState(null);
+  const [pickedUom, setPickedUom] = useState('');
+  const [pickedQty, setPickedQty] = useState('');
+
   const openAdd = () => {
     // Carry the filters in as defaults — the operator has usually already narrowed to
     // the company and warehouse they're working in.
@@ -169,8 +185,76 @@ const DownloadDmsInput = () => {
       warehouseId: warehouseFilter !== 'all' ? warehouseFilter : ''
     });
     setNewFile(null);
+    setOrderMode('file');
+    setCartItems([]);
+    setPickedProduct(null);
+    setPickedUom('');
+    setPickedQty('');
+    setProductSearch('');
     setAddOpen(true);
   };
+
+  // Product options for the cart picker, reloaded as the operator types. Narrowed to
+  // the chosen company — a product must be orderable against the company the order is
+  // raised for, same as the dealer picker just above.
+  useEffect(() => {
+    if (!addOpen || orderMode !== 'cart' || !newOrder.companyId) {
+      setProductOptions([]);
+      return;
+    }
+    let cancelled = false;
+    setProductsLoading(true);
+    const t = setTimeout(() => {
+      getOrderProducts(newOrder.companyId, productSearch)
+        .then((data) => {
+          if (!cancelled) setProductOptions(data.success ? data.products || [] : []);
+        })
+        .catch(() => {
+          if (!cancelled) setProductOptions([]);
+        })
+        .finally(() => {
+          if (!cancelled) setProductsLoading(false);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [addOpen, orderMode, newOrder.companyId, productSearch]);
+
+  // Default the unit to whichever rung the product is actually ordered in (BOX/CASE),
+  // falling back to its first rung for a product with no packaging ladder at all.
+  useEffect(() => {
+    if (!pickedProduct) {
+      setPickedUom('');
+      return;
+    }
+    const preferred = pickedProduct.uoms.find((u) => u.is_order_unit) || pickedProduct.uoms[0];
+    setPickedUom(preferred ? preferred.uom_code : '');
+  }, [pickedProduct]);
+
+  const addToCart = () => {
+    if (!pickedProduct || !pickedUom || !pickedQty || Number(pickedQty) <= 0) return;
+    const uomInfo = pickedProduct.uoms.find((u) => u.uom_code === pickedUom);
+    setCartItems((items) => [
+      ...items,
+      {
+        key: `${pickedProduct.product_id}-${pickedUom}-${Date.now()}`,
+        productId: pickedProduct.product_id,
+        skuCode: pickedProduct.sku_code,
+        name: pickedProduct.name,
+        uom: pickedUom,
+        uomLabel: uomInfo ? uomInfo.label : pickedUom,
+        quantity: Number(pickedQty)
+      }
+    ]);
+    setPickedProduct(null);
+    setPickedUom('');
+    setPickedQty('');
+    setProductSearch('');
+  };
+
+  const removeCartItem = (key) => setCartItems((items) => items.filter((i) => i.key !== key));
 
   // Dealers depend on the chosen company, so they're loaded per selection rather than
   // once — picking a different company must not leave the other company's dealers.
@@ -196,20 +280,34 @@ const DownloadDmsInput = () => {
     };
   }, [addOpen, newOrder.companyId]);
 
-  const canCreate = !!newFile && !!newOrder.companyId && !!newOrder.dealerId && !creating;
+  const canCreate =
+    !!newOrder.companyId &&
+    !!newOrder.dealerId &&
+    !creating &&
+    (orderMode === 'file' ? !!newFile : cartItems.length > 0);
 
   const submitNewOrder = async () => {
     if (!canCreate) return;
     setCreating(true);
     try {
-      const data = await createManualOrder({
-        file: newFile,
-        dealerId: newOrder.dealerId,
-        companyId: newOrder.companyId,
-        warehouseId: newOrder.warehouseId,
-        notes: newOrder.notes,
-        expectedDate: newOrder.expectedDate
-      });
+      const data =
+        orderMode === 'file'
+          ? await createManualOrder({
+              file: newFile,
+              dealerId: newOrder.dealerId,
+              companyId: newOrder.companyId,
+              warehouseId: newOrder.warehouseId,
+              notes: newOrder.notes,
+              expectedDate: newOrder.expectedDate
+            })
+          : await createCartOrder({
+              items: cartItems,
+              dealerId: newOrder.dealerId,
+              companyId: newOrder.companyId,
+              warehouseId: newOrder.warehouseId,
+              notes: newOrder.notes,
+              expectedDate: newOrder.expectedDate
+            });
       if (data.success) {
         notify(
           `${data.order_number} created with ${data.item_count} part${data.item_count === 1 ? '' : 's'}` +
@@ -218,6 +316,7 @@ const DownloadDmsInput = () => {
         );
         setAddOpen(false);
         setNewFile(null);
+        setCartItems([]);
         if (fileInputRef.current) fileInputRef.current.value = '';
         await fetchOrders();
       } else {
@@ -683,16 +782,15 @@ const DownloadDmsInput = () => {
         </DialogActions>
       </Dialog>
 
-      {/* Add Order — order details plus the parts sheet. The sheet is the same layout the
-          part convertor uses (PART# | QTY | DESC. | MRP), and the order is created ready
-          for DMS download, so it appears in the list above straight away. */}
+      {/* Add Order — order details plus either a parts sheet or a hand-built cart. Either
+          way the order is created ready for DMS download and appears in the list above. */}
       <Dialog open={addOpen} onClose={() => !creating && setAddOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Add Order</DialogTitle>
         <DialogContent dividers>
           <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
-            For parts that came in outside the app. Attach the parts sheet
-            (PART# and QTY required; DESC. and MRP optional) — the order is created ready for
-            DMS download and appears in the list above.
+            For orders that came in outside the app — a phone or WhatsApp order the rep never
+            entered. Either attach the parts sheet it arrived as, or build it line by line from
+            the catalogue below.
           </Typography>
           <Grid container spacing={2}>
             <Grid item xs={12} sm={6}>
@@ -779,22 +877,143 @@ const DownloadDmsInput = () => {
               />
             </Grid>
             <Grid item xs={12}>
-              <Stack direction="row" spacing={2} alignItems="center">
-                <Button variant="outlined" startIcon={<IconUpload size={16} />} onClick={() => fileInputRef.current?.click()}>
-                  {newFile ? 'Change file' : 'Choose parts Excel'}
-                </Button>
-                <Typography variant="body2" color={newFile ? 'textPrimary' : 'textSecondary'} noWrap>
-                  {newFile ? newFile.name : 'No file chosen'}
-                </Typography>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  hidden
-                  accept=".xlsx,.xlsm,.xls"
-                  onChange={(e) => setNewFile(e.target.files?.[0] || null)}
-                />
-              </Stack>
+              <Tabs
+                value={orderMode}
+                onChange={(e, v) => setOrderMode(v)}
+                variant="fullWidth"
+                sx={{ minHeight: 36, mb: 1, borderBottom: 1, borderColor: 'divider' }}
+              >
+                <Tab value="file" label="Upload Parts Excel" sx={{ minHeight: 36 }} />
+                <Tab value="cart" label="Build From Catalogue" sx={{ minHeight: 36 }} />
+              </Tabs>
             </Grid>
+
+            {orderMode === 'file' ? (
+              <Grid item xs={12}>
+                <Typography variant="body2" color="textSecondary" sx={{ mb: 1 }}>
+                  PART# and QTY required; DESC. and MRP optional.
+                </Typography>
+                <Stack direction="row" spacing={2} alignItems="center">
+                  <Button variant="outlined" startIcon={<IconUpload size={16} />} onClick={() => fileInputRef.current?.click()}>
+                    {newFile ? 'Change file' : 'Choose parts Excel'}
+                  </Button>
+                  <Typography variant="body2" color={newFile ? 'textPrimary' : 'textSecondary'} noWrap>
+                    {newFile ? newFile.name : 'No file chosen'}
+                  </Typography>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    hidden
+                    accept=".xlsx,.xlsm,.xls"
+                    onChange={(e) => setNewFile(e.target.files?.[0] || null)}
+                  />
+                </Stack>
+              </Grid>
+            ) : (
+              <Grid item xs={12}>
+                <Stack spacing={2}>
+                  <Stack direction="row" spacing={2} alignItems="flex-start">
+                    <Autocomplete
+                      sx={{ flex: 2 }}
+                      size="small"
+                      options={productOptions}
+                      value={pickedProduct}
+                      onChange={(e, v) => setPickedProduct(v)}
+                      inputValue={productSearch}
+                      onInputChange={(e, v) => setProductSearch(v)}
+                      getOptionLabel={(o) => (o ? `${o.name}${o.sku_code ? ` (${o.sku_code})` : ''}` : '')}
+                      isOptionEqualToValue={(o, v) => o.product_id === v.product_id}
+                      loading={productsLoading}
+                      disabled={!newOrder.companyId}
+                      noOptionsText={newOrder.companyId ? 'No matching products' : 'Choose a company first'}
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          label="Product"
+                          placeholder={newOrder.companyId ? 'Search by name or SKU' : ''}
+                          InputProps={{
+                            ...params.InputProps,
+                            endAdornment: (
+                              <>
+                                {productsLoading ? <CircularProgress size={16} /> : null}
+                                {params.InputProps.endAdornment}
+                              </>
+                            )
+                          }}
+                        />
+                      )}
+                    />
+                    <FormControl size="small" sx={{ flex: 1, minWidth: 100 }} disabled={!pickedProduct}>
+                      <InputLabel>Unit</InputLabel>
+                      <Select value={pickedUom} label="Unit" onChange={(e) => setPickedUom(e.target.value)}>
+                        {(pickedProduct?.uoms || []).map((u) => (
+                          <MenuItem key={u.uom_code} value={u.uom_code}>
+                            {u.label}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                    <TextField
+                      size="small"
+                      type="number"
+                      label="Qty"
+                      sx={{ width: 90 }}
+                      value={pickedQty}
+                      onChange={(e) => setPickedQty(e.target.value)}
+                      inputProps={{ min: 1, step: 1 }}
+                    />
+                    <Button
+                      variant="outlined"
+                      sx={{ mt: '2px' }}
+                      onClick={addToCart}
+                      disabled={!pickedProduct || !pickedUom || !pickedQty || Number(pickedQty) <= 0}
+                    >
+                      Add
+                    </Button>
+                  </Stack>
+
+                  {cartItems.length > 0 ? (
+                    <TableContainer component={Paper} variant="outlined">
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Product</TableCell>
+                            <TableCell>Unit</TableCell>
+                            <TableCell align="right">Qty</TableCell>
+                            <TableCell sx={{ width: 40 }} />
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {cartItems.map((item) => (
+                            <TableRow key={item.key}>
+                              <TableCell>
+                                {item.name}
+                                {item.skuCode ? (
+                                  <Typography variant="caption" color="textSecondary" display="block">
+                                    {item.skuCode}
+                                  </Typography>
+                                ) : null}
+                              </TableCell>
+                              <TableCell>{item.uomLabel}</TableCell>
+                              <TableCell align="right">{item.quantity}</TableCell>
+                              <TableCell>
+                                <IconButton size="small" onClick={() => removeCartItem(item.key)} aria-label="Remove">
+                                  <IconX size={16} />
+                                </IconButton>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  ) : (
+                    <Typography variant="body2" color="textSecondary">
+                      No lines added yet — search a product above, pick its unit and quantity, then Add.
+                    </Typography>
+                  )}
+                </Stack>
+              </Grid>
+            )}
           </Grid>
         </DialogContent>
         <DialogActions>

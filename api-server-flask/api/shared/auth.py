@@ -74,6 +74,8 @@ _ROLE_SCOPES = {
         ('GET',  r'^/api/orders/submitted/\d+/dms-file/?$'),
         ('POST', r'^/api/orders/submitted/\d+/reject/?$'),
         ('POST', r'^/api/orders/submitted/manual/?$'),
+        ('POST', r'^/api/orders/submitted/manual-cart/?$'),
+        ('GET',  r'^/api/orders/products/?$'),
         ('GET',  r'^/api/orders/inventory/?$'),
         ('POST', r'^/api/orders/inventory/?$'),
         ('GET',  r'^/api/orders/dealers/?$'),
