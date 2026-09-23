@@ -39,7 +39,9 @@ const OrderManagement = () => {
     setSelectedCompany: setCompany
   } = useWarehouse();
 
-  const [statusFilter, setStatusFilter] = useState('all');
+  // Defaults to Open — the status an operator actually works from day to day, rather
+  // than every order ever raised.
+  const [statusFilter, setStatusFilter] = useState('open');
   const [filteredOrders, setFilteredOrders] = useState([]);
   const [totalOrders, setTotalOrders] = useState(0);
   const [loading, setLoading] = useState(false);
