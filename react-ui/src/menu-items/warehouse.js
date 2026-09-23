@@ -36,6 +36,14 @@ const warehouse = {
             breadcrumbs: false
         },
         {
+            id: 'download-picklist',
+            title: 'Download Picklist',
+            type: 'item',
+            url: '/warehouse/download-picklist',
+            icon: icons.IconFileDownload,
+            breadcrumbs: false
+        },
+        {
             id: 'upload-invoices',
             title: 'Upload Invoice',
             type: 'item',
