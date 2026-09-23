@@ -76,6 +76,16 @@ const saveBlob = (blob, filename) => {
 
 const STATUS_LABELS = { ready: 'Ready', done: 'Done' };
 
+// The unit picker shows the plain word a rep actually says ("Box", "Case") rather than
+// the pack-specific label the catalogue stores against it ("30X10T") — that detail is
+// still shown alongside it, since it's genuinely useful for confirming the right one.
+const GENERIC_UOM_WORD = { STRIP: 'Strip', BOX: 'Box', CASE: 'Case', TAB: 'Tablet', UNIT: 'Unit' };
+const uomWord = (code) => GENERIC_UOM_WORD[code] || (code ? code.charAt(0) + code.slice(1).toLowerCase() : '');
+const uomMenuLabel = (u) => {
+  const word = uomWord(u.uom_code);
+  return u.label && u.label !== u.uom_code && u.label !== word ? `${word} (${u.label})` : word;
+};
+
 const DownloadDmsInput = () => {
   const { warehouses, companies } = useWarehouse();
 
@@ -233,6 +243,19 @@ const DownloadDmsInput = () => {
     setPickedUom(preferred ? preferred.uom_code : '');
   }, [pickedProduct]);
 
+  // How many stock units (strips, usually) the quantity being typed comes to — shown
+  // live next to the Qty field so the operator isn't guessing what "2 boxes" means in
+  // the unit the DMS file and stock are actually tracked in.
+  const cartPreview = useMemo(() => {
+    if (!pickedProduct || !pickedUom || !pickedQty || Number(pickedQty) <= 0) return null;
+    const picked = pickedProduct.uoms.find((u) => u.uom_code === pickedUom);
+    const stock = pickedProduct.uoms.find((u) => u.is_stock_unit) || pickedProduct.uoms[0];
+    if (!picked || !stock || !stock.factor_to_base) return null;
+    const base = (Number(pickedQty) * picked.factor_to_base) / stock.factor_to_base;
+    const whole = Math.round(base);
+    return { qty: base, whole, exact: Math.abs(base - whole) < 0.001, word: uomWord(stock.uom_code) };
+  }, [pickedProduct, pickedUom, pickedQty]);
+
   const addToCart = () => {
     if (!pickedProduct || !pickedUom || !pickedQty || Number(pickedQty) <= 0) return;
     const uomInfo = pickedProduct.uoms.find((u) => u.uom_code === pickedUom);
@@ -244,7 +267,7 @@ const DownloadDmsInput = () => {
         skuCode: pickedProduct.sku_code,
         name: pickedProduct.name,
         uom: pickedUom,
-        uomLabel: uomInfo ? uomInfo.label : pickedUom,
+        uomLabel: uomInfo ? uomMenuLabel(uomInfo) : uomWord(pickedUom),
         quantity: Number(pickedQty)
       }
     ]);
@@ -919,8 +942,13 @@ const DownloadDmsInput = () => {
                       options={productOptions}
                       value={pickedProduct}
                       onChange={(e, v) => setPickedProduct(v)}
-                      inputValue={productSearch}
-                      onInputChange={(e, v) => setProductSearch(v)}
+                      // The box's own displayed text is left uncontrolled — MUI sets it to
+                      // the picked option's label on selection and clears it when `value`
+                      // is reset to null. Only real typing (reason 'input') should trigger
+                      // a new server search; the 'reset' MUI fires on selection is not one.
+                      onInputChange={(e, v, reason) => {
+                        if (reason === 'input') setProductSearch(v);
+                      }}
                       getOptionLabel={(o) => (o ? `${o.name}${o.sku_code ? ` (${o.sku_code})` : ''}` : '')}
                       isOptionEqualToValue={(o, v) => o.product_id === v.product_id}
                       loading={productsLoading}
@@ -943,25 +971,40 @@ const DownloadDmsInput = () => {
                         />
                       )}
                     />
-                    <FormControl size="small" sx={{ flex: 1, minWidth: 100 }} disabled={!pickedProduct}>
+                    <FormControl size="small" sx={{ flex: 1, minWidth: 110 }} disabled={!pickedProduct}>
                       <InputLabel>Unit</InputLabel>
                       <Select value={pickedUom} label="Unit" onChange={(e) => setPickedUom(e.target.value)}>
                         {(pickedProduct?.uoms || []).map((u) => (
                           <MenuItem key={u.uom_code} value={u.uom_code}>
-                            {u.label}
+                            {uomMenuLabel(u)}
                           </MenuItem>
                         ))}
                       </Select>
                     </FormControl>
-                    <TextField
-                      size="small"
-                      type="number"
-                      label="Qty"
-                      sx={{ width: 90 }}
-                      value={pickedQty}
-                      onChange={(e) => setPickedQty(e.target.value)}
-                      inputProps={{ min: 1, step: 1 }}
-                    />
+                    <Box sx={{ width: 100 }}>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        type="number"
+                        label="Qty"
+                        value={pickedQty}
+                        onChange={(e) => setPickedQty(e.target.value)}
+                        inputProps={{ min: 1, step: 1 }}
+                      />
+                      {/* Live conversion, so "2 Box" reads as the strip count it actually
+                          becomes on the order — the unit stock and the DMS file use. */}
+                      {cartPreview && (
+                        <Typography
+                          variant="caption"
+                          color={cartPreview.exact ? 'textSecondary' : 'error'}
+                          sx={{ display: 'block', mt: 0.5, whiteSpace: 'nowrap' }}
+                        >
+                          {cartPreview.exact
+                            ? `= ${cartPreview.whole} ${cartPreview.word}${cartPreview.whole === 1 ? '' : 's'}`
+                            : `does not divide evenly into ${cartPreview.word}s`}
+                        </Typography>
+                      )}
+                    </Box>
                     <Button
                       variant="outlined"
                       sx={{ mt: '2px' }}
@@ -1009,6 +1052,12 @@ const DownloadDmsInput = () => {
                   ) : (
                     <Typography variant="body2" color="textSecondary">
                       No lines added yet — search a product above, pick its unit and quantity, then Add.
+                    </Typography>
+                  )}
+                  {cartItems.length > 0 && (
+                    <Typography variant="caption" color="textSecondary">
+                      Adding the same product more than once (e.g. 2 Box + 1 Case) is fine —
+                      they combine into a single order line, totalled in its stock unit, when you submit.
                     </Typography>
                   )}
                 </Stack>

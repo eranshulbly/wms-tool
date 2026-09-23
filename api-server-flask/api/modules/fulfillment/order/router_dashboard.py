@@ -13,7 +13,7 @@ Dashboard / listing routes:
 
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 
 import io
 import os
@@ -1393,7 +1393,7 @@ class OrderProductOptions(Resource):
         ids = [r['product_id'] for r in rows]
         ph = ','.join(['%s'] * len(ids))
         ladder_rows = mysql_manager.execute_query(
-            f"""SELECT product_id, uom_code, label, is_order_unit, is_stock_unit
+            f"""SELECT product_id, uom_code, label, is_order_unit, is_stock_unit, factor_to_base
                   FROM product_uom
                  WHERE product_id IN ({ph}) AND level_no > 0
                  ORDER BY product_id, level_no""", tuple(ids)) or []
@@ -1406,6 +1406,9 @@ class OrderProductOptions(Resource):
                 # rung is excluded above (level_no > 0) since nothing is ever ordered in it.
                 'is_order_unit': bool(r['is_order_unit']),
                 'is_stock_unit': bool(r['is_stock_unit']),
+                # How many stock units one of this rung is — lets the picker show "= 40
+                # Strip" as the operator types a quantity, without a round trip per keystroke.
+                'factor_to_base': float(r['factor_to_base']),
             })
 
         products = []
@@ -1414,7 +1417,7 @@ class OrderProductOptions(Resource):
             # No ladder at all: the product predates this model, or was never given a
             # pack. It is still orderable — in whatever plain unit its master carries.
             uoms = rungs or [{'uom_code': (r['uom'] or 'UNIT').upper(), 'label': r['uom'] or 'Unit',
-                              'is_order_unit': True, 'is_stock_unit': True}]
+                              'is_order_unit': True, 'is_stock_unit': True, 'factor_to_base': 1.0}]
             products.append({
                 'product_id': r['product_id'],
                 'sku_code': r['product_string'] or '',
@@ -1424,10 +1427,21 @@ class OrderProductOptions(Resource):
         return {'success': True, 'products': products}, 200
 
 
-def _resolve_cart_line(product_id, product_name, sku_code, company_id, order_uom, order_qty):
-    """Turn one cart line (a product plus the unit and quantity a rep picked) into the
-    columns submitted_order_products stores, converting through the product's packaging
-    ladder — the same model product_pack.order_value() prices an order line with.
+def _resolve_cart_line(product_id, product_name, sku_code, company_id, sub_lines):
+    """Turn every cart entry for ONE product — `sub_lines` is [(uom, qty), ...] — into
+    the single submitted_order_products row that product gets on this order.
+
+    Merged rather than written one row per entry: stock allocation (allocate_live)
+    walks each order line's stock rows once and has no way to know a second line for
+    the same product is drawing against stock the first already spoke for, so two rows
+    for one product on one order silently under-allocates the second. A rep ordering
+    "2 BOX + 1 CASE" of the same item is an entirely ordinary cart, so this is the
+    normal case to get right, not an edge case to leave to chance.
+
+    Converts each entry through the product's packaging ladder — the same model
+    product_pack.order_value() prices an order line with — and sums them in the stock
+    unit, so the stored order_uom/order_quantity read as one honest total (e.g. "840
+    Strip") rather than trying to cram two different units into one row.
 
     Deliberately doesn't require a price: a product with no received batch yet is still
     a real, orderable line (parity with the parts-sheet upload, which never rejects an
@@ -1435,14 +1449,6 @@ def _resolve_cart_line(product_id, product_name, sku_code, company_id, order_uom
     stock arrives. Raises ValueError with a message meant to be shown to the operator.
     """
     from api.modules.platform.catalog import product_pack
-
-    order_uom = (order_uom or '').strip().upper()
-    try:
-        qty = Decimal(str(order_qty))
-    except (InvalidOperation, TypeError):
-        raise ValueError(f'{product_name}: quantity must be a number')
-    if qty <= 0:
-        raise ValueError(f'{product_name}: quantity must be greater than zero')
 
     rungs = mysql_manager.execute_query(
         """SELECT uom_code, factor_to_base, is_stock_unit FROM product_uom
@@ -1453,25 +1459,34 @@ def _resolve_cart_line(product_id, product_name, sku_code, company_id, order_uom
         stock = next((r for r in rungs if r['is_stock_unit']), None)
         if not stock:
             raise ValueError(f'{product_name} has no stock unit configured')
-        if order_uom not in by_code:
-            raise ValueError(f'{order_uom or "(blank)"} is not a valid unit for {product_name}')
-        base_qty = (qty * by_code[order_uom]) / by_code[stock['uom_code']]
-        rounded = base_qty.to_integral_value()
-        if abs(base_qty - rounded) > Decimal('0.001'):
-            raise ValueError(
-                f'{order_qty} {order_uom} of {product_name} does not divide evenly '
-                f'into whole {stock["uom_code"]}s')
-        quantity = int(rounded)
         stock_uom = stock['uom_code']
     else:
         # No ladder: a product that predates this model. Ordered directly in its plain
         # master unit, one-for-one — the same as before the packaging ladder existed.
         product_row = mysql_manager.execute_query(
             "SELECT uom FROM product WHERE product_id = %s", (product_id,))
-        stock_uom = ((product_row[0]['uom'] if product_row else None) or order_uom or None)
-        if stock_uom:
-            stock_uom = stock_uom.upper()
-        quantity = int(qty.to_integral_value())
+        stock_uom = ((product_row[0]['uom'] if product_row else None) or '').upper() or None
+        by_code = {stock_uom: Decimal(1)} if stock_uom else {}
+
+    base_total = Decimal(0)
+    for raw_uom, raw_qty in sub_lines:
+        order_uom = (raw_uom or '').strip().upper()
+        try:
+            qty = Decimal(str(raw_qty))
+        except (InvalidOperation, TypeError):
+            raise ValueError(f'{product_name}: quantity must be a number')
+        if qty <= 0:
+            raise ValueError(f'{product_name}: quantity must be greater than zero')
+        if order_uom not in by_code:
+            raise ValueError(f'{order_uom or "(blank)"} is not a valid unit for {product_name}')
+        base_total += (qty * by_code[order_uom]) / (by_code[stock_uom] or Decimal(1))
+
+    rounded = base_total.to_integral_value()
+    if abs(base_total - rounded) > Decimal('0.001'):
+        raise ValueError(
+            f'{product_name}: the quantities entered do not add up to a whole '
+            f'number of {stock_uom or "units"}')
+    quantity = max(int(rounded), 0)
 
     price = product_pack.price_for(product_id, company_id)
     net_rate = price['amount'] if price else None
@@ -1482,9 +1497,9 @@ def _resolve_cart_line(product_id, product_name, sku_code, company_id, order_uom
         'sku_code': sku_code,
         'product_name': product_name,
         'uom': stock_uom,
-        'quantity': max(quantity, 0),
-        'order_quantity': qty,
-        'order_uom': order_uom or stock_uom,
+        'quantity': quantity,
+        'order_quantity': Decimal(quantity),
+        'order_uom': stock_uom,
         'net_rate': net_rate,
         'mrp': mrp,
     }
@@ -1550,9 +1565,16 @@ class SubmittedOrderCartCreate(Resource):
             f"""SELECT product_id, product_string, name, company_id
                   FROM product WHERE product_id IN ({ph})""", tuple(product_ids)) or [])}
 
-        lines = []
+        # Grouped by product before conversion: a cart legitimately has "2 BOX + 1 CASE"
+        # of the same item as two separate entries (the operator picked them one at a
+        # time), but they must become exactly one order line — see _resolve_cart_line.
+        grouped = OrderedDict()
         for it in raw_items:
             pid = int(it['product_id'])
+            grouped.setdefault(pid, []).append((it.get('uom'), it.get('quantity')))
+
+        lines = []
+        for pid, sub_lines in grouped.items():
             product = found.get(pid)
             if not product:
                 return {'success': False, 'msg': f'product {pid} not found'}, 422
@@ -1561,8 +1583,7 @@ class SubmittedOrderCartCreate(Resource):
                         'msg': f"{product['name']} does not belong to the selected company"}, 422
             try:
                 lines.append(_resolve_cart_line(
-                    pid, product['name'], product['product_string'],
-                    company_id, it.get('uom'), it.get('quantity')))
+                    pid, product['name'], product['product_string'], company_id, sub_lines))
             except ValueError as e:
                 return {'success': False, 'msg': str(e)}, 422
 
