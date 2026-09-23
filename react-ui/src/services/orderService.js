@@ -70,11 +70,6 @@ export const getSubmittedOrders = (warehouseId = null, companyId = null, stage =
   return api.get('orders/submitted', { params }).then((res) => res.data);
 };
 
-// Reject a DMS-input order (from the Download DMS tab) with a note — sends it back to
-// Submitted Orders as 're_submitted' and clears its parts.
-export const rejectSubmittedOrder = (orderId, note) =>
-  api.post(`orders/submitted/${orderId}/reject`, { note }).then((res) => res.data);
-
 // A submitted order's photo, fetched as an authenticated blob (an <img> tag can't
 // send the bearer token). Caller creates an object URL from the returned Blob.
 export const fetchSubmittedOrderPhoto = (orderId, attachmentId) =>
@@ -91,37 +86,6 @@ export const uploadPartConvertor = (orderId, file) => {
     .post(`orders/submitted/${orderId}/part-convertor`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
-    .then((res) => res.data);
-};
-
-// Download the company's DMS file for a submitted order. Returned as a blob so the
-// browser saves it; a 409 (no parts yet) surfaces as a rejected promise whose blob
-// body we read for the message.
-export const downloadDmsFile = (orderId) =>
-  api.get(`orders/submitted/${orderId}/dms-file`, { responseType: 'blob' }).then((res) => {
-    const disposition = res.headers['content-disposition'] || '';
-    const match = /filename[^;=\n]*=(?:"?)([^";\n]*)/.exec(disposition);
-    const filename = match ? match[1].trim() : `DMS_${orderId}.csv`;
-    // A file trimmed to available stock is indistinguishable from a complete one, so the
-    // server reports what it cut in headers (the body is the CSV itself).
-    return {
-      blob: res.data,
-      filename,
-      shortfallCount: parseInt(res.headers['x-dms-shortfall-count'] || '0', 10),
-      shortfallSummary: res.headers['x-dms-shortfall-summary'] || ''
-    };
-  });
-
-// Stock on hand for the DMS step. The freshness summary drives the banner; a DMS download
-// is refused when the last upload is older than the server's window.
-export const getDmsInventory = () => api.get('orders/inventory').then((res) => res.data);
-
-// Apply a stock sheet (PART# | QTY). A full snapshot: parts the sheet omits are set to 0.
-export const uploadDmsInventory = (file) => {
-  const formData = new FormData();
-  formData.append('file', file);
-  return api
-    .post('orders/inventory', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
     .then((res) => res.data);
 };
 
@@ -175,20 +139,6 @@ export const createCartOrder = ({ items, dealerId, companyId, warehouseId, notes
   if (notes) body.notes = notes;
   if (expectedDate) body.expected_delivery_date = expectedDate;
   return api.post('orders/submitted/manual-cart', body).then((res) => res.data);
-};
-
-// Best-effort extraction of a JSON error message from an axios error whose response
-// body is a Blob (because we requested responseType: 'blob').
-export const readBlobError = async (error) => {
-  const data = error?.response?.data;
-  if (data instanceof Blob) {
-    try {
-      return JSON.parse(await data.text())?.msg || null;
-    } catch (e) {
-      return null;
-    }
-  }
-  return data?.msg || null;
 };
 
 export const getRecentActivity = (warehouseId, companyId, limit = 100) => {

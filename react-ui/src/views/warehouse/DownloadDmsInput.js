@@ -19,7 +19,6 @@ import {
   TableRow,
   TablePagination,
   Paper,
-  Chip,
   CircularProgress,
   Button,
   Dialog,
@@ -33,10 +32,7 @@ import {
   Tab,
   Autocomplete
 } from '@material-ui/core';
-import {
-  IconPhoto, IconX, IconDownload, IconBan, IconPlus, IconUpload, IconBuildingWarehouse,
-  IconChevronRight
-} from '@tabler/icons';
+import { IconPhoto, IconX, IconPlus, IconUpload, IconChevronRight } from '@tabler/icons';
 import SubmittedOrderItems from './components/SubmittedOrderItems';
 
 import MainCard from '../../ui-component/cards/MainCard';
@@ -45,37 +41,16 @@ import { useWarehouse } from '../../context/WarehouseContext';
 import {
   getSubmittedOrders,
   fetchSubmittedOrderPhoto,
-  downloadDmsFile,
-  rejectSubmittedOrder,
   createManualOrder,
   createCartOrder,
   getOrderDealers,
-  getOrderProducts,
-  getDmsInventory,
-  uploadDmsInventory,
-  readBlobError
+  getOrderProducts
 } from '../../services/orderService';
 import { dealerLabel } from '../../utils/dealerLabel';
 
-// Push a blob at the browser as a download. Shared by the per-order download and the
-// direct converter so both behave identically (and both revoke the URL afterwards).
-const saveBlob = (blob, filename) => {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-};
-
-// Download DMS input file — stage 2 of the DMS pipeline. Orders whose parts are ready
-// (itemised orders, or photo orders whose part convertor was uploaded). A user downloads
-// the company's DMS input file here (which marks the order Done, but it stays so it can
-// still be rejected), or rejects it with a note — sending it back to Submitted Orders.
-
-const STATUS_LABELS = { ready: 'Ready', done: 'Done' };
+// Submitted Orders — orders raised by hand here (Add Order, file or cart) or brought in
+// from the app, once their line items are resolved. Viewing and creating only: no DMS
+// file generation or stock-upload step lives on this screen.
 
 // The grid's column headers show the plain word a rep actually says ("Box", "Case")
 // rather than the pack-specific code the catalogue stores ("30X10T").
@@ -87,7 +62,6 @@ const DownloadDmsInput = () => {
 
   const [companyFilter, setCompanyFilter] = useState('all');
   const [warehouseFilter, setWarehouseFilter] = useState('all');
-  const [statusFilter, setStatusFilter] = useState('all');
   const [dealerFilter, setDealerFilter] = useState('all');
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -96,7 +70,6 @@ const DownloadDmsInput = () => {
   const [rowsPerPage, setRowsPerPage] = useState(25);
 
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
-  const [busyId, setBusyId] = useState(null);
   // Clicking a row opens that order's line items in a modal (the order object, or
   // null when closed).
   const [detailOrder, setDetailOrder] = useState(null);
@@ -107,58 +80,6 @@ const DownloadDmsInput = () => {
   const [photoLoading, setPhotoLoading] = useState(false);
   const [photoError, setPhotoError] = useState(null);
   const [photoOpen, setPhotoOpen] = useState(false);
-
-  // Reject dialog.
-  const [rejectOrder, setRejectOrder] = useState(null);
-  const [rejectNote, setRejectNote] = useState('');
-  const [rejecting, setRejecting] = useState(false);
-
-  // Inventory — stock the DMS files are allocated against. Refreshed after every upload
-  // and after each download (a download consumes stock), so the banner stays truthful.
-  const [inventory, setInventory] = useState(null);
-  const [invOpen, setInvOpen] = useState(false);
-  const [invFile, setInvFile] = useState(null);
-  const [invUploading, setInvUploading] = useState(false);
-  const invInputRef = useRef(null);
-
-  const loadInventory = useCallback(async () => {
-    try {
-      const data = await getDmsInventory();
-      if (data.success) setInventory(data.inventory);
-    } catch (e) {
-      setInventory(null);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadInventory();
-  }, [loadInventory]);
-
-  const submitInventory = async () => {
-    if (!invFile) return;
-    setInvUploading(true);
-    try {
-      const data = await uploadDmsInventory(invFile);
-      if (data.success) {
-        setInventory(data.inventory);
-        notify(
-          `Inventory updated — ${data.parts_in_sheet} part${data.parts_in_sheet === 1 ? '' : 's'} in the sheet ` +
-            `(${data.inserted} new, ${data.updated} updated` +
-            (data.zeroed_not_in_sheet ? `, ${data.zeroed_not_in_sheet} set to 0 as they were not listed` : '') +
-            ')'
-        );
-        setInvOpen(false);
-        setInvFile(null);
-        if (invInputRef.current) invInputRef.current.value = '';
-      } else {
-        notify(data.msg || 'Could not upload inventory.', 'error');
-      }
-    } catch (e) {
-      notify(e?.response?.data?.msg || 'Could not upload inventory.', 'error');
-    } finally {
-      setInvUploading(false);
-    }
-  };
 
   // Add-order dialog — raise an order by hand from a parts sheet, for parts that came
   // in outside the app. It becomes an ordinary order in this same list.
@@ -339,11 +260,7 @@ const DownloadDmsInput = () => {
               expectedDate: newOrder.expectedDate
             });
       if (data.success) {
-        notify(
-          `${data.order_number} created with ${data.item_count} part${data.item_count === 1 ? '' : 's'}` +
-            (data.dms_available ? ' — ready to download' : ' — DMS layout for this company is not configured yet'),
-          data.dms_available ? 'success' : 'warning'
-        );
+        notify(`${data.order_number} created with ${data.item_count} part${data.item_count === 1 ? '' : 's'}`);
         setAddOpen(false);
         setNewFile(null);
         setCartRows([]);
@@ -384,7 +301,7 @@ const DownloadDmsInput = () => {
 
   useEffect(() => {
     setPage(0);
-  }, [warehouseFilter, companyFilter, statusFilter, dealerFilter]);
+  }, [warehouseFilter, companyFilter, dealerFilter]);
 
   const dealerOptions = useMemo(() => {
     const seen = new Map();
@@ -397,64 +314,9 @@ const DownloadDmsInput = () => {
   }, [orders]);
 
   const filteredOrders = useMemo(
-    () =>
-      orders.filter(
-        (o) =>
-          (statusFilter === 'all' || o.dms_status === statusFilter) &&
-          (dealerFilter === 'all' || o.dealer_id === dealerFilter)
-      ),
-    [orders, statusFilter, dealerFilter]
+    () => orders.filter((o) => dealerFilter === 'all' || o.dealer_id === dealerFilter),
+    [orders, dealerFilter]
   );
-
-  const handleDownload = useCallback(
-    async (order) => {
-      setBusyId(order.order_id);
-      try {
-        const { blob, filename, shortfallCount, shortfallSummary } = await downloadDmsFile(order.order_id);
-        saveBlob(blob, filename);
-        if (shortfallCount > 0) {
-          // Short supply is not an error, but it must not pass silently — the file asks
-          // for less than the dealer ordered.
-          notify(
-            `Downloaded ${filename} — ${shortfallCount} part${shortfallCount === 1 ? '' : 's'} ` +
-              `short-supplied from stock: ${shortfallSummary}`,
-            'warning'
-          );
-        } else {
-          notify(`Downloaded ${filename} — order marked Done`);
-        }
-        await Promise.all([fetchOrders(), loadInventory()]);
-      } catch (e) {
-        const msg = await readBlobError(e);
-        notify(msg || 'Could not generate the DMS file.', 'error');
-        // A refusal is usually stale stock; refresh so the banner explains why.
-        await loadInventory();
-      } finally {
-        setBusyId(null);
-      }
-    },
-    [fetchOrders, loadInventory]
-  );
-
-  const submitReject = async () => {
-    if (!rejectOrder || !rejectNote.trim()) return;
-    setRejecting(true);
-    try {
-      const data = await rejectSubmittedOrder(rejectOrder.order_id, rejectNote.trim());
-      if (data.success) {
-        notify(`${rejectOrder.order_number || `#${rejectOrder.order_id}`} rejected — back in Submitted Orders`);
-        setRejectOrder(null);
-        setRejectNote('');
-        await fetchOrders();
-      } else {
-        notify(data.msg || 'Could not reject the order.', 'error');
-      }
-    } catch (e) {
-      notify(e?.response?.data?.msg || 'Could not reject the order.', 'error');
-    } finally {
-      setRejecting(false);
-    }
-  };
 
   const openPhoto = useCallback(async (order) => {
     const attachment = order.attachments?.[0];
@@ -518,16 +380,6 @@ const DownloadDmsInput = () => {
               </Grid>
               <Grid item xs={12} sm={6} md={3}>
                 <FormControl fullWidth size="small">
-                  <InputLabel>Status</InputLabel>
-                  <Select value={statusFilter} label="Status" onChange={(e) => setStatusFilter(e.target.value)}>
-                    <MenuItem value="all">All Statuses</MenuItem>
-                    <MenuItem value="ready">Ready</MenuItem>
-                    <MenuItem value="done">Done</MenuItem>
-                  </Select>
-                </FormControl>
-              </Grid>
-              <Grid item xs={12} sm={6} md={3}>
-                <FormControl fullWidth size="small">
                   <InputLabel>Dealer</InputLabel>
                   <Select value={dealerFilter} label="Dealer" onChange={(e) => setDealerFilter(e.target.value)}>
                     <MenuItem value="all">All Dealers</MenuItem>
@@ -549,61 +401,15 @@ const DownloadDmsInput = () => {
           title={
             <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ width: '100%' }}>
               <span>{`Submitted Orders${filteredOrders.length ? ` (${filteredOrders.length})` : ''}`}</span>
-              <Stack direction="row" spacing={1}>
-                {/* Stock the DMS files are allocated against. Same operator as the
-                    download, so it lives on the same screen. */}
-                <Button
-                  size="small"
-                  variant="outlined"
-                  startIcon={<IconBuildingWarehouse size={16} />}
-                  onClick={() => {
-                    setInvFile(null);
-                    setInvOpen(true);
-                  }}
-                >
-                  Upload Inventory
-                </Button>
-                {/* Parts that arrived outside the app (phone/WhatsApp) get an order raised
-                    here, so they join this same list instead of needing a separate flow. */}
-                <Button size="small" variant="contained" startIcon={<IconPlus size={16} />} onClick={openAdd}>
-                  Add Order
-                </Button>
-              </Stack>
+              {/* Parts that arrived outside the app (phone/WhatsApp) get an order raised
+                  here, so they join this same list instead of needing a separate flow. */}
+              <Button size="small" variant="contained" startIcon={<IconPlus size={16} />} onClick={openAdd}>
+                Add Order
+              </Button>
             </Stack>
           }
           content={false}
         >
-          {/* Downloads are refused when stock is stale, so the state of it is shown here
-              rather than discovered by clicking Download and getting an error. */}
-          {inventory && (
-            <Box sx={{ px: 2, pt: 2 }}>
-              <Alert
-                severity={inventory.fresh ? 'success' : 'warning'}
-                action={
-                  <Button
-                    color="inherit"
-                    size="small"
-                    onClick={() => {
-                      setInvFile(null);
-                      setInvOpen(true);
-                    }}
-                  >
-                    {inventory.last_uploaded_at ? 'Re-upload' : 'Upload'}
-                  </Button>
-                }
-              >
-                {inventory.last_uploaded_at
-                  ? `Inventory: ${inventory.parts} parts, ${inventory.units} units — updated ${
-                      inventory.age_minutes === 0 ? 'just now' : `${inventory.age_minutes} min ago`
-                    }.${
-                      inventory.fresh
-                        ? ''
-                        : ` Older than ${inventory.freshness_minutes} min, so DMS downloads are blocked until you re-upload.`
-                    }`
-                  : `No inventory uploaded yet — DMS downloads are blocked until stock is uploaded.`}
-              </Alert>
-            </Box>
-          )}
           {loading ? (
             <Box sx={{ display: 'flex', justifyContent: 'center', p: 5 }}>
               <CircularProgress />
@@ -615,7 +421,7 @@ const DownloadDmsInput = () => {
           ) : filteredOrders.length === 0 ? (
             <Box sx={{ p: 3 }}>
               <Typography color="textSecondary">
-                {orders.length === 0 ? 'No orders ready for DMS download.' : 'No orders match the filters.'}
+                {orders.length === 0 ? 'No orders yet.' : 'No orders match the filters.'}
               </Typography>
             </Box>
           ) : (
@@ -631,9 +437,7 @@ const DownloadDmsInput = () => {
                       <TableCell>Company</TableCell>
                       <TableCell>Warehouse</TableCell>
                       <TableCell align="right">Parts</TableCell>
-                      <TableCell>Status</TableCell>
                       <TableCell>Photo</TableCell>
-                      <TableCell>Actions</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -657,13 +461,6 @@ const DownloadDmsInput = () => {
                         <TableCell>{o.warehouse_name || '—'}</TableCell>
                         <TableCell align="right">{o.item_count}</TableCell>
                         <TableCell>
-                          <Chip
-                            size="small"
-                            color={o.dms_status === 'done' ? 'success' : 'info'}
-                            label={STATUS_LABELS[o.dms_status] || o.dms_status}
-                          />
-                        </TableCell>
-                        <TableCell>
                           {o.attachments && o.attachments.length > 0 ? (
                             <Button
                               size="small"
@@ -678,40 +475,6 @@ const DownloadDmsInput = () => {
                               —
                             </Typography>
                           )}
-                        </TableCell>
-                        <TableCell>
-                          <Stack direction="row" spacing={1} alignItems="center">
-                            {o.dms_available ? (
-                              <Button
-                                size="small"
-                                variant="contained"
-                                disabled={busyId === o.order_id}
-                                startIcon={<IconDownload size={16} />}
-                                onClick={(e) => { e.stopPropagation(); handleDownload(o); }}
-                              >
-                                {o.dms_status === 'done' ? 'Re-download' : 'Download'}
-                              </Button>
-                            ) : (
-                              <Typography variant="body2" color="textSecondary" sx={{ fontStyle: 'italic' }}>
-                                Coming soon
-                              </Typography>
-                            )}
-                            <Button
-                              size="small"
-                              variant="outlined"
-                              color="error"
-                              disabled={busyId === o.order_id}
-                              startIcon={<IconBan size={16} />}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setRejectOrder(o);
-                                setRejectNote('');
-                              }}
-                            >
-                              Reject
-                            </Button>
-                            {busyId === o.order_id && <CircularProgress size={18} />}
-                          </Stack>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -762,60 +525,8 @@ const DownloadDmsInput = () => {
         </DialogActions>
       </Dialog>
 
-      {/* Upload Inventory — a full stock snapshot (PART# | QTY). Deliberately spells out
-          that omitted parts go to 0, because that is the surprising part of a snapshot. */}
-      <Dialog open={invOpen} onClose={() => !invUploading && setInvOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Upload Inventory</DialogTitle>
-        <DialogContent dividers>
-          <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
-            Upload the DMS stock export as-is (the <code>output - ….csv</code> file), or any sheet
-            with the part number in the <strong>first column</strong> and a{' '}
-            <strong>Stock on Hand</strong> quantity column. Excel and CSV both work.
-          </Typography>
-          <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
-            This replaces the current stock figures — a part that is <strong>not</strong> listed in
-            the file is set to 0, so upload your full stock each time, not just the changes.
-          </Typography>
-          <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
-            DMS downloads allocate against these figures: if an order asks for more than is in
-            stock, the file is generated for what is available. Downloads are blocked once the
-            figures are more than {inventory?.freshness_minutes ?? 30} minutes old.
-          </Typography>
-          <Stack direction="row" spacing={2} alignItems="center">
-            <Button variant="outlined" startIcon={<IconUpload size={16} />} onClick={() => invInputRef.current?.click()}>
-              {invFile ? 'Change file' : 'Choose stock file'}
-            </Button>
-            <Typography variant="body2" color={invFile ? 'textPrimary' : 'textSecondary'} noWrap>
-              {invFile ? invFile.name : 'No file chosen'}
-            </Typography>
-            <input
-              ref={invInputRef}
-              type="file"
-              hidden
-              // The DMS export is a .csv (tab-separated, UTF-16) — it was rejected by the
-              // picker while this listed only the Excel extensions.
-              accept=".csv,.txt,.tsv,.xlsx,.xlsm,.xls"
-              onChange={(e) => setInvFile(e.target.files?.[0] || null)}
-            />
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setInvOpen(false)} disabled={invUploading}>
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            onClick={submitInventory}
-            disabled={!invFile || invUploading}
-            startIcon={invUploading ? <CircularProgress size={16} color="inherit" /> : <IconUpload size={16} />}
-          >
-            Upload
-          </Button>
-        </DialogActions>
-      </Dialog>
-
       {/* Add Order — order details plus either a parts sheet or a hand-built cart. Either
-          way the order is created ready for DMS download and appears in the list above. */}
+          way the order is created and appears in the list above. */}
       <Dialog open={addOpen} onClose={() => !creating && setAddOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Add Order</DialogTitle>
         <DialogContent dividers>
@@ -1131,43 +842,6 @@ const DownloadDmsInput = () => {
             startIcon={creating ? <CircularProgress size={16} color="inherit" /> : <IconPlus size={16} />}
           >
             Create Order
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Reject dialog — a note is required; rejecting clears the parts and sends the
-          order back to Submitted Orders as Re-Submitted. */}
-      <Dialog open={!!rejectOrder} onClose={() => !rejecting && setRejectOrder(null)} maxWidth="sm" fullWidth>
-        <DialogTitle>
-          Reject {rejectOrder?.order_number || (rejectOrder && `#${rejectOrder.order_id}`)}
-        </DialogTitle>
-        <DialogContent dividers>
-          <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
-            The order returns to Submitted Orders, its parts are cleared, and this note is shown to the
-            person who re-uploads the part convertor.
-          </Typography>
-          <TextField
-            autoFocus
-            fullWidth
-            multiline
-            minRows={3}
-            label="Reason for rejection"
-            value={rejectNote}
-            onChange={(e) => setRejectNote(e.target.value)}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setRejectOrder(null)} disabled={rejecting}>
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            color="error"
-            onClick={submitReject}
-            disabled={rejecting || !rejectNote.trim()}
-            startIcon={rejecting ? <CircularProgress size={16} color="inherit" /> : <IconBan size={16} />}
-          >
-            Reject
           </Button>
         </DialogActions>
       </Dialog>
