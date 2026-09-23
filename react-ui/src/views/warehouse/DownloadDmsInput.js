@@ -1104,7 +1104,8 @@ const DownloadDmsInput = () => {
                   ) : (
                     <Typography variant="body2" color="textSecondary">
                       No products added yet — search above to add a row, then fill in whichever
-                      units it's being ordered in (Case, Box, Strip — any or all of them).
+                      units it's being ordered in (Case and Box, plus whatever that product is
+                      priced in — Strip, Bottle, Vial, Tube… — any or all of them).
                     </Typography>
                   )}
                 </Stack>
