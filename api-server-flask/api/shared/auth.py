@@ -71,6 +71,7 @@ _ROLE_SCOPES = {
     _DMS_OPERATOR_ROLE_NAME: ('Download DMS Input', (
         ('GET',  r'^/api/orders/submitted/?$'),
         ('GET',  r'^/api/orders/submitted/\d+/photo/\d+/?$'),
+        ('GET',  r'^/api/orders/submitted/\d+/items/?$'),
         ('GET',  r'^/api/orders/submitted/\d+/dms-file/?$'),
         ('POST', r'^/api/orders/submitted/\d+/reject/?$'),
         ('POST', r'^/api/orders/submitted/manual/?$'),

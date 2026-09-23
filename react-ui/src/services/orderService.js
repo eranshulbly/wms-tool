@@ -77,6 +77,17 @@ export const fetchSubmittedOrderPhoto = (orderId, attachmentId) =>
     .get(`orders/submitted/${orderId}/photo/${attachmentId}`, { responseType: 'blob' })
     .then((res) => res.data);
 
+// A submitted order's line items — product, SKU, quantity and the unit it's actually
+// counted in. Used to build the plain product/quantity export on this screen; also what
+// SubmittedOrderItems fetches for the detail view.
+export const getSubmittedOrderItems = (orderId) =>
+  api.get(`orders/submitted/${orderId}/items`).then((res) => res.data);
+
+// Reject a submitted order with a note — sends it back to Submitted Orders as
+// 're_submitted' and clears its parts.
+export const rejectSubmittedOrder = (orderId, note) =>
+  api.post(`orders/submitted/${orderId}/reject`, { note }).then((res) => res.data);
+
 // Upload the part-convertor sheet for a photo order — the system turns it into the
 // order's line items so a DMS file can then be generated.
 export const uploadPartConvertor = (orderId, file) => {
