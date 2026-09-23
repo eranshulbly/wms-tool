@@ -882,6 +882,7 @@ def create_all_tables():
     # Runs last: it only adds columns, and several of the migrations above assume the
     # base tables already exist in their pre-v2 shape.
     _migrate_v2_api_columns()
+    _migrate_order_uom_widen()
     # Strictly last: it MODIFYs columns the migrations above are responsible for adding,
     # so it has to see the schema in its final shape.
     _migrate_schema_convergence()
@@ -1242,7 +1243,11 @@ _V2_API_COLUMNS = {
         # fails with 1054 "Unknown column 'order_quantity'". Nullable: a line from the
         # standard flow is captured directly in the priced unit and has no pack level.
         ('order_quantity', 'DECIMAL(18,4) NULL', None),
-        ('order_uom',      'VARCHAR(16) NULL',   None),
+        # Wide enough for a composite like "2 CASE + 6 BOX" (see
+        # _migrate_order_uom_widen for the deployments created before this needed
+        # more than a single unit code) — a cart line ordered in two different
+        # packs for the same product still has to fit in one row.
+        ('order_uom',      'VARCHAR(64) NULL',   None),
     ],
 }
 
@@ -1516,6 +1521,29 @@ def _migrate_transferin_id_varchar():
         logger.info("transferin_info.transferin_id widened to VARCHAR(64)")
     except Exception:
         logger.exception("transferin_id migration failed")
+
+
+def _migrate_order_uom_widen():
+    """Widen submitted_order_products.order_uom from VARCHAR(16) to VARCHAR(64) (idempotent).
+
+    It held a single unit code ('CASE') until the cart order-entry feature let one
+    product carry more than one unit on the same order line (2 CASE + 6 BOX), which
+    is stored as one merged row with a composite label — too long for 16 chars on
+    anything but the smallest combination. Widening a VARCHAR cannot lose data.
+    """
+    try:
+        rows = mysql_manager.execute_query(
+            """SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'submitted_order_products'
+                  AND COLUMN_NAME = 'order_uom'""")
+        if not rows or (rows[0]['CHARACTER_MAXIMUM_LENGTH'] or 0) >= 64:
+            return  # column absent (pre-v2 db) or already wide enough
+        mysql_manager.execute_query(
+            "ALTER TABLE submitted_order_products MODIFY COLUMN order_uom VARCHAR(64) NULL",
+            fetch=False)
+        logger.info("submitted_order_products.order_uom widened to VARCHAR(64)")
+    except Exception:
+        logger.exception("order_uom widen migration failed")
 
 
 def _migrate_product_gst_percent():

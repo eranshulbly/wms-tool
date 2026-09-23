@@ -1427,6 +1427,13 @@ class OrderProductOptions(Resource):
         return {'success': True, 'products': products}, 200
 
 
+def _fmt_qty(q):
+    """A Decimal quantity as the operator would write it: '2' rather than '2.0000',
+    but a genuine fraction ('2.5') kept as entered."""
+    i = q.to_integral_value()
+    return str(i) if q == i else str(q.normalize())
+
+
 def _resolve_cart_line(product_id, product_name, sku_code, company_id, sub_lines):
     """Turn every cart entry for ONE product — `sub_lines` is [(uom, qty), ...] — into
     the single submitted_order_products row that product gets on this order.
@@ -1438,10 +1445,15 @@ def _resolve_cart_line(product_id, product_name, sku_code, company_id, sub_lines
     "2 BOX + 1 CASE" of the same item is an entirely ordinary cart, so this is the
     normal case to get right, not an edge case to leave to chance.
 
-    Converts each entry through the product's packaging ladder — the same model
-    product_pack.order_value() prices an order line with — and sums them in the stock
-    unit, so the stored order_uom/order_quantity read as one honest total (e.g. "840
-    Strip") rather than trying to cram two different units into one row.
+    `quantity`/`uom` (what allocation and the DMS file actually use) are always the
+    total in the product's stock unit — that part is never ambiguous. But
+    order_quantity/order_uom (what the operator sees on the order — see
+    SubmittedOrderItems) preserve what was actually picked: a single unit ("6 BOX")
+    is stored as entered, not silently rewritten into strips. Only when a product
+    carries more than one DIFFERENT unit on the same order — genuinely can't fit one
+    (unit, quantity) pair — does it fall back to a composite label ("2 CASE + 6 BOX")
+    with order_quantity left blank, rather than picking one unit's number and quietly
+    dropping the others.
 
     Deliberately doesn't require a price: a product with no received batch yet is still
     a real, orderable line (parity with the parts-sheet upload, which never rejects an
@@ -1468,7 +1480,10 @@ def _resolve_cart_line(product_id, product_name, sku_code, company_id, sub_lines
         stock_uom = ((product_row[0]['uom'] if product_row else None) or '').upper() or None
         by_code = {stock_uom: Decimal(1)} if stock_uom else {}
 
-    base_total = Decimal(0)
+    # Validated and merged by unit first (two "2 CASE" entries become one "4 CASE"),
+    # so the as-entered breakdown below reads cleanly even if the same unit was added
+    # to the cart more than once.
+    by_unit = {}
     for raw_uom, raw_qty in sub_lines:
         order_uom = (raw_uom or '').strip().upper()
         try:
@@ -1479,14 +1494,22 @@ def _resolve_cart_line(product_id, product_name, sku_code, company_id, sub_lines
             raise ValueError(f'{product_name}: quantity must be greater than zero')
         if order_uom not in by_code:
             raise ValueError(f'{order_uom or "(blank)"} is not a valid unit for {product_name}')
-        base_total += (qty * by_code[order_uom]) / (by_code[stock_uom] or Decimal(1))
+        by_unit[order_uom] = by_unit.get(order_uom, Decimal(0)) + qty
 
+    base_total = sum(
+        (q * by_code[u]) / (by_code[stock_uom] or Decimal(1)) for u, q in by_unit.items())
     rounded = base_total.to_integral_value()
     if abs(base_total - rounded) > Decimal('0.001'):
         raise ValueError(
             f'{product_name}: the quantities entered do not add up to a whole '
             f'number of {stock_uom or "units"}')
     quantity = max(int(rounded), 0)
+
+    if len(by_unit) == 1:
+        (order_uom, order_quantity), = by_unit.items()
+    else:
+        order_uom = ' + '.join(f'{_fmt_qty(q)} {u}' for u, q in by_unit.items())
+        order_quantity = None
 
     price = product_pack.price_for(product_id, company_id)
     net_rate = price['amount'] if price else None
@@ -1498,8 +1521,8 @@ def _resolve_cart_line(product_id, product_name, sku_code, company_id, sub_lines
         'product_name': product_name,
         'uom': stock_uom,
         'quantity': quantity,
-        'order_quantity': Decimal(quantity),
-        'order_uom': stock_uom,
+        'order_quantity': order_quantity,
+        'order_uom': order_uom,
         'net_rate': net_rate,
         'mrp': mrp,
     }

@@ -27,6 +27,16 @@ const money = (v) => {
 };
 const qty = (v) => (v === null || v === undefined ? '—' : Number(v).toLocaleString('en-IN'));
 
+// What the rep actually ordered, in the unit they ordered it in — "6 BOX", not the
+// stock-unit number underneath. `uom` already carries a composite label ("2 CASE + 6
+// BOX") when a product was ordered in more than one unit on this order, in which case
+// order_quantity is left blank server-side and the label alone is shown.
+const ordered = (it) => {
+  if (it.order_quantity != null && it.uom) return `${qty(it.order_quantity)} ${it.uom}`;
+  if (it.uom) return it.uom;
+  return qty(it.quantity);
+};
+
 const SubmittedOrderItems = ({ orderId }) => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -87,10 +97,10 @@ const SubmittedOrderItems = ({ orderId }) => {
               <TableCell>
                 <Typography variant="body2" sx={{ fontWeight: 600 }}>{it.product_name}</Typography>
                 <Typography variant="caption" color="textSecondary">
-                  {it.sku_code}{it.uom ? ` · ${it.uom}` : ''}
+                  {it.sku_code}
                 </Typography>
               </TableCell>
-              <TableCell align="right">{qty(it.quantity)}</TableCell>
+              <TableCell align="right">{ordered(it)}</TableCell>
               {/* Null until the DMS file is generated — that is when stock is allocated
                   and the supplied quantity is stamped onto the line. */}
               <TableCell align="right">{it.dms_quantity == null ? '—' : qty(it.dms_quantity)}</TableCell>
