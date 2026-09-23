@@ -54,6 +54,27 @@ const money = (v) => {
   return `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
+const qty = (v) => (v === null || v === undefined ? '—' : Number(v).toLocaleString('en-IN'));
+
+// Plain words for a unit code, lowercase and pluralized — "box"/"boxes",
+// "strip"/"strips" — matching how a rep would actually say it.
+const UOM_WORD = { STRIP: 'strip', BOX: 'box', CASE: 'case', BOTTLE: 'bottle', VIAL: 'vial', TUBE: 'tube', TAB: 'tablet', UNIT: 'unit' };
+const uomWord = (code) => UOM_WORD[code] || (code ? code.toLowerCase() : '');
+const pluralize = (word, n) => (Math.abs(n) === 1 ? word : /[sxz]$|[cs]h$/i.test(word) ? `${word}es` : `${word}s`);
+
+// "2 cases, 5 boxes (1,720)" — the line's quantity broken into whole Case/Box/stock-unit
+// counts (uom_breakdown, largest denomination first, from the packaging ladder), with the
+// raw stock-unit total in parentheses. Falls back to the bare number for a product with
+// no packaging ladder on record (uom_breakdown is null, not an empty array, in that case).
+const orderedQty = (product) => {
+  const total = qty(product.quantity_ordered);
+  if (!product.uom_breakdown || !product.uom_breakdown.length) return total;
+  const parts = product.uom_breakdown
+    .map((p) => `${qty(p.qty)} ${pluralize(uomWord(p.uom), p.qty)}`)
+    .join(', ');
+  return `${parts} (${total})`;
+};
+
 const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) => {
   const [activeStep, setActiveStep] = useState(0);
   const [numberOfBoxes, setNumberOfBoxes] = useState(1);
@@ -204,7 +225,6 @@ const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) =
                     <TableCell>Description</TableCell>
                     <TableCell>Quantity</TableCell>
                     <TableCell>Rate</TableCell>
-                    <TableCell>Landing</TableCell>
                     <TableCell>Line total</TableCell>
                   </TableRow>
                 </TableHead>
@@ -216,11 +236,13 @@ const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) =
                         <Typography variant="caption" color="textSecondary">{product.product_string}</Typography>
                       </TableCell>
                       <TableCell>{product.description}</TableCell>
-                      <TableCell>{product.quantity_ordered}</TableCell>
+                      {/* Broken into whole Case/Box/stock-unit counts — "2 cases, 5
+                          boxes (1,150)" — rather than a bare number in a unit the
+                          screen never names. */}
+                      <TableCell>{orderedQty(product)}</TableCell>
                       {/* Rupees, and an em-dash when the feed carried no rate — a bare
                           "$0" asserted both a wrong currency and a price never given. */}
                       <TableCell>{money(product.price)}</TableCell>
-                      <TableCell>{money(product.landing_price)}</TableCell>
                       <TableCell>{money(product.total_price)}</TableCell>
                     </TableRow>
                   ))}

@@ -12,6 +12,7 @@ Order management routes:
 """
 
 from datetime import datetime
+from collections import defaultdict
 
 import werkzeug
 from flask import request
@@ -260,6 +261,56 @@ class BulkStatusUpdate(Resource):
             }, 400
 
 
+def _uom_rungs_by_product(product_ids):
+    """{product_id: [rung rows]} for every product on the order, one query rather than
+    one per line."""
+    ids = [p for p in set(product_ids) if p]
+    if not ids:
+        return {}
+    ph = ','.join(['%s'] * len(ids))
+    rows = mysql_manager.execute_query(
+        f"""SELECT product_id, uom_code, factor_to_base, is_stock_unit
+              FROM product_uom WHERE product_id IN ({ph})""", tuple(ids)) or []
+    by_product = defaultdict(list)
+    for r in rows:
+        by_product[r['product_id']].append(r)
+    return by_product
+
+
+def _decompose_quantity(rungs, quantity):
+    """A quantity already expressed in the product's stock unit (strips, bottles,
+    vials…) broken into whole Case / Box / stock-unit counts, largest denomination
+    first — "2 CASE, 3 BOX, 6 STRIP" for a rep to read, rather than a bare "1720" in a
+    unit nothing on screen names.
+
+    None when the product has no stock rung recorded (predates the packaging model) or
+    the quantity itself is unknown — the caller falls back to showing the raw number.
+    """
+    if quantity is None or not rungs:
+        return None
+    stock = next((r for r in rungs if r['is_stock_unit']), None)
+    if not stock or not stock['factor_to_base']:
+        return None
+    stock_factor = stock['factor_to_base']
+    remaining = int(quantity)
+    parts = []
+    for code in ('CASE', 'BOX'):
+        rung = next((r for r in rungs if r['uom_code'] == code), None)
+        if not rung or not rung['factor_to_base']:
+            continue
+        per_unit = int(rung['factor_to_base'] / stock_factor)
+        if per_unit <= 0:
+            continue
+        n, remaining = divmod(remaining, per_unit)
+        if n:
+            parts.append({'uom': code, 'qty': n})
+    # The stock-unit remainder is dropped only when Case/Box already accounted for the
+    # whole quantity exactly — a line of precisely "3 Case" has nothing left to name.
+    if remaining or not parts:
+        parts.append({'uom': stock['uom_code'], 'qty': remaining})
+    return parts
+
+
 @rest_api.route('/api/orders/<string:order_id>/details')
 class OrderDetailWithProducts(Resource):
     """MySQL: Get detailed order information with proper timeline and status."""
@@ -290,6 +341,7 @@ class OrderDetailWithProducts(Resource):
 
             # Get products for this order
             products = PotentialOrderProduct.get_products_for_order(numeric_id)
+            rungs_by_product = _uom_rungs_by_product([p['product_id'] for p in products])
             formatted_products = []
             for product in products:
                 formatted_products.append({
@@ -300,6 +352,13 @@ class OrderDetailWithProducts(Resource):
                     'quantity_ordered':  product['quantity'],
                     'quantity_available': product['quantity'],
                     'quantity_packed':   product['quantity_packed'] or 0,
+                    # quantity_ordered broken into Case/Box/stock-unit counts — see
+                    # _decompose_quantity. None (not []) when the product has no
+                    # packaging ladder, so the UI can fall back to the bare number
+                    # instead of showing an empty breakdown.
+                    'uom_breakdown':     _decompose_quantity(
+                                            rungs_by_product.get(product['product_id']),
+                                            product['quantity']),
                     # The rate this LINE was priced at, not the catalogue price — the
                     # catalogue column is empty for every product, which is why every
                     # order showed 0.00. None (not '0.00') when the feed carries no
