@@ -76,15 +76,10 @@ const saveBlob = (blob, filename) => {
 
 const STATUS_LABELS = { ready: 'Ready', done: 'Done' };
 
-// The unit picker shows the plain word a rep actually says ("Box", "Case") rather than
-// the pack-specific label the catalogue stores against it ("30X10T") — that detail is
-// still shown alongside it, since it's genuinely useful for confirming the right one.
+// The grid's column headers show the plain word a rep actually says ("Box", "Case")
+// rather than the pack-specific code the catalogue stores ("30X10T").
 const GENERIC_UOM_WORD = { STRIP: 'Strip', BOX: 'Box', CASE: 'Case', TAB: 'Tablet', UNIT: 'Unit' };
 const uomWord = (code) => GENERIC_UOM_WORD[code] || (code ? code.charAt(0) + code.slice(1).toLowerCase() : '');
-const uomMenuLabel = (u) => {
-  const word = uomWord(u.uom_code);
-  return u.label && u.label !== u.uom_code && u.label !== word ? `${word} (${u.label})` : word;
-};
 
 const DownloadDmsInput = () => {
   const { warehouses, companies } = useWarehouse();
@@ -175,16 +170,15 @@ const DownloadDmsInput = () => {
   const [dealersLoading, setDealersLoading] = useState(false);
   const fileInputRef = useRef(null);
 
-  // 'file' — the original parts-sheet upload. 'cart' — pick a product, a unit
-  // (strip/box/case) and a quantity per line, straight from the catalogue.
+  // 'file' — the original parts-sheet upload. 'cart' — a grid: one row per product,
+  // one column per unit (Strip/Box/Case) it can be ordered in, filled in directly.
   const [orderMode, setOrderMode] = useState('file');
-  const [cartItems, setCartItems] = useState([]);
+  // [{ key, product, qtyByUom: { STRIP: '2', BOX: '', CASE: '1' } }] — a row per
+  // product, however many of its units the operator actually filled in.
+  const [cartRows, setCartRows] = useState([]);
   const [productOptions, setProductOptions] = useState([]);
   const [productSearch, setProductSearch] = useState('');
   const [productsLoading, setProductsLoading] = useState(false);
-  const [pickedProduct, setPickedProduct] = useState(null);
-  const [pickedUom, setPickedUom] = useState('');
-  const [pickedQty, setPickedQty] = useState('');
 
   const openAdd = () => {
     // Carry the filters in as defaults — the operator has usually already narrowed to
@@ -196,10 +190,7 @@ const DownloadDmsInput = () => {
     });
     setNewFile(null);
     setOrderMode('file');
-    setCartItems([]);
-    setPickedProduct(null);
-    setPickedUom('');
-    setPickedQty('');
+    setCartRows([]);
     setProductSearch('');
     setAddOpen(true);
   };
@@ -232,66 +223,73 @@ const DownloadDmsInput = () => {
     };
   }, [addOpen, orderMode, newOrder.companyId, productSearch]);
 
-  // Default the unit to whichever rung the product is actually ordered in (BOX/CASE),
-  // falling back to its first rung for a product with no packaging ladder at all.
-  useEffect(() => {
-    if (!pickedProduct) {
-      setPickedUom('');
-      return;
-    }
-    const preferred = pickedProduct.uoms.find((u) => u.is_order_unit) || pickedProduct.uoms[0];
-    setPickedUom(preferred ? preferred.uom_code : '');
-  }, [pickedProduct]);
-
-  // How many stock units (strips, usually) the quantity being typed comes to — shown
-  // live next to the Qty field so the operator isn't guessing what "2 boxes" means in
-  // the unit the DMS file and stock are actually tracked in.
-  const cartPreview = useMemo(() => {
-    if (!pickedProduct || !pickedUom || !pickedQty || Number(pickedQty) <= 0) return null;
-    const picked = pickedProduct.uoms.find((u) => u.uom_code === pickedUom);
-    const stock = pickedProduct.uoms.find((u) => u.is_stock_unit) || pickedProduct.uoms[0];
-    if (!picked || !stock || !stock.factor_to_base) return null;
-    const base = (Number(pickedQty) * picked.factor_to_base) / stock.factor_to_base;
-    const whole = Math.round(base);
-    return { qty: base, whole, exact: Math.abs(base - whole) < 0.001, word: uomWord(stock.uom_code) };
-  }, [pickedProduct, pickedUom, pickedQty]);
-
-  const addToCart = () => {
-    if (!pickedProduct || !pickedUom || !pickedQty || Number(pickedQty) <= 0) return;
-    const uomInfo = pickedProduct.uoms.find((u) => u.uom_code === pickedUom);
-    const productId = pickedProduct.product_id;
-    const qty = Number(pickedQty);
-    setCartItems((items) => {
-      // Same product, same unit added again (2 Case, then another 3 Case) — add onto
-      // that line instead of a second identical one. Same product in a DIFFERENT unit
-      // (2 Case, then 6 Box) stays as its own line here, since that's more legible than
-      // one row trying to show two units at once; the two still combine into a single
-      // order line when the order is actually submitted.
-      const dupe = items.find((i) => i.productId === productId && i.uom === pickedUom);
-      if (dupe) {
-        return items.map((i) => (i.key === dupe.key ? { ...i, quantity: i.quantity + qty } : i));
-      }
-      return [
-        ...items,
-        {
-          key: `${productId}-${pickedUom}-${Date.now()}`,
-          productId,
-          skuCode: pickedProduct.sku_code,
-          name: pickedProduct.name,
-          uom: pickedUom,
-          uomLabel: uomInfo ? uomMenuLabel(uomInfo) : uomWord(pickedUom),
-          quantity: qty
-        }
-      ];
-    });
-    // The product stays picked — adding "2 Case" then "6 Box" of the same item is the
-    // common case, and re-searching for it a second time would be pure friction. Only
-    // the quantity clears; the unit is left as-is since it's just as likely the next
-    // line repeats it (another batch of the same unit) as it is to change.
-    setPickedQty('');
+  // Picking a product adds its row to the grid straight away — there's nothing to
+  // configure first, since every unit it has gets its own cell right there. Picking
+  // one already in the cart is a no-op rather than a second row for the same product.
+  const addProductRow = (product) => {
+    if (!product) return;
+    setCartRows((rows) =>
+      rows.some((r) => r.product.product_id === product.product_id)
+        ? rows
+        : [...rows, { key: `${product.product_id}-${Date.now()}`, product, qtyByUom: {} }]
+    );
+    setProductSearch('');
   };
 
-  const removeCartItem = (key) => setCartItems((items) => items.filter((i) => i.key !== key));
+  const setRowQty = (key, uomCode, value) =>
+    setCartRows((rows) => rows.map((r) => (r.key === key ? { ...r, qtyByUom: { ...r.qtyByUom, [uomCode]: value } } : r)));
+
+  const removeCartRow = (key) => setCartRows((rows) => rows.filter((r) => r.key !== key));
+
+  // The unit columns to show — whichever units the products actually in the cart have,
+  // in Strip/Box/Case order (their natural small-to-large reading order), so the grid
+  // never shows a column nothing in it can use.
+  const cartColumns = useMemo(() => {
+    const codes = new Set();
+    cartRows.forEach((r) => r.product.uoms.forEach((u) => codes.add(u.uom_code)));
+    const order = ['STRIP', 'BOX', 'CASE'];
+    return Array.from(codes).sort((a, b) => {
+      const ai = order.indexOf(a);
+      const bi = order.indexOf(b);
+      if (ai === -1 && bi === -1) return a.localeCompare(b);
+      if (ai === -1) return 1;
+      if (bi === -1) return -1;
+      return ai - bi;
+    });
+  }, [cartRows]);
+
+  // How many stock units (strips, usually) a row's filled-in cells come to — shown per
+  // row so "2 Case + 6 Box" reads as a total before the order is even submitted.
+  const rowPreview = (row) => {
+    const stock = row.product.uoms.find((u) => u.is_stock_unit) || row.product.uoms[0];
+    if (!stock || !stock.factor_to_base) return null;
+    let total = 0;
+    let any = false;
+    row.product.uoms.forEach((u) => {
+      const raw = row.qtyByUom[u.uom_code];
+      if (raw && Number(raw) > 0) {
+        any = true;
+        total += (Number(raw) * u.factor_to_base) / stock.factor_to_base;
+      }
+    });
+    if (!any) return null;
+    const whole = Math.round(total);
+    return { whole, exact: Math.abs(total - whole) < 0.001, word: uomWord(stock.uom_code) };
+  };
+
+  // Flattened to the same {productId, uom, quantity} shape the cart endpoint already
+  // takes — it merges same-product entries itself, so a row with several filled-in
+  // units becomes several array entries for one product, same as adding them one at a
+  // time used to.
+  const cartPayloadItems = useMemo(
+    () =>
+      cartRows.flatMap((row) =>
+        Object.entries(row.qtyByUom)
+          .filter(([, v]) => v && Number(v) > 0)
+          .map(([uom, v]) => ({ productId: row.product.product_id, uom, quantity: Number(v) }))
+      ),
+    [cartRows]
+  );
 
   // Dealers depend on the chosen company, so they're loaded per selection rather than
   // once — picking a different company must not leave the other company's dealers.
@@ -321,7 +319,7 @@ const DownloadDmsInput = () => {
     !!newOrder.companyId &&
     !!newOrder.dealerId &&
     !creating &&
-    (orderMode === 'file' ? !!newFile : cartItems.length > 0);
+    (orderMode === 'file' ? !!newFile : cartPayloadItems.length > 0);
 
   const submitNewOrder = async () => {
     if (!canCreate) return;
@@ -338,7 +336,7 @@ const DownloadDmsInput = () => {
               expectedDate: newOrder.expectedDate
             })
           : await createCartOrder({
-              items: cartItems,
+              items: cartPayloadItems,
               dealerId: newOrder.dealerId,
               companyId: newOrder.companyId,
               warehouseId: newOrder.warehouseId,
@@ -353,7 +351,7 @@ const DownloadDmsInput = () => {
         );
         setAddOpen(false);
         setNewFile(null);
-        setCartItems([]);
+        setCartRows([]);
         if (fileInputRef.current) fileInputRef.current.value = '';
         await fetchOrders();
       } else {
@@ -986,130 +984,127 @@ const DownloadDmsInput = () => {
               </Grid>
             ) : (
               <Grid item xs={12}>
-                <Stack spacing={2}>
-                  <Stack direction="row" spacing={2} alignItems="flex-start">
-                    <Autocomplete
-                      sx={{ flex: 2 }}
-                      size="small"
-                      options={productOptions}
-                      value={pickedProduct}
-                      onChange={(e, v) => setPickedProduct(v)}
-                      // The box's own displayed text is left uncontrolled — MUI sets it to
-                      // the picked option's label on selection and clears it when `value`
-                      // is reset to null. Only real typing (reason 'input') should trigger
-                      // a new server search; the 'reset' MUI fires on selection is not one.
-                      onInputChange={(e, v, reason) => {
-                        if (reason === 'input') setProductSearch(v);
-                      }}
-                      getOptionLabel={(o) => (o ? `${o.name}${o.sku_code ? ` (${o.sku_code})` : ''}` : '')}
-                      isOptionEqualToValue={(o, v) => o.product_id === v.product_id}
-                      loading={productsLoading}
-                      disabled={!newOrder.companyId}
-                      noOptionsText={newOrder.companyId ? 'No matching products' : 'Choose a company first'}
-                      renderInput={(params) => (
-                        <TextField
-                          {...params}
-                          label="Product"
-                          placeholder={newOrder.companyId ? 'Search by name or SKU' : ''}
-                          InputProps={{
-                            ...params.InputProps,
-                            endAdornment: (
-                              <>
-                                {productsLoading ? <CircularProgress size={16} /> : null}
-                                {params.InputProps.endAdornment}
-                              </>
-                            )
-                          }}
-                        />
-                      )}
-                    />
-                    <FormControl size="small" sx={{ flex: 1, minWidth: 110 }} disabled={!pickedProduct}>
-                      <InputLabel>Unit</InputLabel>
-                      <Select value={pickedUom} label="Unit" onChange={(e) => setPickedUom(e.target.value)}>
-                        {(pickedProduct?.uoms || []).map((u) => (
-                          <MenuItem key={u.uom_code} value={u.uom_code}>
-                            {uomMenuLabel(u)}
-                          </MenuItem>
-                        ))}
-                      </Select>
-                    </FormControl>
-                    <Box sx={{ width: 100 }}>
+                <Stack spacing={1.5}>
+                  <Autocomplete
+                    size="small"
+                    options={productOptions.filter(
+                      (p) => !cartRows.some((r) => r.product.product_id === p.product_id)
+                    )}
+                    // Selecting a product adds its row immediately — nothing else to
+                    // configure first, so there's no value to hold onto afterwards.
+                    value={null}
+                    onChange={(e, v) => addProductRow(v)}
+                    // inputValue is fully controlled (rather than left to MUI) so a
+                    // selection reliably clears the box: addProductRow already sets
+                    // productSearch back to '', and since the box shows exactly that
+                    // value, it goes blank instead of settling on the picked label.
+                    inputValue={productSearch}
+                    onInputChange={(e, v, reason) => {
+                      if (reason === 'input') setProductSearch(v);
+                    }}
+                    getOptionLabel={(o) => (o ? `${o.name}${o.sku_code ? ` (${o.sku_code})` : ''}` : '')}
+                    isOptionEqualToValue={(o, v) => o.product_id === v.product_id}
+                    loading={productsLoading}
+                    disabled={!newOrder.companyId}
+                    noOptionsText={newOrder.companyId ? 'No matching products' : 'Choose a company first'}
+                    renderInput={(params) => (
                       <TextField
-                        fullWidth
-                        size="small"
-                        type="number"
-                        label="Qty"
-                        value={pickedQty}
-                        onChange={(e) => setPickedQty(e.target.value)}
-                        inputProps={{ min: 1, step: 1 }}
+                        {...params}
+                        label="Add a product"
+                        placeholder={newOrder.companyId ? 'Search by name or SKU' : ''}
+                        InputProps={{
+                          ...params.InputProps,
+                          endAdornment: (
+                            <>
+                              {productsLoading ? <CircularProgress size={16} /> : null}
+                              {params.InputProps.endAdornment}
+                            </>
+                          )
+                        }}
                       />
-                      {/* Live conversion, so "2 Box" reads as the strip count it actually
-                          becomes on the order — the unit stock and the DMS file use. */}
-                      {cartPreview && (
-                        <Typography
-                          variant="caption"
-                          color={cartPreview.exact ? 'textSecondary' : 'error'}
-                          sx={{ display: 'block', mt: 0.5, whiteSpace: 'nowrap' }}
-                        >
-                          {cartPreview.exact
-                            ? `= ${cartPreview.whole} ${cartPreview.word}${cartPreview.whole === 1 ? '' : 's'}`
-                            : `does not divide evenly into ${cartPreview.word}s`}
-                        </Typography>
-                      )}
-                    </Box>
-                    <Button
-                      variant="outlined"
-                      sx={{ mt: '2px' }}
-                      onClick={addToCart}
-                      disabled={!pickedProduct || !pickedUom || !pickedQty || Number(pickedQty) <= 0}
-                    >
-                      Add
-                    </Button>
-                  </Stack>
+                    )}
+                  />
 
-                  {cartItems.length > 0 ? (
+                  {cartRows.length > 0 ? (
                     <TableContainer component={Paper} variant="outlined">
                       <Table size="small">
                         <TableHead>
                           <TableRow>
                             <TableCell>Product</TableCell>
-                            <TableCell>Unit</TableCell>
-                            <TableCell align="right">Qty</TableCell>
+                            {cartColumns.map((col) => (
+                              <TableCell key={col} align="center">
+                                {uomWord(col)}
+                              </TableCell>
+                            ))}
+                            <TableCell align="right">Total</TableCell>
                             <TableCell sx={{ width: 40 }} />
                           </TableRow>
                         </TableHead>
                         <TableBody>
-                          {cartItems.map((item) => (
-                            <TableRow key={item.key}>
-                              <TableCell>
-                                {item.name}
-                                {item.skuCode ? (
-                                  <Typography variant="caption" color="textSecondary" display="block">
-                                    {item.skuCode}
-                                  </Typography>
-                                ) : null}
-                              </TableCell>
-                              <TableCell>{item.uomLabel}</TableCell>
-                              <TableCell align="right">{item.quantity}</TableCell>
-                              <TableCell>
-                                <IconButton size="small" onClick={() => removeCartItem(item.key)} aria-label="Remove">
-                                  <IconX size={16} />
-                                </IconButton>
-                              </TableCell>
-                            </TableRow>
-                          ))}
+                          {cartRows.map((row) => {
+                            const preview = rowPreview(row);
+                            return (
+                              <TableRow key={row.key}>
+                                <TableCell>
+                                  {row.product.name}
+                                  {row.product.sku_code ? (
+                                    <Typography variant="caption" color="textSecondary" display="block">
+                                      {row.product.sku_code}
+                                    </Typography>
+                                  ) : null}
+                                </TableCell>
+                                {cartColumns.map((col) => {
+                                  const has = row.product.uoms.some((u) => u.uom_code === col);
+                                  return (
+                                    <TableCell key={col} align="center">
+                                      {has ? (
+                                        <TextField
+                                          variant="standard"
+                                          type="number"
+                                          value={row.qtyByUom[col] || ''}
+                                          onChange={(e) => setRowQty(row.key, col, e.target.value)}
+                                          inputProps={{ min: 0, step: 1, style: { textAlign: 'center', width: 48 } }}
+                                        />
+                                      ) : (
+                                        <Typography variant="body2" color="textSecondary">
+                                          —
+                                        </Typography>
+                                      )}
+                                    </TableCell>
+                                  );
+                                })}
+                                <TableCell align="right">
+                                  {preview ? (
+                                    <Typography
+                                      variant="body2"
+                                      color={preview.exact ? 'textPrimary' : 'error'}
+                                      noWrap
+                                    >
+                                      {preview.exact
+                                        ? `${preview.whole} ${preview.word}${preview.whole === 1 ? '' : 's'}`
+                                        : 'uneven qty'}
+                                    </Typography>
+                                  ) : (
+                                    <Typography variant="body2" color="textSecondary">
+                                      —
+                                    </Typography>
+                                  )}
+                                </TableCell>
+                                <TableCell>
+                                  <IconButton size="small" onClick={() => removeCartRow(row.key)} aria-label="Remove">
+                                    <IconX size={16} />
+                                  </IconButton>
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
                         </TableBody>
                       </Table>
                     </TableContainer>
                   ) : (
                     <Typography variant="body2" color="textSecondary">
-                      No lines added yet — search a product above, pick its unit and quantity, then Add.
-                    </Typography>
-                  )}
-                  {cartItems.length > 0 && (
-                    <Typography variant="caption" color="textSecondary">
-                      Adding the same product more than once (e.g. 2 Box + 1 Case) is fine —
-                      they combine into a single order line, totalled in its stock unit, when you submit.
+                      No products added yet — search above to add a row, then fill in whichever
+                      units it's being ordered in (Case, Box, Strip — any or all of them).
                     </Typography>
                   )}
                 </Stack>
