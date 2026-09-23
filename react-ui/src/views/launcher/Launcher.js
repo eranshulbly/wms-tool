@@ -105,7 +105,7 @@ const Launcher = () => {
         },
         {
             key: 'margin-check',
-            title: 'Margin Check',
+            title: 'Manager',
             description: "Upload an invoice and see the margin on each product before it's invoiced.",
             icon: IconReceipt2,
             color: theme.palette.info.dark,
