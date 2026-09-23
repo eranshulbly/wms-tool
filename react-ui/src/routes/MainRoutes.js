@@ -155,26 +155,29 @@ const MainRoutes = () => {
                         )}
                     />
 
-                    {/* Margin Check — margin on uploaded order invoices, admin only.
-                        Guarded like the other admin pages: the figures expose landed cost,
-                        which is the same reason the endpoint refuses a non-admin. */}
+                    {/* Margin Check — margin on uploaded order invoices. Admin and
+                        manager-type roles (see AdminGuard's allowManager), unlike the
+                        other admin-group pages: manager checking a single invoice's
+                        margin before it's invoiced is the point of the tool. */}
                     <Route
                         path="/margin-check"
                         render={() => (
                             <AuthGuard>
-                                <AdminGuard>
+                                <AdminGuard allowManager>
                                     <MarginCheck />
                                 </AdminGuard>
                             </AuthGuard>
                         )}
                     />
 
-                    {/* Inventory Ingestion — supplier GRN / credit notes, admin only */}
+                    {/* Inventory Ingestion — supplier GRN / credit notes. Admin and
+                        manager-type roles: cadila_manager's role_uploads includes
+                        'ingestion', so it needs this screen for its actual job. */}
                     <Route
                         path="/inventory-ingestion"
                         render={() => (
                             <AuthGuard>
-                                <AdminGuard>
+                                <AdminGuard allowManager>
                                     <InventoryIngestion />
                                 </AdminGuard>
                             </AuthGuard>
