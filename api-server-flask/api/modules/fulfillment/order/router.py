@@ -9,17 +9,20 @@ Order management routes:
   POST /api/orders/<order_id>/dispatch
   POST /api/orders/<order_id>/move-to-invoiced
   POST /api/orders/<order_id>/complete-dispatch
+  GET  /api/orders/picklist
+  GET  /api/orders/<order_id>/picklist
 """
 
 from datetime import datetime
 from collections import defaultdict
+from io import BytesIO
 
 import werkzeug
-from flask import request
+from flask import request, send_file
 from flask_restx import Resource, fields, reqparse
 
 from api.extensions import rest_api
-from api.modules.fulfillment.order import pricing
+from api.modules.fulfillment.order import pricing, picklist as picklist_svc
 from api.core.auth import token_required, active_required, upload_permission_required
 from api.models import (
     PotentialOrder, PotentialOrderProduct, OrderStateHistory, OrderState,
@@ -27,6 +30,7 @@ from api.models import (
     mysql_manager
 )
 from api.db_manager import partition_filter
+from api.permissions import resolve_company_scope, CompanyAccessDenied
 from api.services import order_service
 from api.core.logging import get_logger
 
@@ -186,6 +190,61 @@ class OrderUpload(Resource):
         except Exception as e:
             return {'success': False, 'msg': f'Error processing upload: {str(e)}',
                     'processed_count': 0, 'error_count': 0}, 400
+
+
+@rest_api.route('/api/orders/picklist')
+class OrdersPicklistList(Resource):
+    """Orders eligible for a picklist download — every order an "Upload
+    Orders" file created, newest upload first. Same permission as uploading
+    orders in the first place: whoever can upload them can pick from them."""
+
+    @token_required
+    @active_required
+    @upload_permission_required('orders')
+    def get(self, current_user):
+        warehouse_id = request.args.get('warehouse_id', type=int)
+        try:
+            scope = resolve_company_scope(current_user, request.args.get('company_id'))
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
+
+        try:
+            orders = picklist_svc.list_picklist_orders(scope, warehouse_id)
+            return {'success': True, 'orders': orders}, 200
+        except Exception as e:
+            logger.exception('Error listing picklist orders')
+            return {'success': False, 'msg': f'Error listing picklist orders: {str(e)}'}, 400
+
+
+@rest_api.route('/api/orders/<int:order_id>/picklist')
+class OrderPicklistDownload(Resource):
+    """One order's picklist as a PDF — bin location, part, HSN, stock on
+    hand, order qty, and a Cases figure derived off the product's own
+    packaging ladder. See picklist.py for what each column is sourced from."""
+
+    @token_required
+    @active_required
+    @upload_permission_required('orders')
+    def get(self, current_user, order_id):
+        try:
+            scope = resolve_company_scope(current_user, request.args.get('company_id'))
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
+
+        try:
+            pdf_bytes = picklist_svc.build_picklist_pdf(order_id, scope)
+        except picklist_svc.PicklistError as e:
+            return {'success': False, 'msg': str(e)}, 404
+        except Exception as e:
+            logger.exception('Error generating picklist PDF', extra={'order_id': order_id})
+            return {'success': False, 'msg': f'Error generating picklist: {str(e)}'}, 400
+
+        return send_file(
+            BytesIO(pdf_bytes),
+            mimetype='application/pdf',
+            as_attachment=False,
+            download_name=f'picklist_{order_id}.pdf',
+        )
 
 
 @rest_api.route('/api/orders/bulk-status-update')

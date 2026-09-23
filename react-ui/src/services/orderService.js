@@ -131,6 +131,25 @@ export const createCartOrder = ({ items, dealerId, companyId, warehouseId, notes
   return api.post('orders/submitted/manual-cart', body).then((res) => res.data);
 };
 
+// Orders eligible for a picklist download — every order an "Upload Orders" file
+// created (Download Picklist tab). warehouseId is optional; companyId is required by
+// the backend's company-scoping (resolve_company_scope resolves it from the user's own
+// access when omitted, so it's fine to leave out too).
+export const getPicklistOrders = (companyId, warehouseId = null) => {
+  const params = {};
+  if (companyId && companyId !== 'all') params.company_id = companyId;
+  if (warehouseId && warehouseId !== 'all') params.warehouse_id = warehouseId;
+  return api.get('orders/picklist', { params }).then((res) => res.data);
+};
+
+// One order's picklist PDF — fetched as an authenticated blob (a plain <a href> can't
+// send the bearer token), then handed to the browser as a download.
+export const downloadPicklist = (orderId, companyId) => {
+  const params = {};
+  if (companyId && companyId !== 'all') params.company_id = companyId;
+  return api.get(`orders/${orderId}/picklist`, { params, responseType: 'blob' }).then((res) => res.data);
+};
+
 export const getRecentActivity = (warehouseId, companyId, limit = 100) => {
   const params = { limit };
   if (warehouseId && warehouseId !== 'all') params.warehouse_id = warehouseId;
