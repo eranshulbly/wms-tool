@@ -95,13 +95,21 @@ product_master_parser.add_argument('company_id', type=int, location='form',
 
 @rest_api.route('/api/admin/catalog/product-master')
 class ProductMasterUpload(Resource):
-    """Merge-upsert the product catalogue and its packaging ladder."""
+    """Merge-upsert the product catalogue and its packaging ladder.
+
+    Admin-only: this is one of the Admin Controls tabs, not the order-line product
+    upload at /api/products/upload above, which keeps its own upload_permission_required
+    check and stays open to whichever roles' role_uploads include 'products'. A role
+    that merely holds the 'products' upload permission (e.g. the generic 'manager' seed)
+    must not be able to rewrite the shared catalogue through this admin-only screen.
+    """
 
     @rest_api.expect(product_master_parser)
     @token_required
     @active_required
-    @upload_permission_required('products')
     def post(self, current_user):
+        if getattr(current_user, 'role', None) != 'admin':
+            return {'success': False, 'msg': 'Admin access required.'}, 403
         from api.permissions import resolve_company_scope, CompanyAccessDenied
         from api.modules.platform.catalog import master_upload
 
