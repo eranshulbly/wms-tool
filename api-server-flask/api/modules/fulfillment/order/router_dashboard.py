@@ -26,6 +26,7 @@ from flask_restx import Resource, fields
 
 from api.extensions import rest_api
 from api.modules.fulfillment.order import pricing
+from api.modules.platform.catalog import dealer_business  # cross-module: catalog owns dealers
 from api.core.auth import token_required, active_required
 from api.models import (
     Users, Warehouse, Company, PotentialOrder,
@@ -1226,6 +1227,54 @@ class OrderDealerOptions(Resource):
             'dealer_id': r['dealer_id'], 'name': r['name'],
             'dealer_code': r['dealer_code'] or '', 'town': r['town'] or '',
         } for r in rows]}, 200
+
+    @rest_api.response(400, 'Error', dash_error_response)
+    @token_required
+    @active_required
+    def post(self, current_user):
+        """Create a dealer on the spot — for the rare phone/WhatsApp order whose
+        dealer this picker doesn't have yet. Deliberately minimal: just a name (and,
+        since it's cheap to ask and improves the picker's own listing immediately, an
+        optional town). Everything else — GSTIN, address, phone, drug licence... —
+        is left for get_or_create_dealer/_fill_blank_details to fill in on its own the
+        moment this same dealer name appears on a future order or invoice upload; see
+        dealer_business.py. Reuses get_or_create_dealer rather than inserting directly,
+        so typing a name that already exists here returns that dealer instead of
+        creating a duplicate — same lookup-by-name-then-company an upload would do.
+        """
+        data = request.get_json(force=True) or {}
+        name = (data.get('name') or '').strip()
+        town = (data.get('town') or '').strip() or None
+        raw_company = data.get('company_id')
+
+        if not name:
+            return {'success': False, 'msg': 'A dealer name is required.'}, 422
+        try:
+            company_id = int(raw_company)
+        except (TypeError, ValueError):
+            return {'success': False, 'msg': 'A company is required.'}, 422
+
+        company = mysql_manager.execute_query(
+            "SELECT company_id FROM company WHERE company_id = %s", (company_id,))
+        if not company:
+            return {'success': False, 'msg': f'Company {company_id} not found.'}, 422
+
+        try:
+            dealer_id = dealer_business.get_or_create_dealer(
+                name, company_id=company_id,
+                details={'town': town} if town else None)
+        except Exception as e:
+            logger.exception("Error creating dealer from Add Order",
+                             extra={'name': name, 'company_id': company_id})
+            return {'success': False, 'msg': f'Could not create dealer: {e}'}, 400
+
+        row = mysql_manager.execute_query(
+            "SELECT dealer_id, name, dealer_code, town FROM dealer WHERE dealer_id = %s",
+            (dealer_id,))[0]
+        return {'success': True, 'dealer': {
+            'dealer_id': row['dealer_id'], 'name': row['name'],
+            'dealer_code': row['dealer_code'] or '', 'town': row['town'] or '',
+        }}, 200
 
 
 def _validate_order_context(dealer_id, company_id, warehouse_id):

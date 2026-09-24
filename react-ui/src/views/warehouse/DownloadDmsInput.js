@@ -45,6 +45,7 @@ import {
   rejectSubmittedOrder,
   createCartOrder,
   getOrderDealers,
+  createOrderDealer,
   getOrderProducts
 } from '../../services/orderService';
 import { dealerLabel } from '../../utils/dealerLabel';
@@ -114,6 +115,14 @@ const DownloadDmsInput = () => {
   const [creating, setCreating] = useState(false);
   const [dealers, setDealers] = useState([]);
   const [dealersLoading, setDealersLoading] = useState(false);
+
+  // "Add new dealer" — a small sub-dialog off the dealer picker, for the dealer that
+  // isn't in the list yet (a new outlet, or one the app just hasn't seen an order/
+  // invoice for). Deliberately minimal: name is all that's required.
+  const [newDealerOpen, setNewDealerOpen] = useState(false);
+  const [newDealerName, setNewDealerName] = useState('');
+  const [newDealerTown, setNewDealerTown] = useState('');
+  const [creatingDealer, setCreatingDealer] = useState(false);
 
   // [{ key, product, qtyByUom: { STRIP: '2', BOX: '', CASE: '1' } }] — a row per
   // product, however many of its units the operator actually filled in.
@@ -248,6 +257,36 @@ const DownloadDmsInput = () => {
       cancelled = true;
     };
   }, [addOpen, newOrder.companyId]);
+
+  const openNewDealer = () => {
+    setNewDealerName('');
+    setNewDealerTown('');
+    setNewDealerOpen(true);
+  };
+
+  // Adds the new dealer straight into this dialog's own dealer list and selects it —
+  // no need to close Add Order and reopen it to pick up what was just created.
+  const submitNewDealer = async () => {
+    const name = newDealerName.trim();
+    if (!name || !newOrder.companyId) return;
+    setCreatingDealer(true);
+    try {
+      const data = await createOrderDealer({ name, companyId: newOrder.companyId, town: newDealerTown.trim() });
+      if (data.success) {
+        const d = data.dealer;
+        setDealers((ds) => (ds.some((x) => x.dealer_id === d.dealer_id) ? ds : [...ds, d].sort((a, b) => a.name.localeCompare(b.name))));
+        setNewOrder((o) => ({ ...o, dealerId: d.dealer_id }));
+        setNewDealerOpen(false);
+        notify(`${d.name} added — GSTIN, address and the rest will fill in on their own once an order or invoice names this dealer.`);
+      } else {
+        notify(data.msg || 'Could not create this dealer.', 'error');
+      }
+    } catch (e) {
+      notify(e?.response?.data?.msg || 'Could not create this dealer.', 'error');
+    } finally {
+      setCreatingDealer(false);
+    }
+  };
 
   const canCreate =
     !!newOrder.companyId && !!newOrder.dealerId && !creating && cartPayloadItems.length > 0;
@@ -694,6 +733,18 @@ const DownloadDmsInput = () => {
                   No active dealers for this company.
                 </Typography>
               )}
+              {newOrder.companyId && (
+                <Typography variant="caption" color="textSecondary" sx={{ mt: 0.5, display: 'block' }}>
+                  Dealer not listed?{' '}
+                  <Box
+                    component="span"
+                    onClick={openNewDealer}
+                    sx={{ color: 'primary.main', cursor: 'pointer', fontWeight: 500 }}
+                  >
+                    + Add new dealer
+                  </Box>
+                </Typography>
+              )}
             </Grid>
             <Grid item xs={12} sm={6}>
               <FormControl fullWidth size="small">
@@ -886,6 +937,53 @@ const DownloadDmsInput = () => {
             startIcon={creating ? <CircularProgress size={16} color="inherit" /> : <IconPlus size={16} />}
           >
             Create Order
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Add new dealer — deliberately just a name (+ optional town). Everything else
+          on the dealer (GSTIN, address, phone, drug licence...) fills itself in the
+          moment this same name appears on a future order or invoice upload, the same
+          way it already would for a dealer this screen had never seen before — see
+          dealer_business.get_or_create_dealer / _fill_blank_details. */}
+      <Dialog open={newDealerOpen} onClose={() => !creatingDealer && setNewDealerOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Add New Dealer</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
+            Enter the name exactly as it appears on their orders or invoices — that's how a
+            future upload will recognise this dealer and fill in the rest (GSTIN, address,
+            phone...) on its own.
+          </Typography>
+          <Stack spacing={2}>
+            <TextField
+              autoFocus
+              fullWidth
+              size="small"
+              required
+              label="Dealer Name"
+              value={newDealerName}
+              onChange={(e) => setNewDealerName(e.target.value)}
+            />
+            <TextField
+              fullWidth
+              size="small"
+              label="Town (optional)"
+              value={newDealerTown}
+              onChange={(e) => setNewDealerTown(e.target.value)}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setNewDealerOpen(false)} disabled={creatingDealer}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={submitNewDealer}
+            disabled={!newDealerName.trim() || creatingDealer}
+            startIcon={creatingDealer ? <CircularProgress size={16} color="inherit" /> : <IconPlus size={16} />}
+          >
+            Add Dealer
           </Button>
         </DialogActions>
       </Dialog>
