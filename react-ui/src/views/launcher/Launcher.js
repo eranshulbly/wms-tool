@@ -17,7 +17,8 @@ import {
     IconChartBar,
     IconSettings,
     IconArrowRight,
-    IconReceipt2
+    IconReceipt2,
+    IconUpload
 } from '@tabler/icons';
 
 import { scopeForRole } from '../../utils/roleScope';
@@ -104,6 +105,20 @@ const Launcher = () => {
             show: isAdmin
         },
         {
+            key: 'inventory-ingestion',
+            title: 'Inventory Ingestion',
+            description: 'Upload supplier documents to receive stock into inventory.',
+            icon: IconUpload,
+            color: theme.palette.success.dark,
+            tint: theme.palette.success.light,
+            path: '/inventory-ingestion',
+            // Its own tile now, not bundled under Admin. Matches the actual route guard
+            // (MainRoutes.js: <AdminGuard allowManager>) — admin or manager-type role,
+            // not the 'ingestion' upload permission, which nothing on the backend
+            // actually checks for this screen.
+            show: isAdmin || isManager
+        },
+        {
             key: 'margin-check',
             title: 'Manager',
             description: "Upload an invoice and see the margin on each product before it's invoiced.",
@@ -111,8 +126,8 @@ const Launcher = () => {
             color: theme.palette.info.dark,
             tint: theme.palette.info.light,
             path: '/margin-check',
-            // The one Admin-group tool open to manager-type roles, not just admin — see
-            // the backend check in fulfillment/invoice/router.py::MarginCheck.
+            // Its own tile, not bundled under Admin — open to manager-type roles as well
+            // as admin, see the backend check in fulfillment/invoice/router.py::MarginCheck.
             show: isAdmin || isManager
         }
     ];

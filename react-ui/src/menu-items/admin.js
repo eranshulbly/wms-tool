@@ -1,5 +1,9 @@
-import { IconSettings, IconUpload, IconReceipt2 } from '@tabler/icons';
+import { IconSettings } from '@tabler/icons';
 
+// Admin Controls only — Inventory Ingestion and Margin Check moved out to their own
+// standalone menu groups (menu-items/inventory-ingestion.js, menu-items/margin-check.js),
+// same pattern as E-Way Bill and Supply Sheet, each reached from its own Launcher tile
+// rather than being bundled under Admin.
 const adminMenu = {
     id: 'admin',
     title: 'Admin',
@@ -16,25 +20,7 @@ const adminMenu = {
             icon: IconSettings,
             breadcrumbs: false,
         },
-        {
-            id: 'inventory-ingestion',
-            title: 'Inventory Ingestion',
-            type: 'item',
-            // Same nginx caveat as above — path avoids the '/admin/*' prefix.
-            url: '/inventory-ingestion',
-            icon: IconUpload,
-            breadcrumbs: false,
-        },
-        {
-            id: 'margin-check',
-            title: 'Margin Check',
-            type: 'item',
-            // Same nginx caveat as above — path avoids the '/admin/*' prefix.
-            url: '/margin-check',
-            icon: IconReceipt2,
-            breadcrumbs: false,
-        },
-        // Future admin menu items go here.
+        // Future admin-only menu items go here.
     ],
 };
 
