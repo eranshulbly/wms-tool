@@ -13,6 +13,7 @@ class UploadType(str, Enum):
     ORDERS   = 'orders'
     INVOICES = 'invoices'
     PRODUCTS = 'products'
+    PICKLISTS = 'picklists'
 
 
 class UserRole(str, Enum):

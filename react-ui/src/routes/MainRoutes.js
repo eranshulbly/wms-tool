@@ -17,6 +17,7 @@ const Launcher = Loadable(lazy(() => import('../views/launcher/Launcher')));
 
 // warehouse management routing
 const OrderUpload = Loadable(lazy(() => import('../views/warehouse/OrderUpload')));
+const PicklistUpload = Loadable(lazy(() => import('../views/warehouse/PicklistUpload')));
 const WarehouseDashboard = Loadable(lazy(() => import('../views/warehouse/WarehouseDashboard')));
 const OrderManagement = Loadable(lazy(() => import('../views/warehouse/OrderManagement')));
 const SubmittedOrders = Loadable(lazy(() => import('../views/warehouse/SubmittedOrders')));
@@ -71,6 +72,16 @@ const MainRoutes = () => {
                     <Route path="/warehouse/submitted-orders" render={() => <AuthGuard><SubmittedOrders /></AuthGuard>} />
                     <Route path="/warehouse/download-dms" render={() => <AuthGuard><DownloadDmsInput /></AuthGuard>} />
                     <Route path="/warehouse/upload-orders" render={() => <AuthGuard><OrderUpload /></AuthGuard>} />
+                    <Route
+                        path="/warehouse/upload-picklists"
+                        render={() => (
+                            <AuthGuard>
+                                <UploadPermissionGuard uploadType="picklists">
+                                    <PicklistUpload />
+                                </UploadPermissionGuard>
+                            </AuthGuard>
+                        )}
+                    />
                     <Route path="/warehouse/manage-orders" render={() => <AuthGuard><OrderManagement /></AuthGuard>} />
                     <Route
                         path="/warehouse/upload-products"

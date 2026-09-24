@@ -1,8 +1,8 @@
 // Order Tracking menu group — order upload, invoicing, and the manage/track table.
 
-import { IconFileUpload, IconTable, IconDashboard, IconPackage, IconClipboardList, IconFileDownload } from '@tabler/icons';
+import { IconFileUpload, IconTable, IconDashboard, IconPackage, IconClipboardList, IconFileDownload, IconQrcode } from '@tabler/icons';
 
-const icons = { IconFileUpload, IconTable, IconDashboard, IconPackage, IconClipboardList, IconFileDownload };
+const icons = { IconFileUpload, IconTable, IconDashboard, IconPackage, IconClipboardList, IconFileDownload, IconQrcode };
 
 // ==============================|| ORDER TRACKING MENU ITEMS ||============================== //
 
@@ -41,6 +41,14 @@ const warehouse = {
             type: 'item',
             url: '/warehouse/upload-orders',
             icon: icons.IconFileUpload,
+            breadcrumbs: false
+        },
+        {
+            id: 'upload-picklists',
+            title: 'Upload Pick Lists',
+            type: 'item',
+            url: '/warehouse/upload-picklists',
+            icon: icons.IconQrcode,
             breadcrumbs: false
         },
         {

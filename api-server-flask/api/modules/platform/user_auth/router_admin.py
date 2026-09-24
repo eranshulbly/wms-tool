@@ -236,6 +236,8 @@ class UploadBatchDelete(Resource):
                 _delete_order_batch(batch_id)
             elif upload_type == 'invoices':
                 _delete_invoice_batch(batch_id)
+            elif upload_type == 'picklists':
+                _delete_picklist_batch(batch_id)
             else:
                 return {'success': False, 'msg': f'Unknown upload type: {upload_type}'}, 400
 
@@ -404,6 +406,50 @@ def _fetch_batch_records(batch_id: int, upload_type: str) -> list:
             for r in (rows or [])
         ]
 
+    elif upload_type == 'picklists':
+        pf_po_sql, pf_po_params = partition_filter('potential_order', alias='po')
+        rows = mysql_manager.execute_query(
+            f"""
+            SELECT
+                pl.picklist_id,
+                pl.original_order_id,
+                pl.picklist_code,
+                pl.picklist_date,
+                pl.line_count,
+                pl.qr_token,
+                po.potential_order_id,
+                po.status AS order_status,
+                d.name    AS dealer_name,
+                w.name    AS warehouse_name,
+                c.name    AS company_name
+            FROM order_picklist pl
+            JOIN potential_order po
+              ON po.potential_order_id = pl.potential_order_id
+            LEFT JOIN dealer    d ON d.dealer_id    = po.dealer_id
+            LEFT JOIN warehouse w ON w.warehouse_id = pl.warehouse_id
+            LEFT JOIN company   c ON c.company_id   = pl.company_id
+            WHERE pl.upload_batch_id = %s AND {pf_po_sql}
+            ORDER BY pl.picklist_id
+            """,
+            (batch_id, *pf_po_params),
+        )
+        return [
+            {
+                'picklist_id':       r['picklist_id'],
+                'original_order_id': r['original_order_id'],
+                'picklist_code':     r['picklist_code'],
+                'picklist_date':     r['picklist_date'].isoformat() if r['picklist_date'] else None,
+                'line_count':        r['line_count'],
+                'qr_token':          r['qr_token'],
+                'potential_order_id': r['potential_order_id'],
+                'order_status':      r['order_status'],
+                'dealer_name':       r['dealer_name'],
+                'warehouse_name':    r['warehouse_name'],
+                'company_name':      r['company_name'],
+            }
+            for r in (rows or [])
+        ]
+
     return []
 
 
@@ -465,6 +511,25 @@ def _delete_order_batch(batch_id: int) -> None:
             f"DELETE FROM potential_order WHERE upload_batch_id = %s AND {pf_po_sql}",
             (batch_id, *pf_po_params),
         )
+
+
+def _delete_picklist_batch(batch_id: int) -> None:
+    """Remove the pick-list documents a batch created.
+
+    Only the documents. The upload also REPLACED each order's
+    potential_order_product lines, and that half cannot be undone — whatever those
+    lines held beforehand was overwritten and is not recorded anywhere. Deleting
+    them here would therefore not restore the previous state, it would just leave
+    the order with no lines at all, so they are left in place.
+
+    The order_picklist_scan rows are kept too. They are an audit of scans that
+    really happened, and a deleted document does not unmake them; their picklist_id
+    is simply left pointing at a row that no longer exists.
+    """
+    mysql_manager.execute_query(
+        "DELETE FROM order_picklist WHERE upload_batch_id = %s",
+        (batch_id,), fetch=False,
+    )
 
 
 def _delete_invoice_batch(batch_id: int) -> None:

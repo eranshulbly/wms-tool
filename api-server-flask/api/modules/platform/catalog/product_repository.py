@@ -55,6 +55,83 @@ class ProductRepository(BaseRepository):
                 rows
             )
 
+    # ── Cursor-scoped variants ────────────────────────────────────────────────
+    # The methods above each open their own cursor, which commits on exit. The
+    # pick-list importer ingests one PDF as one transaction — products, order lines
+    # and the order_picklist row land together or not at all — so it needs to drive
+    # the writes on a cursor it already holds. Same SQL, caller's transaction.
+
+    def find_bulk_by_part_numbers_on(self, cursor, part_numbers: list) -> dict:
+        """find_bulk_by_part_numbers, but on the caller's cursor.
+
+        This has to exist. The plain version borrows its own connection from the pool,
+        so it cannot see rows the caller has inserted but not yet committed — a
+        pick-list import that auto-creates a product and then looks it up would find
+        nothing and report the part as unresolved.
+        """
+        if not part_numbers:
+            return {}
+        placeholders = ','.join(['%s'] * len(part_numbers))
+        cursor.execute(
+            f"SELECT product_id, product_string, name, description "
+            f"FROM product WHERE product_string IN ({placeholders})",
+            tuple(part_numbers),
+        )
+        rows = cursor.fetchall()
+        return {r['product_string']: r for r in rows} if rows else {}
+
+    def bulk_upsert_products_on(self, cursor, products: list, current_time,
+                                company_id=None) -> None:
+        """Create products a pick list named that the catalogue does not have.
+
+        `products` is a list of {'part', 'name', 'hsn', 'price'}.
+
+        Unlike bulk_insert_products(), this carries hsn_code and price through. A
+        pick list prints both, and dropping them would leave an auto-created product
+        emptier than the document that created it. Existing rows are left alone —
+        the catalogue is the authority for a part it already knows.
+        """
+        if not products:
+            return
+        rows = [
+            (p['part'], p.get('name') or p['part'], p.get('name') or p['part'],
+             p.get('hsn') or None, p.get('price') or None, company_id,
+             current_time, current_time)
+            for p in products
+        ]
+        cursor.executemany(
+            """INSERT IGNORE INTO product
+                 (product_string, name, description, hsn_code, price, company_id,
+                  created_at, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            rows,
+        )
+
+    def replace_order_products_on(self, cursor, potential_order_id: int, rows: list) -> int:
+        """Wipe and re-insert one order's lines on the caller's cursor.
+
+        Replace rather than merge, matching the behaviour the product upload already
+        has: the document being imported is the whole truth about that order's lines.
+        Note the consequence — a pick-list upload and a product upload aimed at the
+        same order overwrite each other, last one wins.
+        """
+        pf_sql, pf_params = self._pf('potential_order_product')
+        cursor.execute(
+            f"DELETE FROM potential_order_product "
+            f"WHERE {pf_sql} AND potential_order_id = %s",
+            pf_params + (potential_order_id,),
+        )
+        if not rows:
+            return 0
+        cursor.executemany(
+            """INSERT INTO potential_order_product
+                 (potential_order_id, product_id, quantity, quantity_packed,
+                  quantity_remaining, mrp, total_price, created_at, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            rows,
+        )
+        return cursor.rowcount
+
     def bulk_delete_order_products(self, potential_order_ids: list) -> None:
         """
         DELETE all potential_order_product rows for the given potential_order_ids.

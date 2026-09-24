@@ -20,6 +20,7 @@ cryptography>=41.0.0
 # Excel and CSV Processing Dependencies - REQUIRED for file uploads
 openpyxl>=3.1.5
 xlrd==2.0.1
+pdfplumber>=0.11.0  # Reads uploaded pick-list PDFs (api/modules/fulfillment/picklist/extract.py)
 xlsxwriter==3.0.9
 et-xmlfile==1.1.0
 

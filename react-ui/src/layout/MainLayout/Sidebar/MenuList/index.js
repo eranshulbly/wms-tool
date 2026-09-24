@@ -16,7 +16,8 @@ import { scopeForRole } from './../../../../utils/roleScope';
 const UPLOAD_PERMISSION_MAP = {
     'upload-orders': 'orders',
     'upload-invoices': 'invoices',
-    'upload-products': 'products'
+    'upload-products': 'products',
+    'upload-picklists': 'picklists'
 };
 
 // Filter an order-tracking group's children by the user's upload permissions.

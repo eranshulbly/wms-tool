@@ -765,6 +765,7 @@ def create_all_tables():
     # module's schema so its register_table() calls fire, then create them.
     import api.modules.platform.catalog.schema      # noqa: F401
     import api.modules.fulfillment.order.schema        # noqa: F401
+    import api.modules.fulfillment.picklist.schema     # noqa: F401
     import api.modules.inventory.schema    # noqa: F401
     import api.modules.fulfillment.assignment.schema   # noqa: F401
     import api.modules.sales.schema                    # noqa: F401
@@ -2041,7 +2042,7 @@ def insert_default_states():
 
 
 ALL_ORDER_STATES = ['Open', 'Picking', 'Packed', 'Invoiced', 'Dispatch Ready', 'Completed', 'Partially Completed']
-ALL_UPLOAD_TYPES = ['orders', 'invoices', 'products']
+ALL_UPLOAD_TYPES = ['orders', 'invoices', 'products', 'picklists']
 
 
 # The single-screen roles, named once here because several places must agree on each
@@ -2074,10 +2075,10 @@ def seed_default_roles():
         },
         {
             'name': 'warehouse_staff',
-            'description': 'Open/Picking/Packed states. Order uploads only.',
+            'description': 'Open/Picking/Packed states. Order and pick-list uploads.',
             'all_warehouses': False,
             'order_states': ['Open', 'Picking', 'Packed'],
-            'uploads': ['orders'],
+            'uploads': ['orders', 'picklists'],
         },
         {
             'name': 'dispatcher',
