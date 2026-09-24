@@ -12,7 +12,24 @@ stock, prices or upload history, and the same file can be checked any number of 
 Both sides are ex-GST, so tax cannot inflate the margin. Cost is found by the batch
 number printed on the line — the batch that actually shipped — which is sharper than
 the FEFO inference used for orders, where the batch has to be guessed.
+
+A batch number is only guaranteed unique WITHIN one product — sku_batch.batch_hash is
+(sku_id, batch_number), not batch_number alone (see ingestion/service.py:batch_hash) —
+so the same printed text can genuinely belong to two different products, and does: e.g.
+"MP26056" or "JKBD26062" on this company's own data. In every real case found so far
+that's because the catalogue holds two rows for what is really one product — a name
+typo ("CIPRODAC-500 TABLET" vs "...TAABLET") meant a later feed couldn't match the
+existing product by name and created a new one instead, and that new row went on to
+receive its own stock under a batch number that happens to coincide with the original's.
+Treating the batch number alone as a lookup key (the previous version of this module did)
+either wrongly calls a line "ambiguous" when the real product is obvious from its printed
+name, or — worse, and silently — attributes the wrong product's cost to a line whenever
+the two candidates' costs happen to agree. _costs_by_batch keeps every distinct product a
+batch resolves to; _resolve_line_cost below is what actually picks between them.
 """
+
+import difflib
+import re
 
 from api.shared.db_manager import mysql_manager
 from api.modules.inventory.ingestion import parser
@@ -29,15 +46,17 @@ class MarginCheckError(ValueError):
 
 
 def _costs_by_batch(batch_numbers, company_id):
-    """{BATCH NUMBER: {'cost', 'master_name', 'sku_code'} | {'ambiguous': True}}.
+    """{BATCH NUMBER: [{'cost', 'master_name', 'sku_code'}, ...]}.
 
-    Only rows with a real landing price count. A credit note that arrived before its
-    invoice leaves a row with landing price 0 — reading that as a cost would put a
-    negative number in the margin, and it is exactly what the duplicate product rows in
-    the catalogue carry. With those set aside every known batch resolves to one cost.
-
-    A batch that still carries two different costs is reported rather than averaged:
-    picking one would present a guess as the margin.
+    One entry per distinct PRODUCT the batch number resolves to — never collapsed into
+    one, since two different products can share a batch number (see module docstring).
+    Only rows with a real landing price count: a credit note that arrived before its
+    invoice leaves a row with landing price 0, and reading that as a cost would put a
+    negative number in the margin — it is also exactly what an unstocked duplicate
+    product row carries, so this filter incidentally keeps most duplicate-row collisions
+    out of the picture entirely (only one candidate is ever costed, so there is nothing
+    to disambiguate). It does not help when both rows actually have stock, which is
+    exactly when _resolve_line_cost is needed.
     """
     wanted = sorted({(b or '').strip().upper() for b in batch_numbers if b})
     if not wanted:
@@ -56,19 +75,54 @@ def _costs_by_batch(batch_numbers, company_id):
                AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(b.batch_params, '$.batch_number'))) IN ({ph})""",
         (company_id, *wanted)) or []
 
-    found = {}
+    by_batch = {}
     for r in rows:
         cost = round(float(r['landing_price']) - float(r['cn_rate'] or 0), 4)
-        found.setdefault(r['batch'], []).append(
-            {'cost': cost, 'master_name': r['master_name'], 'sku_code': r['sku_code']})
+        opt = {'cost': cost, 'master_name': r['master_name'], 'sku_code': r['sku_code']}
+        options = by_batch.setdefault(r['batch'], [])
+        if opt not in options:  # same product, same cost — not a second candidate
+            options.append(opt)
+    return by_batch
 
-    out = {}
-    for batch, options in found.items():
-        if len({o['cost'] for o in options}) > 1:
-            out[batch] = {'ambiguous': True}
-        else:
-            out[batch] = options[0]
-    return out
+
+def _norm_name(name):
+    """Loose product-name key for matching an invoice's own printed description
+    against the catalogue name — case/whitespace only, since the invoice never spells
+    a product exactly like the master (pack size, spacing, abbreviations)."""
+    return re.sub(r'\s+', ' ', (name or '').strip().upper())
+
+
+def _resolve_line_cost(raw_product_name, options):
+    """Which of a batch's candidate products (see _costs_by_batch) this invoice line
+    actually means. Returns (option_or_None, was_multi_product).
+
+    One candidate: unambiguous regardless of name — the normal case, and every batch
+    that isn't caught up in a duplicate-product collision. More than one candidate: the
+    line's own printed product name picks between them via a high-confidence fuzzy
+    match — the same difflib.get_close_matches/0.85-cutoff idiom already used for the
+    product-master upload's category matching (sales/uploads/router.py), which resolves
+    a clear near-miss (a typo'd duplicate row, the cause behind every real collision
+    seen so far) and refuses to guess between two names that are actually different.
+    Two candidates sharing the exact same printed name can't be told apart by name at
+    all and are always left ambiguous, never silently picked.
+    """
+    if not options:
+        return None, False
+    if len(options) == 1:
+        return options[0], False
+
+    by_key, collided = {}, set()
+    for o in options:
+        key = _norm_name(o['master_name'])
+        if key in by_key:
+            collided.add(key)
+        by_key[key] = o
+
+    target = _norm_name(raw_product_name)
+    close = difflib.get_close_matches(target, list(by_key), n=1, cutoff=0.85)
+    if close and close[0] not in collided:
+        return by_key[close[0]], True
+    return None, True
 
 
 def check_invoice(stream, filename, company_id):
@@ -86,17 +140,28 @@ def check_invoice(stream, filename, company_id):
     costs = _costs_by_batch([l['raw_batch'] for l in doc['lines']], company_id)
 
     lines = []
+    collision_warnings = []  # one per (batch, printed name) actually seen on this invoice
     for l in doc['lines']:
         qty = float(l['quantity'] or 0)
         sale_rate = float(l['rate']) if qty else None
-        match = costs.get((l['raw_batch'] or '').strip().upper())
+        batch_key = (l['raw_batch'] or '').strip().upper()
+        options = costs.get(batch_key, [])
+        match, was_multi = _resolve_line_cost(l['raw_product_name'], options)
 
-        if not match:
+        if not options:
             status, cost = 'no_cost', None
-        elif match.get('ambiguous'):
+        elif match is None:
             status, cost = 'ambiguous', None
         else:
             status, cost = 'ok', match['cost']
+
+        if was_multi:
+            others = ', '.join(sorted({o['master_name'] for o in options}
+                                      - ({match['master_name']} if match else set())))
+            note = (f"line {l['line_no']}: batch {l['raw_batch']} is also on record for "
+                    f"{others}" + (f" — matched to {match['master_name']} by name"
+                                    if match else " — could not tell which by name, so no cost was used"))
+            collision_warnings.append(note)
 
         margin_rate = (sale_rate - cost) if (sale_rate is not None and cost is not None) else None
         lines.append({
@@ -127,7 +192,10 @@ def check_invoice(stream, filename, company_id):
         'grand_total': doc.get('grand_total'),
         'lines': lines,
         'totals': totals_for(lines),
-        'warnings': doc.get('warnings') or [],
+        # Parser warnings first, then batch/product collisions — the collisions are
+        # about a specific line's cost, so they read as a continuation of the same list
+        # rather than a separate concern.
+        'warnings': list(doc.get('warnings') or []) + collision_warnings,
     }
 
 
