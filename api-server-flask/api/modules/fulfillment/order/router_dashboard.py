@@ -26,7 +26,6 @@ from flask_restx import Resource, fields
 
 from api.extensions import rest_api
 from api.modules.fulfillment.order import pricing
-from api.modules.platform.catalog import dealer_business  # cross-module: catalog owns dealers
 from api.core.auth import token_required, active_required
 from api.models import (
     Users, Warehouse, Company, PotentialOrder,
@@ -879,6 +878,7 @@ class SubmittedOrdersList(Resource):
                 f"""SELECT so.submitted_order_id AS order_id, so.order_number, so.status,
                            so.dms_status, so.reject_note,
                            so.source, so.dealer_id, d.name AS dealer_name, d.town AS dealer_town,
+                           so.pending_dealer_name, so.pending_dealer_town,
                            so.company_id, c.name AS company_name,
                            so.warehouse_id, w.name AS warehouse_name,
                            so.notes, so.created_at, so.submitted_at, so.expected_delivery_date,
@@ -939,8 +939,13 @@ class SubmittedOrdersList(Resource):
                 # for now). False => the tab shows a placeholder instead of Download.
                 'dms_available':          dms.has_dms_format(r['company_name']),
                 'dealer_id':              r['dealer_id'],
-                'dealer_name':            r['dealer_name'] or f"Dealer {r['dealer_id']}",
-                'dealer_town':            r['dealer_town'],
+                # A pending order (no dealer_id yet — see SubmittedOrderCartCreate) shows
+                # whatever the operator typed; is_pending_dealer tells the UI to flag it,
+                # since it hasn't been matched to a real dealer yet.
+                'dealer_name':            (r['dealer_name'] or r['pending_dealer_name']
+                                           or (f"Dealer {r['dealer_id']}" if r['dealer_id'] else 'Unknown dealer')),
+                'dealer_town':            r['dealer_town'] or r['pending_dealer_town'],
+                'is_pending_dealer':      r['dealer_id'] is None,
                 'company_id':             r['company_id'],
                 'company_name':           r['company_name'],
                 'warehouse_id':           r['warehouse_id'],
@@ -1228,53 +1233,12 @@ class OrderDealerOptions(Resource):
             'dealer_code': r['dealer_code'] or '', 'town': r['town'] or '',
         } for r in rows]}, 200
 
-    @rest_api.response(400, 'Error', dash_error_response)
-    @token_required
-    @active_required
-    def post(self, current_user):
-        """Create a dealer on the spot — for the rare phone/WhatsApp order whose
-        dealer this picker doesn't have yet. Deliberately minimal: just a name (and,
-        since it's cheap to ask and improves the picker's own listing immediately, an
-        optional town). Everything else — GSTIN, address, phone, drug licence... —
-        is left for get_or_create_dealer/_fill_blank_details to fill in on its own the
-        moment this same dealer name appears on a future order or invoice upload; see
-        dealer_business.py. Reuses get_or_create_dealer rather than inserting directly,
-        so typing a name that already exists here returns that dealer instead of
-        creating a duplicate — same lookup-by-name-then-company an upload would do.
-        """
-        data = request.get_json(force=True) or {}
-        name = (data.get('name') or '').strip()
-        town = (data.get('town') or '').strip() or None
-        raw_company = data.get('company_id')
-
-        if not name:
-            return {'success': False, 'msg': 'A dealer name is required.'}, 422
-        try:
-            company_id = int(raw_company)
-        except (TypeError, ValueError):
-            return {'success': False, 'msg': 'A company is required.'}, 422
-
-        company = mysql_manager.execute_query(
-            "SELECT company_id FROM company WHERE company_id = %s", (company_id,))
-        if not company:
-            return {'success': False, 'msg': f'Company {company_id} not found.'}, 422
-
-        try:
-            dealer_id = dealer_business.get_or_create_dealer(
-                name, company_id=company_id,
-                details={'town': town} if town else None)
-        except Exception as e:
-            logger.exception("Error creating dealer from Add Order",
-                             extra={'name': name, 'company_id': company_id})
-            return {'success': False, 'msg': f'Could not create dealer: {e}'}, 400
-
-        row = mysql_manager.execute_query(
-            "SELECT dealer_id, name, dealer_code, town FROM dealer WHERE dealer_id = %s",
-            (dealer_id,))[0]
-        return {'success': True, 'dealer': {
-            'dealer_id': row['dealer_id'], 'name': row['name'],
-            'dealer_code': row['dealer_code'] or '', 'town': row['town'] or '',
-        }}, 200
+    # Deliberately no POST here: this endpoint only ever reads the dealer table.
+    # A dealer not yet in this list is handled entirely inside
+    # SubmittedOrderCartCreate (new_dealer_name/new_dealer_town, stored on the order
+    # itself as pending_dealer_name/pending_dealer_town) — no row is written to
+    # `dealer` until a real order or invoice upload creates one, via
+    # dealer_business.get_or_create_dealer.
 
 
 def _validate_order_context(dealer_id, company_id, warehouse_id):
@@ -1600,6 +1564,12 @@ class SubmittedOrderCartCreate(Resource):
 
     JSON body: dealer_id, company_id, warehouse_id (optional), notes (optional),
     expected_delivery_date (optional), items: [{product_id, uom, quantity}, ...].
+
+    dealer_id may be omitted in favour of new_dealer_name (+ optional new_dealer_town)
+    when the dealer isn't in the picker yet — the order then carries that name on
+    itself (pending_dealer_name/pending_dealer_town) rather than a dealer_id. This
+    endpoint never writes to the dealer table: a real dealer row only ever comes from
+    an order or invoice upload (dealer_business.get_or_create_dealer).
     """
 
     @rest_api.response(400, 'Error', dash_error_response)
@@ -1629,9 +1599,31 @@ class SubmittedOrderCartCreate(Resource):
         if err:
             return {'success': False, 'msg': f'warehouse_id {err}'}, 422
 
-        dealer, company, err = _validate_order_context(dealer_id, company_id, warehouse_id)
-        if err:
-            return {'success': False, 'msg': err[0]}, err[1]
+        # A dealer not yet in the picker: the order carries the typed name on itself
+        # (pending_dealer_name/pending_dealer_town) instead of a dealer_id. No row is
+        # ever written to `dealer` from here — see the class docstring.
+        new_dealer_name = (data.get('new_dealer_name') or '').strip() or None
+        new_dealer_town = (data.get('new_dealer_town') or '').strip() or None
+
+        pending_name = pending_town = None
+        if dealer_id is not None:
+            dealer, company, err = _validate_order_context(dealer_id, company_id, warehouse_id)
+            if err:
+                return {'success': False, 'msg': err[0]}, err[1]
+        elif new_dealer_name:
+            if company_id is None:
+                return {'success': False, 'msg': 'a company is required'}, 422
+            company_rows = mysql_manager.execute_query(
+                "SELECT company_id, name FROM company WHERE company_id = %s", (company_id,))
+            if not company_rows:
+                return {'success': False, 'msg': f'company {company_id} not found'}, 422
+            company = company_rows[0]
+            if warehouse_id is not None and not mysql_manager.execute_query(
+                    "SELECT warehouse_id FROM warehouse WHERE warehouse_id = %s", (warehouse_id,)):
+                return {'success': False, 'msg': f'warehouse {warehouse_id} not found'}, 422
+            pending_name, pending_town = new_dealer_name, new_dealer_town
+        else:
+            return {'success': False, 'msg': 'a dealer is required'}, 422
 
         raw_items = data.get('items')
         if not isinstance(raw_items, list) or not raw_items:
@@ -1681,11 +1673,11 @@ class SubmittedOrderCartCreate(Resource):
                 """INSERT INTO submitted_orders
                      (dealer_id, warehouse_id, company_id, status, source, dms_status,
                       requested_by, created_by, submitted_at, expected_delivery_date,
-                      notes, created_at, updated_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                      notes, pending_dealer_name, pending_dealer_town, created_at, updated_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 (dealer_id, warehouse_id, company_id, OrderStatus.SUBMITTED.value,
                  'itemised', 'ready', created_by, created_by, now, expected, notes,
-                 now, now))
+                 pending_name, pending_town, now, now))
             order_id = cursor.lastrowid
             order_number = f"ORD-{order_id:06d}"
             cursor.execute(

@@ -108,15 +108,6 @@ export const getOrderDealers = (companyId) => {
   return api.get('orders/dealers', { params }).then((res) => res.data);
 };
 
-// Create a dealer on the spot when the Add Order picker doesn't have one yet —
-// deliberately minimal (name + optional town). Everything else on the dealer fills in
-// automatically the next time an order or invoice file names this same dealer.
-export const createOrderDealer = ({ name, companyId, town }) => {
-  const body = { name, company_id: companyId };
-  if (town) body.town = town;
-  return api.post('orders/dealers', body).then((res) => res.data);
-};
-
 // Products for the cart picker on "Add Order", each with the packaging units
 // (STRIP/BOX/CASE, whatever it actually has) it can be ordered in. `search` narrows by
 // name/SKU as the operator types, so the list stays short on a catalogue of thousands.
@@ -128,12 +119,24 @@ export const getOrderProducts = (companyId, search = '') => {
 
 // Raise an order by hand with its lines picked from the catalogue — a product, a unit
 // and a quantity per line. `items` is [{ productId, uom, quantity }].
-export const createCartOrder = ({ items, dealerId, companyId, warehouseId, notes, expectedDate }) => {
+//
+// dealerId (an existing dealer) and newDealerName (a dealer not in the picker yet) are
+// mutually exclusive. newDealerName never creates a dealer record — the backend keeps
+// it as pending_dealer_name/pending_dealer_town on the order itself; only a later
+// order/invoice upload that names this exact dealer ever creates a real one.
+export const createCartOrder = ({
+  items, dealerId, newDealerName, newDealerTown, companyId, warehouseId, notes, expectedDate
+}) => {
   const body = {
-    dealer_id: dealerId,
     company_id: companyId,
     items: items.map((i) => ({ product_id: i.productId, uom: i.uom, quantity: i.quantity }))
   };
+  if (dealerId) {
+    body.dealer_id = dealerId;
+  } else if (newDealerName) {
+    body.new_dealer_name = newDealerName;
+    if (newDealerTown) body.new_dealer_town = newDealerTown;
+  }
   if (warehouseId && warehouseId !== 'all') body.warehouse_id = warehouseId;
   if (notes) body.notes = notes;
   if (expectedDate) body.expected_delivery_date = expectedDate;

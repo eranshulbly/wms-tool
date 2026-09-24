@@ -883,6 +883,7 @@ def create_all_tables():
     # base tables already exist in their pre-v2 shape.
     _migrate_v2_api_columns()
     _migrate_order_uom_widen()
+    _migrate_submitted_orders_dealer_nullable()
     # Strictly last: it MODIFYs columns the migrations above are responsible for adding,
     # so it has to see the schema in its final shape.
     _migrate_schema_convergence()
@@ -1222,6 +1223,15 @@ _V2_API_COLUMNS = {
         ('location_source',    'VARCHAR(16) NULL', None),
         ('location_age_s',     'INT NULL',         None),
         ('location_is_mocked', 'TINYINT(1) NULL',  None),
+        # A dealer typed in by hand on Add Order, for orders raised before that dealer
+        # exists in the dealer table — Add Order is not allowed to create a real dealer
+        # row itself (only an order/invoice upload does that, via
+        # dealer_business.get_or_create_dealer); this is what the order carries instead.
+        # Set together with dealer_id NULL; both blank once a real dealer_id is on the
+        # row. See _migrate_submitted_orders_dealer_nullable for why dealer_id can hold
+        # NULL at all.
+        ('pending_dealer_name', 'VARCHAR(255) NULL', None),
+        ('pending_dealer_town', 'VARCHAR(100) NULL', None),
     ],
     'submitted_order_products': [
         # The rate the rep actually agreed with the dealer, per PRICED unit — the
@@ -1544,6 +1554,30 @@ def _migrate_order_uom_widen():
         logger.info("submitted_order_products.order_uom widened to VARCHAR(64)")
     except Exception:
         logger.exception("order_uom widen migration failed")
+
+
+def _migrate_submitted_orders_dealer_nullable():
+    """Widen submitted_orders.dealer_id from NOT NULL to NULL (idempotent).
+
+    Add Order can raise an order for a dealer that doesn't exist in the dealer table
+    yet — the name is kept on pending_dealer_name/pending_dealer_town (see
+    _V2_API_COLUMNS) instead, since Add Order is not allowed to create a real dealer
+    row itself (dealer_business.get_or_create_dealer, run only from an order/invoice
+    upload, is the one place a dealer actually gets created). dealer_id was originally
+    NOT NULL, from back when every submitted order necessarily named a real dealer.
+    """
+    try:
+        rows = mysql_manager.execute_query(
+            """SELECT IS_NULLABLE FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'submitted_orders'
+                  AND COLUMN_NAME = 'dealer_id'""")
+        if not rows or rows[0]['IS_NULLABLE'] == 'YES':
+            return  # column absent (pre-v2 db) or already nullable
+        mysql_manager.execute_query(
+            "ALTER TABLE submitted_orders MODIFY COLUMN dealer_id INT NULL", fetch=False)
+        logger.info("submitted_orders.dealer_id widened to nullable")
+    except Exception:
+        logger.exception("submitted_orders.dealer_id nullable migration failed")
 
 
 def _migrate_product_gst_percent():

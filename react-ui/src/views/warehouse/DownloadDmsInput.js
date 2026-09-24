@@ -45,7 +45,6 @@ import {
   rejectSubmittedOrder,
   createCartOrder,
   getOrderDealers,
-  createOrderDealer,
   getOrderProducts
 } from '../../services/orderService';
 import { dealerLabel } from '../../utils/dealerLabel';
@@ -109,7 +108,13 @@ const DownloadDmsInput = () => {
 
   // Add-order dialog — raise an order by hand, built line by line from the catalogue.
   // It becomes an ordinary order in this same list.
-  const BLANK_ORDER = { companyId: '', dealerId: '', warehouseId: '', notes: '', expectedDate: '' };
+  // pendingDealerName/pendingDealerTown and dealerId are mutually exclusive — a
+  // dealer not yet in the picker is carried on the order itself (see submitNewDealer),
+  // never as a new row in the dealer table.
+  const BLANK_ORDER = {
+    companyId: '', dealerId: '', pendingDealerName: '', pendingDealerTown: '',
+    warehouseId: '', notes: '', expectedDate: ''
+  };
   const [addOpen, setAddOpen] = useState(false);
   const [newOrder, setNewOrder] = useState(BLANK_ORDER);
   const [creating, setCreating] = useState(false);
@@ -118,11 +123,13 @@ const DownloadDmsInput = () => {
 
   // "Add new dealer" — a small sub-dialog off the dealer picker, for the dealer that
   // isn't in the list yet (a new outlet, or one the app just hasn't seen an order/
-  // invoice for). Deliberately minimal: name is all that's required.
+  // invoice for). Deliberately minimal: name is all that's required. This never talks
+  // to the backend — it just fills pendingDealerName/Town on newOrder above; the order
+  // carries the typed name itself rather than a new dealer record (see
+  // SubmittedOrderCartCreate on the backend for why).
   const [newDealerOpen, setNewDealerOpen] = useState(false);
   const [newDealerName, setNewDealerName] = useState('');
   const [newDealerTown, setNewDealerTown] = useState('');
-  const [creatingDealer, setCreatingDealer] = useState(false);
 
   // [{ key, product, qtyByUom: { STRIP: '2', BOX: '', CASE: '1' } }] — a row per
   // product, however many of its units the operator actually filled in.
@@ -264,32 +271,26 @@ const DownloadDmsInput = () => {
     setNewDealerOpen(true);
   };
 
-  // Adds the new dealer straight into this dialog's own dealer list and selects it —
-  // no need to close Add Order and reopen it to pick up what was just created.
-  const submitNewDealer = async () => {
+  // Just fills pendingDealerName/Town on the order draft — nothing is sent to the
+  // backend here. No dealer row exists until this order is submitted and, later, an
+  // order/invoice upload happens to name this same dealer; see createCartOrder /
+  // SubmittedOrderCartCreate.
+  const submitNewDealer = () => {
     const name = newDealerName.trim();
-    if (!name || !newOrder.companyId) return;
-    setCreatingDealer(true);
-    try {
-      const data = await createOrderDealer({ name, companyId: newOrder.companyId, town: newDealerTown.trim() });
-      if (data.success) {
-        const d = data.dealer;
-        setDealers((ds) => (ds.some((x) => x.dealer_id === d.dealer_id) ? ds : [...ds, d].sort((a, b) => a.name.localeCompare(b.name))));
-        setNewOrder((o) => ({ ...o, dealerId: d.dealer_id }));
-        setNewDealerOpen(false);
-        notify(`${d.name} added — GSTIN, address and the rest will fill in on their own once an order or invoice names this dealer.`);
-      } else {
-        notify(data.msg || 'Could not create this dealer.', 'error');
-      }
-    } catch (e) {
-      notify(e?.response?.data?.msg || 'Could not create this dealer.', 'error');
-    } finally {
-      setCreatingDealer(false);
-    }
+    if (!name) return;
+    setNewOrder((o) => ({
+      ...o, dealerId: '', pendingDealerName: name, pendingDealerTown: newDealerTown.trim()
+    }));
+    setNewDealerOpen(false);
   };
 
+  const clearPendingDealer = () =>
+    setNewOrder((o) => ({ ...o, pendingDealerName: '', pendingDealerTown: '' }));
+
   const canCreate =
-    !!newOrder.companyId && !!newOrder.dealerId && !creating && cartPayloadItems.length > 0;
+    !!newOrder.companyId &&
+    (!!newOrder.dealerId || !!newOrder.pendingDealerName) &&
+    !creating && cartPayloadItems.length > 0;
 
   const submitNewOrder = async () => {
     if (!canCreate) return;
@@ -297,7 +298,9 @@ const DownloadDmsInput = () => {
     try {
       const data = await createCartOrder({
         items: cartPayloadItems,
-        dealerId: newOrder.dealerId,
+        dealerId: newOrder.dealerId || undefined,
+        newDealerName: newOrder.pendingDealerName || undefined,
+        newDealerTown: newOrder.pendingDealerTown || undefined,
         companyId: newOrder.companyId,
         warehouseId: newOrder.warehouseId,
         notes: newOrder.notes,
@@ -544,7 +547,14 @@ const DownloadDmsInput = () => {
                           <IconChevronRight size={18} style={{ color: '#9e9e9e' }} />
                         </TableCell>
                         <TableCell>{o.order_number || `#${o.order_id}`}</TableCell>
-                        <TableCell>{dealerLabel(o.dealer_name, o.dealer_town)}</TableCell>
+                        <TableCell>
+                          {dealerLabel(o.dealer_name, o.dealer_town)}
+                          {o.is_pending_dealer && (
+                            <Typography variant="caption" color="textSecondary" sx={{ ml: 0.5 }}>
+                              (new)
+                            </Typography>
+                          )}
+                        </TableCell>
                         {/* Who raised it in the app. Not the dealer's assigned executive —
                             that can be a different person from whoever actually placed it. */}
                         <TableCell>{o.sales_executive_name || '—'}</TableCell>
@@ -662,8 +672,13 @@ const DownloadDmsInput = () => {
                   label="Company"
                   onChange={(e) =>
                     // Changing company invalidates the chosen dealer — it may not belong
-                    // to the new one, and the backend would reject the pairing.
-                    setNewOrder((o) => ({ ...o, companyId: e.target.value, dealerId: '' }))
+                    // to the new one, and the backend would reject the pairing. Same for
+                    // a pending (not-yet-real) dealer name — it was typed against the old
+                    // company's context.
+                    setNewOrder((o) => ({
+                      ...o, companyId: e.target.value, dealerId: '',
+                      pendingDealerName: '', pendingDealerTown: ''
+                    }))
                   }
                 >
                   {companies.map((c) => (
@@ -675,65 +690,93 @@ const DownloadDmsInput = () => {
               </FormControl>
             </Grid>
             <Grid item xs={12} sm={6}>
-              <Autocomplete
-                fullWidth
-                size="small"
-                options={dealers}
-                value={dealers.find((d) => d.dealer_id === newOrder.dealerId) || null}
-                onChange={(e, v) => setNewOrder((o) => ({ ...o, dealerId: v ? v.dealer_id : '' }))}
-                getOptionLabel={(d) => dealerLabel(`${d.name}${d.dealer_code ? ` (${d.dealer_code})` : ''}`, d.town)}
-                isOptionEqualToValue={(o, v) => o.dealer_id === v.dealer_id}
-                // Matches name, code and town, so typing a town narrows a long dealer list
-                // just as well as typing the name does.
-                filterOptions={(opts, { inputValue }) => {
-                  const t = inputValue.trim().toLowerCase();
-                  if (!t) return opts;
-                  return opts.filter((d) =>
-                    `${d.name} ${d.dealer_code || ''} ${d.town || ''}`.toLowerCase().includes(t)
-                  );
-                }}
-                renderOption={(props, d) => (
-                  <li {...props} key={d.dealer_id}>
-                    <Box>
-                      <Typography variant="body2">
-                        {d.name}
-                        {d.dealer_code ? ` (${d.dealer_code})` : ''}
+              {newOrder.pendingDealerName ? (
+                // A dealer typed by hand rather than picked — nothing has been saved to
+                // the dealer table yet, so this is shown as a draft, not a real selection.
+                <Box
+                  sx={{
+                    border: '1px dashed', borderColor: 'divider', borderRadius: 1,
+                    p: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between'
+                  }}
+                >
+                  <Box>
+                    <Typography variant="body2">
+                      {newOrder.pendingDealerName}
+                      <Typography component="span" variant="caption" color="textSecondary" sx={{ ml: 1 }}>
+                        (new dealer)
                       </Typography>
-                      {d.town && (
-                        <Typography variant="caption" color="textSecondary">
-                          {d.town}
+                    </Typography>
+                    {newOrder.pendingDealerTown && (
+                      <Typography variant="caption" color="textSecondary" display="block">
+                        {newOrder.pendingDealerTown}
+                      </Typography>
+                    )}
+                  </Box>
+                  <Button size="small" onClick={clearPendingDealer}>
+                    Change
+                  </Button>
+                </Box>
+              ) : (
+                <Autocomplete
+                  fullWidth
+                  size="small"
+                  options={dealers}
+                  value={dealers.find((d) => d.dealer_id === newOrder.dealerId) || null}
+                  onChange={(e, v) => setNewOrder((o) => ({ ...o, dealerId: v ? v.dealer_id : '' }))}
+                  getOptionLabel={(d) => dealerLabel(`${d.name}${d.dealer_code ? ` (${d.dealer_code})` : ''}`, d.town)}
+                  isOptionEqualToValue={(o, v) => o.dealer_id === v.dealer_id}
+                  // Matches name, code and town, so typing a town narrows a long dealer list
+                  // just as well as typing the name does.
+                  filterOptions={(opts, { inputValue }) => {
+                    const t = inputValue.trim().toLowerCase();
+                    if (!t) return opts;
+                    return opts.filter((d) =>
+                      `${d.name} ${d.dealer_code || ''} ${d.town || ''}`.toLowerCase().includes(t)
+                    );
+                  }}
+                  renderOption={(props, d) => (
+                    <li {...props} key={d.dealer_id}>
+                      <Box>
+                        <Typography variant="body2">
+                          {d.name}
+                          {d.dealer_code ? ` (${d.dealer_code})` : ''}
                         </Typography>
-                      )}
-                    </Box>
-                  </li>
-                )}
-                loading={dealersLoading}
-                disabled={!newOrder.companyId || dealersLoading}
-                noOptionsText={newOrder.companyId ? 'No active dealers for this company' : 'Choose a company first'}
-                renderInput={(params) => (
-                  <TextField
-                    {...params}
-                    required
-                    label="Dealer"
-                    placeholder={newOrder.companyId ? 'Search by name or town' : ''}
-                    InputProps={{
-                      ...params.InputProps,
-                      endAdornment: (
-                        <>
-                          {dealersLoading ? <CircularProgress size={16} /> : null}
-                          {params.InputProps.endAdornment}
-                        </>
-                      )
-                    }}
-                  />
-                )}
-              />
-              {newOrder.companyId && !dealersLoading && dealers.length === 0 && (
+                        {d.town && (
+                          <Typography variant="caption" color="textSecondary">
+                            {d.town}
+                          </Typography>
+                        )}
+                      </Box>
+                    </li>
+                  )}
+                  loading={dealersLoading}
+                  disabled={!newOrder.companyId || dealersLoading}
+                  noOptionsText={newOrder.companyId ? 'No active dealers for this company' : 'Choose a company first'}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      required
+                      label="Dealer"
+                      placeholder={newOrder.companyId ? 'Search by name or town' : ''}
+                      InputProps={{
+                        ...params.InputProps,
+                        endAdornment: (
+                          <>
+                            {dealersLoading ? <CircularProgress size={16} /> : null}
+                            {params.InputProps.endAdornment}
+                          </>
+                        )
+                      }}
+                    />
+                  )}
+                />
+              )}
+              {newOrder.companyId && !newOrder.pendingDealerName && !dealersLoading && dealers.length === 0 && (
                 <Typography variant="caption" color="error">
                   No active dealers for this company.
                 </Typography>
               )}
-              {newOrder.companyId && (
+              {newOrder.companyId && !newOrder.pendingDealerName && (
                 <Typography variant="caption" color="textSecondary" sx={{ mt: 0.5, display: 'block' }}>
                   Dealer not listed?{' '}
                   <Box
@@ -941,18 +984,17 @@ const DownloadDmsInput = () => {
         </DialogActions>
       </Dialog>
 
-      {/* Add new dealer — deliberately just a name (+ optional town). Everything else
-          on the dealer (GSTIN, address, phone, drug licence...) fills itself in the
-          moment this same name appears on a future order or invoice upload, the same
-          way it already would for a dealer this screen had never seen before — see
-          dealer_business.get_or_create_dealer / _fill_blank_details. */}
-      <Dialog open={newDealerOpen} onClose={() => !creatingDealer && setNewDealerOpen(false)} maxWidth="xs" fullWidth>
+      {/* Add new dealer — for this order only. Nothing is saved to the dealer list here;
+          the name is just carried on this order (pending_dealer_name/town on the
+          backend). A real dealer only ever gets created by an order or invoice upload
+          that names this same dealer — see dealer_business.get_or_create_dealer. */}
+      <Dialog open={newDealerOpen} onClose={() => setNewDealerOpen(false)} maxWidth="xs" fullWidth>
         <DialogTitle>Add New Dealer</DialogTitle>
         <DialogContent dividers>
           <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
-            Enter the name exactly as it appears on their orders or invoices — that's how a
-            future upload will recognise this dealer and fill in the rest (GSTIN, address,
-            phone...) on its own.
+            This name is used for this order only — it doesn't add the dealer anywhere
+            else. A real dealer record is created the next time an order or invoice
+            upload names this exact dealer.
           </Typography>
           <Stack spacing={2}>
             <TextField
@@ -974,16 +1016,16 @@ const DownloadDmsInput = () => {
           </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setNewDealerOpen(false)} disabled={creatingDealer}>
+          <Button onClick={() => setNewDealerOpen(false)}>
             Cancel
           </Button>
           <Button
             variant="contained"
             onClick={submitNewDealer}
-            disabled={!newDealerName.trim() || creatingDealer}
-            startIcon={creatingDealer ? <CircularProgress size={16} color="inherit" /> : <IconPlus size={16} />}
+            disabled={!newDealerName.trim()}
+            startIcon={<IconPlus size={16} />}
           >
-            Add Dealer
+            Use This Dealer
           </Button>
         </DialogActions>
       </Dialog>
