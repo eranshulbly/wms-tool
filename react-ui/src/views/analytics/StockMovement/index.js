@@ -24,7 +24,7 @@ import {
   Tab,
 } from '@material-ui/core';
 import { makeStyles } from '@material-ui/styles';
-import { IconRefresh, IconDownload } from '@tabler/icons';
+import { IconRefresh, IconDownload, IconAlertTriangle } from '@tabler/icons';
 import api from '../../../services/api';
 import { useWarehouse } from '../../../context/WarehouseContext';
 import { useColumnSearch } from '../../../hooks/useColumnSearch';
@@ -604,6 +604,18 @@ const StockMovement = () => {
                     if (c.key === 'sale_rate_month') {
                       return (
                         <TableCell key={c.key} align="right" className={classes.num}>
+                          {r.thin_history && (
+                            <Tooltip
+                              title={`Based on only ${r.observed_days} day${
+                                r.observed_days === 1 ? '' : 's'
+                              } of sales history — an early estimate, not a settled rate.`}
+                            >
+                              <IconAlertTriangle
+                                size={13}
+                                style={{ color: '#b45309', verticalAlign: 'text-bottom', marginRight: 4 }}
+                              />
+                            </Tooltip>
+                          )}
                           {render(c.type, r.sale_rate_month)}
                         </TableCell>
                       );
@@ -631,9 +643,13 @@ const StockMovement = () => {
       {data && (
         <Typography variant="caption" className={classes.muted} display="block" sx={{ mt: 1 }}>
           Showing {productSearch.visible.length} of {rows.length} products · sale rate measured over the last{' '}
-          {data.window_days} days · as of {data.as_of}. Cover is stock ÷ sale rate. Value at risk is
-          the stock that will still be on hand when the earliest batch in stock expires, at landed
-          cost — blank where there is no sale history to project from.
+          {data.window_days} days (or however much of that a product has actually been moving for) · as of{' '}
+          {data.as_of}. Cover is stock ÷ sale rate. Under 14 days of history, the rate is divided by 14
+          days regardless — marked{' '}
+          <IconAlertTriangle size={12} style={{ color: '#b45309', verticalAlign: 'text-bottom' }} /> — so one
+          early order can&apos;t alone set a month&apos;s projected pace. Value at risk is the stock that
+          will still be on hand when the earliest batch in stock expires, at landed cost — blank where
+          there is no sale history to project from.
         </Typography>
       )}
         </>

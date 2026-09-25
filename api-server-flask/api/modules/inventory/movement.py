@@ -30,6 +30,17 @@ logger = get_logger(__name__)
 # A month, for turning a per-day rate into the per-month figure the trade quotes.
 DAYS_PER_MONTH = 30.4375
 
+# Below this many days of actual history, dividing by observed_days lets a single order
+# set the whole month's projected rate: 500 units shipped on day one of a brand-new
+# product divides by observed_days=1 (or 2, counting inclusively) and reports as if that
+# pace repeats for a month — ~7,600/month off one order. The floor damps that: the rate
+# still uses the real units sold, just divided by at least this many days, so one early
+# order reads as a cautious estimate rather than a confident monthly run rate.
+# observed_days itself is left untouched — the true, shorter figure stays visible in the
+# row (and is what a caller can use to flag the estimate as thin) even though the rate
+# calculation itself no longer swings on it alone.
+MIN_RATE_DAYS = 14
+
 # How far back the ledger is read for a product's first-movement date and lifetime sales.
 # Bounded so the query prunes partitions instead of scanning the archive.
 HISTORY_MONTHS = 24
@@ -254,7 +265,11 @@ def _row(pid, st, mv, prod, today, window_days):
     ever_sold = out_history > 0
     rate_month = None
     if ever_sold:
-        rate_month = out_window / observed_days * DAYS_PER_MONTH
+        # See MIN_RATE_DAYS: the divisor is floored, not observed_days itself, so a
+        # thin-history product still gets a real (cautious) rate rather than one order
+        # multiplied straight up to a month.
+        rate_month = out_window / max(observed_days, MIN_RATE_DAYS) * DAYS_PER_MONTH
+    thin_history = ever_sold and observed_days < MIN_RATE_DAYS
 
     months_cover = None
     if rate_month:
@@ -303,6 +318,10 @@ def _row(pid, st, mv, prod, today, window_days):
         'landed_unit': round(landed_unit, 4) if landed_unit is not None else None,
 
         'sale_rate_month': round(rate_month, 1) if rate_month is not None else None,
+        # True when the rate above is still resting on fewer than MIN_RATE_DAYS of real
+        # history (observed_days below stays the true, un-floored figure) — a caller can
+        # use this to flag the number as an early estimate rather than a settled run rate.
+        'thin_history': thin_history,
         'sold_in_window': round(out_window, 2),
         'sold_lifetime': round(out_history, 2),
         'observed_days': observed_days,
