@@ -13,6 +13,14 @@ ledger is the only record that outlives the document: an order can be deleted, r
 or corrected, but the units that physically left are still written here, once, at the
 moment stock actually moved — whatever paperwork caused it.
 
+A negative quantity_changed is not always a sale, though — the ledger also carries
+administrative corrections that reduce stock without a dealer ever buying anything. An
+ingestion credit/debit note explicitly marked as returning goods (movement_effect='OUT',
+see ingestion/service.py:_ingest_document) writes a negative row with reference_type
+'CN'/'DN' — a return to the vendor, not a sale. "Sale rate" is only ever computed from
+rows whose reference_type names a real sale channel (SALE_REFERENCE_TYPES below); anything
+else is excluded outright rather than trusted by its sign alone.
+
 The derived figures (run rate, cover, risk band) are computed in Python rather than SQL.
 They are the part a reader will argue with, so they are kept where they can be read.
 """
@@ -40,6 +48,16 @@ DAYS_PER_MONTH = 30.4375
 # row (and is what a caller can use to flag the estimate as thin) even though the rate
 # calculation itself no longer swings on it alone.
 MIN_RATE_DAYS = 14
+
+# The only ledger reference_types that represent a genuine sale — real stock leaving to
+# fill a dealer's order. Both close an actual order: 'INVOICE' when an order is closed
+# directly on its invoice (fulfillment/invoice/repository.py -> inventory.service.
+# deduct_batches), 'DMS' when an app-submitted order's parts are allocated against live
+# stock for its DMS download (order/router_dashboard.py -> inventory.service.
+# allocate_live). Everything else that can carry a negative quantity_changed is an
+# administrative movement, not a sale — see the module docstring — and is excluded by
+# name rather than trusted because its sign happens to be negative.
+SALE_REFERENCE_TYPES = ('INVOICE', 'DMS')
 
 # How far back the ledger is read for a product's first-movement date and lifetime sales.
 # Bounded so the query prunes partitions instead of scanning the archive.
@@ -92,7 +110,11 @@ SELECT  s.entity_id                                                AS product_id
 """
 
 # Movement, folded to one row per product. created_on is bounded so MySQL prunes the
-# monthly partitions rather than reading the archive.
+# monthly partitions rather than reading the archive. reference_type is restricted to
+# SALE_REFERENCE_TYPES (see its own note) — every row this query sees is already a real
+# sale, so "quantity_changed < 0" only exists here to be defensive; nothing in
+# SALE_REFERENCE_TYPES is ever expected to be positive, but a sign flip anywhere upstream
+# should still fail closed (excluded) rather than be counted as a sale of the wrong sign.
 _MOVE_SQL = """
 SELECT  l.entity_id                                                AS product_id,
         SUM(CASE WHEN l.quantity_changed < 0 AND l.created_on >= %s
@@ -103,6 +125,7 @@ SELECT  l.entity_id                                                AS product_id
         MAX(CASE WHEN l.quantity_changed < 0 THEN l.created_on END) AS last_sale
   FROM  fc_entity_stock_ledger l
  WHERE  l.entity_type = 'sku'
+   AND  l.reference_type IN ({sale_types})
    AND  l.created_on >= %s
    AND  {company}
  GROUP BY l.entity_id
@@ -223,8 +246,11 @@ def movement_report(company_ids=None, window_days=90, as_of=None):
     window_start = now - timedelta(days=window_days)
     history_start = now - timedelta(days=int(HISTORY_MONTHS * DAYS_PER_MONTH))
 
+    # window_start, then the sale-types IN-list, then history_start — must line up
+    # left-to-right with the %s placeholders as they appear in _MOVE_SQL's text.
+    sale_types_sql = ','.join(['%s'] * len(SALE_REFERENCE_TYPES))
     stock_where, stock_params = '1=1', []
-    move_where, move_params = '1=1', [window_start, history_start]
+    move_where, move_params = '1=1', [window_start, *SALE_REFERENCE_TYPES, history_start]
     first_stock_where, first_stock_params = '1=1', []
     if company_ids is not None:
         stock_where = _in_clause('s.company_id', company_ids)
@@ -237,7 +263,7 @@ def movement_report(company_ids=None, window_days=90, as_of=None):
     stock = {int(r['product_id']): r for r in (mysql_manager.execute_query(
         _STOCK_SQL.format(company=stock_where), tuple(stock_params)) or [])}
     moves = {int(r['product_id']): r for r in (mysql_manager.execute_query(
-        _MOVE_SQL.format(company=move_where), tuple(move_params)) or [])}
+        _MOVE_SQL.format(company=move_where, sale_types=sale_types_sql), tuple(move_params)) or [])}
     first_stocked = {int(r['product_id']): r['first_stocked'] for r in (mysql_manager.execute_query(
         _FIRST_STOCK_SQL.format(company=first_stock_where), tuple(first_stock_params)) or [])}
 
