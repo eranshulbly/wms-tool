@@ -108,6 +108,21 @@ SELECT  s.entity_id                                                AS product_id
 # monthly partitions rather than reading the archive — HISTORY_DAYS, not a recency
 # window (see its own note: there is no "measured over N days" choice any more). Every
 # sale within that reach counts, once, with nothing narrower cutting it down further.
+# That WHERE-clause cutoff has to stay on l.created_on itself (the partitioned column) —
+# it is what lets MySQL skip whole partitions rather than a performance concern this
+# query can trade away.
+#
+# But created_on is when the LEDGER ROW was written, not when the sale actually
+# happened — deduct_batches() (inventory/service.py, run when an order is closed on its
+# invoice) never sets created_on explicitly, so it defaults to CURRENT_TIMESTAMP: the
+# moment the invoice was uploaded and processed, not the date printed on it. An invoice
+# dated 1 Aug uploaded on the 10th would otherwise make the product look like it only
+# started selling on the 10th. first_move/last_sale below use invoice.invoice_date
+# instead, for exactly the rows that can disagree with created_on this way (reference_
+# type='INVOICE'); DMS rows have no separate document to lag behind — allocate_live()
+# deducts stock at the moment the DMS file is generated, so created_on already is the
+# real dispatch moment for those, and is kept as-is.
+#
 # reference_type is restricted to SALE_REFERENCE_TYPES (see its own note) — every row
 # this query sees is already a real sale, so "quantity_changed < 0" only exists here to
 # be defensive; nothing in SALE_REFERENCE_TYPES is ever expected to be positive, but a
@@ -117,30 +132,25 @@ _MOVE_SQL = """
 SELECT  l.entity_id                                                AS product_id,
         SUM(CASE WHEN l.quantity_changed < 0
                  THEN -l.quantity_changed ELSE 0 END)              AS sold,
-        MIN(l.created_on)                                          AS first_move,
-        MAX(CASE WHEN l.quantity_changed < 0 THEN l.created_on END) AS last_sale
+        MIN(CASE WHEN l.reference_type = 'INVOICE'
+                 THEN COALESCE(inv.invoice_date, l.created_on)
+                 ELSE l.created_on END)                            AS first_move,
+        MAX(CASE WHEN l.quantity_changed >= 0 THEN NULL
+                 WHEN l.reference_type = 'INVOICE'
+                 THEN COALESCE(inv.invoice_date, l.created_on)
+                 ELSE l.created_on END)                            AS last_sale
   FROM  fc_entity_stock_ledger l
+  LEFT JOIN (
+        SELECT potential_order_id, MIN(invoice_date) AS invoice_date
+          FROM invoice
+         WHERE cancellation_date IS NULL
+         GROUP BY potential_order_id
+        ) inv ON l.reference_type = 'INVOICE' AND inv.potential_order_id = l.reference_id
  WHERE  l.entity_type = 'sku'
    AND  l.reference_type IN ({sale_types})
    AND  l.created_on >= %s
    AND  {company}
  GROUP BY l.entity_id
-"""
-
-# When this product's inventory first entered the system at all — sku_batch is a
-# permanent batch-identity record, created once (resolve_batch(), ingestion/service.py)
-# the first time a batch is ever received for a product, and never deleted even once
-# that batch fully sells out. Unlike the ledger's own MIN(created_on) (_MOVE_SQL above),
-# this is not bounded by HISTORY_MONTHS, and does not depend on a GRN ledger row
-# existing at all — some older/migrated stock has a sku_batch row but no matching ledger
-# entry (confirmed on this company's own data). This is the authoritative "first
-# stocked" date; _MOVE_SQL's first_move is kept only as a fallback for a product with no
-# sku_batch row at all (not batch-tracked).
-_FIRST_STOCK_SQL = """
-SELECT  sku_id AS product_id, MIN(created_on) AS first_stocked
-  FROM  sku_batch
- WHERE  {company}
- GROUP BY sku_id
 """
 
 # On-hand stock, one row per (product, batch) — the detail _STOCK_SQL folds away.
@@ -247,21 +257,16 @@ def movement_report(company_ids=None, as_of=None):
     sale_types_sql = ','.join(['%s'] * len(SALE_REFERENCE_TYPES))
     stock_where, stock_params = '1=1', []
     move_where, move_params = '1=1', [*SALE_REFERENCE_TYPES, history_start]
-    first_stock_where, first_stock_params = '1=1', []
     if company_ids is not None:
         stock_where = _in_clause('s.company_id', company_ids)
         stock_params = list(company_ids)
         move_where = _in_clause('l.company_id', company_ids)
         move_params += list(company_ids)
-        first_stock_where = _in_clause('company_id', company_ids)
-        first_stock_params = list(company_ids)
 
     stock = {int(r['product_id']): r for r in (mysql_manager.execute_query(
         _STOCK_SQL.format(company=stock_where), tuple(stock_params)) or [])}
     moves = {int(r['product_id']): r for r in (mysql_manager.execute_query(
         _MOVE_SQL.format(company=move_where, sale_types=sale_types_sql), tuple(move_params)) or [])}
-    first_stocked = {int(r['product_id']): r['first_stocked'] for r in (mysql_manager.execute_query(
-        _FIRST_STOCK_SQL.format(company=first_stock_where), tuple(first_stock_params)) or [])}
 
     # A product belongs in the report if it holds stock or has moved. Products that do
     # neither are catalogue entries with no inventory story to tell, and listing all of
@@ -273,8 +278,8 @@ def movement_report(company_ids=None, as_of=None):
     products = {int(r['product_id']): r for r in (mysql_manager.execute_query(
         _PRODUCT_SQL.format(ids=','.join(['%s'] * len(ids))), tuple(ids)) or [])}
 
-    rows = [_row(pid, stock.get(pid), moves.get(pid), products.get(pid, {}),
-                 today, first_stocked.get(pid)) for pid in ids]
+    rows = [_row(pid, stock.get(pid), moves.get(pid), products.get(pid, {}), today)
+            for pid in ids]
 
     # Worst first: the biggest money that will not clear before it expires. A planner
     # opening this report wants the top of the list to be the next thing to act on.
@@ -290,24 +295,20 @@ def _row(pid, st, mv, prod, today, first_stocked=None):
     stock_units = _f(st and st['stock_units']) or 0.0
     sold = _f(mv and mv['sold']) or 0.0
 
-    # The rate is measured over the days the product has actually been available, not
-    # HISTORY_DAYS in full. Stock received three weeks ago has three weeks of history;
-    # dividing its sales by two years would report it as a sliver of its real rate and
-    # hide a stockout. Capped at HISTORY_DAYS at the other end, since `sold` itself can't
-    # see further back than that (_MOVE_SQL's own read bound) — a product older than
-    # that must not be divided by more days than its sales figure can account for.
-    #
-    # "Available" means since this product's inventory first entered the system at all —
-    # sku_batch's own created_on (first_stocked, from _FIRST_STOCK_SQL), not the first
-    # SALE. The ledger's own MIN(created_on) (mv['first_move']) is kept only as a
-    # fallback for a product with no sku_batch row (not batch-tracked) — see
-    # _FIRST_STOCK_SQL's own note.
+    # The rate is measured over the days since this product's first sale (first_move —
+    # MIN(created_on) among its INVOICE/DMS ledger rows, from _MOVE_SQL), not since it
+    # was first stocked. Stock can sit on the shelf for weeks before anyone buys it; that
+    # dead time is not part of how fast the product moves once it IS moving, and counting
+    # it against the rate would understate a product that sold briskly the moment it
+    # started selling. Capped at HISTORY_DAYS, since `sold` itself can't see further back
+    # than that (_MOVE_SQL's own read bound) — a product selling longer than that must
+    # not be divided by more days than its sales figure can account for.
     observed_days = HISTORY_DAYS
-    first_seen = first_stocked or (mv and mv['first_move'])
-    if first_seen:
-        if isinstance(first_seen, datetime):
-            first_seen = first_seen.date()
-        observed_days = min(HISTORY_DAYS, max((today - first_seen).days + 1, 1))
+    first_sale = mv and mv['first_move']
+    if first_sale:
+        if isinstance(first_sale, datetime):
+            first_sale = first_sale.date()
+        observed_days = min(HISTORY_DAYS, max((today - first_sale).days + 1, 1))
 
     # A product that has never shipped has no rate — not a rate of zero. The difference
     # matters downstream: a measured zero means the stock is provably not moving, while
