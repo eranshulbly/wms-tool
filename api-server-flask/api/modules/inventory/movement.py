@@ -108,6 +108,22 @@ SELECT  l.entity_id                                                AS product_id
  GROUP BY l.entity_id
 """
 
+# When this product's inventory first entered the system at all — sku_batch is a
+# permanent batch-identity record, created once (resolve_batch(), ingestion/service.py)
+# the first time a batch is ever received for a product, and never deleted even once
+# that batch fully sells out. Unlike the ledger's own MIN(created_on) (_MOVE_SQL above),
+# this is not bounded by HISTORY_MONTHS, and does not depend on a GRN ledger row
+# existing at all — some older/migrated stock has a sku_batch row but no matching ledger
+# entry (confirmed on this company's own data). This is the authoritative "first
+# stocked" date; _MOVE_SQL's first_move is kept only as a fallback for a product with no
+# sku_batch row at all (not batch-tracked).
+_FIRST_STOCK_SQL = """
+SELECT  sku_id AS product_id, MIN(created_on) AS first_stocked
+  FROM  sku_batch
+ WHERE  {company}
+ GROUP BY sku_id
+"""
+
 # On-hand stock, one row per (product, batch) — the detail _STOCK_SQL folds away.
 # Landing cost is net of any credit note, same as everywhere else it's read (see
 # order/pricing.py) — a batch whose price never arrived leaves landing_price null
@@ -209,16 +225,21 @@ def movement_report(company_ids=None, window_days=90, as_of=None):
 
     stock_where, stock_params = '1=1', []
     move_where, move_params = '1=1', [window_start, history_start]
+    first_stock_where, first_stock_params = '1=1', []
     if company_ids is not None:
         stock_where = _in_clause('s.company_id', company_ids)
         stock_params = list(company_ids)
         move_where = _in_clause('l.company_id', company_ids)
         move_params += list(company_ids)
+        first_stock_where = _in_clause('company_id', company_ids)
+        first_stock_params = list(company_ids)
 
     stock = {int(r['product_id']): r for r in (mysql_manager.execute_query(
         _STOCK_SQL.format(company=stock_where), tuple(stock_params)) or [])}
     moves = {int(r['product_id']): r for r in (mysql_manager.execute_query(
         _MOVE_SQL.format(company=move_where), tuple(move_params)) or [])}
+    first_stocked = {int(r['product_id']): r['first_stocked'] for r in (mysql_manager.execute_query(
+        _FIRST_STOCK_SQL.format(company=first_stock_where), tuple(first_stock_params)) or [])}
 
     # A product belongs in the report if it holds stock or has moved. Products that do
     # neither are catalogue entries with no inventory story to tell, and listing all of
@@ -231,7 +252,7 @@ def movement_report(company_ids=None, window_days=90, as_of=None):
         _PRODUCT_SQL.format(ids=','.join(['%s'] * len(ids))), tuple(ids)) or [])}
 
     rows = [_row(pid, stock.get(pid), moves.get(pid), products.get(pid, {}),
-                 today, window_days) for pid in ids]
+                 today, window_days, first_stocked.get(pid)) for pid in ids]
 
     # Worst first: the biggest money that will not clear before it expires. A planner
     # opening this report wants the top of the list to be the next thing to act on.
@@ -244,7 +265,7 @@ def movement_report(company_ids=None, window_days=90, as_of=None):
             'window_days': window_days, 'as_of': today.isoformat()}
 
 
-def _row(pid, st, mv, prod, today, window_days):
+def _row(pid, st, mv, prod, today, window_days, first_stocked=None):
     stock_units = _f(st and st['stock_units']) or 0.0
     out_window = _f(mv and mv['out_window']) or 0.0
     out_history = _f(mv and mv['out_history']) or 0.0
@@ -252,12 +273,18 @@ def _row(pid, st, mv, prod, today, window_days):
     # The rate is measured over the days the product has actually been available, not
     # the full window. Stock received three weeks ago has three weeks of history; dividing
     # its sales by 90 days would report it as a third of its real rate and hide a stockout.
+    #
+    # "Available" means since this product's inventory first entered the system at all —
+    # sku_batch's own created_on (first_stocked, from _FIRST_STOCK_SQL), not the first
+    # SALE and not bounded by how far back the ledger read goes. The ledger's own
+    # MIN(created_on) (mv['first_move']) is kept only as a fallback for a product with
+    # no sku_batch row (not batch-tracked) — see _FIRST_STOCK_SQL's own note.
     observed_days = window_days
-    first_move = mv and mv['first_move']
-    if first_move:
-        if isinstance(first_move, datetime):
-            first_move = first_move.date()
-        observed_days = min(window_days, max((today - first_move).days + 1, 1))
+    first_seen = first_stocked or (mv and mv['first_move'])
+    if first_seen:
+        if isinstance(first_seen, datetime):
+            first_seen = first_seen.date()
+        observed_days = min(window_days, max((today - first_seen).days + 1, 1))
 
     # A product that has never shipped has no rate — not a rate of zero. The difference
     # matters downstream: a measured zero means the stock is provably not moving, while
