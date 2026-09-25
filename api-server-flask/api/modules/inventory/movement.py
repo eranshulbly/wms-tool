@@ -60,6 +60,15 @@ SALE_REFERENCE_TYPES = ('INVOICE', 'DMS')
 HISTORY_MONTHS = 24
 HISTORY_DAYS = int(HISTORY_MONTHS * DAYS_PER_MONTH)
 
+# When real sales activity actually began — a fixed, known go-live date, the same for
+# every product, rather than each product's own first-GRN/first-sale date. Per-product
+# dates kept surfacing data (seed/migration stock backdated for testing, duplicate
+# catalogue rows with their own separate history) that made two products' rates
+# incomparable for reasons that had nothing to do with how fast either one actually
+# sells. Everything sold before this date is still counted in `sold` (it is real
+# stock that really left) — only the denominator, observed_days, is pinned here.
+SALES_START_DATE = date(2026, 7, 29)
+
 # Ordered worst-first: this is also the order the UI lists them in, and the order that
 # decides which band a product falls into when more than one rule matches.
 BANDS = (
@@ -116,12 +125,13 @@ SELECT  s.entity_id                                                AS product_id
 # happened — deduct_batches() (inventory/service.py, run when an order is closed on its
 # invoice) never sets created_on explicitly, so it defaults to CURRENT_TIMESTAMP: the
 # moment the invoice was uploaded and processed, not the date printed on it. An invoice
-# dated 1 Aug uploaded on the 10th would otherwise make the product look like it only
-# started selling on the 10th. first_move/last_sale below use invoice.invoice_date
-# instead, for exactly the rows that can disagree with created_on this way (reference_
-# type='INVOICE'); DMS rows have no separate document to lag behind — allocate_live()
-# deducts stock at the moment the DMS file is generated, so created_on already is the
-# real dispatch moment for those, and is kept as-is.
+# dated 1 Aug uploaded on the 10th would otherwise make the product look like it sold on
+# the 10th. last_sale below uses invoice.invoice_date instead, for exactly the rows that
+# can disagree with created_on this way (reference_type='INVOICE'); DMS rows have no
+# separate document to lag behind — allocate_live() deducts stock at the moment the DMS
+# file is generated, so created_on already is the real dispatch moment for those, and is
+# kept as-is. (observed_days no longer reads a first-sale date from here at all — see
+# SALES_START_DATE; last_sale is kept purely for display/inspection.)
 #
 # reference_type is restricted to SALE_REFERENCE_TYPES (see its own note) — every row
 # this query sees is already a real sale, so "quantity_changed < 0" only exists here to
@@ -132,9 +142,6 @@ _MOVE_SQL = """
 SELECT  l.entity_id                                                AS product_id,
         SUM(CASE WHEN l.quantity_changed < 0
                  THEN -l.quantity_changed ELSE 0 END)              AS sold,
-        MIN(CASE WHEN l.reference_type = 'INVOICE'
-                 THEN COALESCE(inv.invoice_date, l.created_on)
-                 ELSE l.created_on END)                            AS first_move,
         MAX(CASE WHEN l.quantity_changed >= 0 THEN NULL
                  WHEN l.reference_type = 'INVOICE'
                  THEN COALESCE(inv.invoice_date, l.created_on)
@@ -148,30 +155,6 @@ SELECT  l.entity_id                                                AS product_id
         ) inv ON l.reference_type = 'INVOICE' AND inv.potential_order_id = l.reference_id
  WHERE  l.entity_type = 'sku'
    AND  l.reference_type IN ({sale_types})
-   AND  l.created_on >= %s
-   AND  {company}
- GROUP BY l.entity_id
-"""
-
-# When this product's inventory actually first came in — the GRN document's own printed
-# date, not when the receipt was processed. Ingestion never backdates anything to it
-# either: neither sku_batch.created_on nor the GRN ledger row's created_on is set to the
-# document's date (_ingest_document/_write_transfer_row, ingestion/service.py both leave
-# created_on to MySQL's own DEFAULT CURRENT_TIMESTAMP) — both stamp the moment the file
-# was processed, which can lag the document's own date by weeks, confirmed on this
-# company's own data (a GRN dated 30 Jun processed on 11 Aug). The document's real date
-# is only ever written into transferin_info.meta_info, a JSON blob with a 'date' key
-# (_meta_json, ingestion/service.py) — reached here the same way _MOVE_SQL reaches
-# invoice.invoice_date: through the ledger's reference_id, this time to the GRN write
-# rather than the INVOICE write.
-_FIRST_STOCK_SQL = """
-SELECT  l.entity_id AS product_id,
-        MIN(STR_TO_DATE(JSON_UNQUOTE(JSON_EXTRACT(ti.meta_info, '$.date')), '%%Y-%%m-%%d'))
-                                                              AS first_stocked
-  FROM  fc_entity_stock_ledger l
-  JOIN  transferin_info ti ON ti.id = l.reference_id
- WHERE  l.entity_type = 'sku'
-   AND  l.reference_type = 'GRN'
    AND  l.created_on >= %s
    AND  {company}
  GROUP BY l.entity_id
@@ -277,26 +260,20 @@ def movement_report(company_ids=None, as_of=None):
     history_start = now - timedelta(days=HISTORY_DAYS)
 
     # The sale-types IN-list, then history_start — must line up left-to-right with the
-    # %s placeholders as they appear in _MOVE_SQL's text. _FIRST_STOCK_SQL takes just
-    # history_start.
+    # %s placeholders as they appear in _MOVE_SQL's text.
     sale_types_sql = ','.join(['%s'] * len(SALE_REFERENCE_TYPES))
     stock_where, stock_params = '1=1', []
     move_where, move_params = '1=1', [*SALE_REFERENCE_TYPES, history_start]
-    first_stock_where, first_stock_params = '1=1', [history_start]
     if company_ids is not None:
         stock_where = _in_clause('s.company_id', company_ids)
         stock_params = list(company_ids)
         move_where = _in_clause('l.company_id', company_ids)
         move_params += list(company_ids)
-        first_stock_where = _in_clause('l.company_id', company_ids)
-        first_stock_params += list(company_ids)
 
     stock = {int(r['product_id']): r for r in (mysql_manager.execute_query(
         _STOCK_SQL.format(company=stock_where), tuple(stock_params)) or [])}
     moves = {int(r['product_id']): r for r in (mysql_manager.execute_query(
         _MOVE_SQL.format(company=move_where, sale_types=sale_types_sql), tuple(move_params)) or [])}
-    first_stocked = {int(r['product_id']): r['first_stocked'] for r in (mysql_manager.execute_query(
-        _FIRST_STOCK_SQL.format(company=first_stock_where), tuple(first_stock_params)) or [])}
 
     # A product belongs in the report if it holds stock or has moved. Products that do
     # neither are catalogue entries with no inventory story to tell, and listing all of
@@ -308,8 +285,7 @@ def movement_report(company_ids=None, as_of=None):
     products = {int(r['product_id']): r for r in (mysql_manager.execute_query(
         _PRODUCT_SQL.format(ids=','.join(['%s'] * len(ids))), tuple(ids)) or [])}
 
-    rows = [_row(pid, stock.get(pid), moves.get(pid), products.get(pid, {}), today,
-                 first_stocked.get(pid))
+    rows = [_row(pid, stock.get(pid), moves.get(pid), products.get(pid, {}), today)
             for pid in ids]
 
     # Worst first: the biggest money that will not clear before it expires. A planner
@@ -322,24 +298,17 @@ def movement_report(company_ids=None, as_of=None):
     return {'rows': jsonable(rows), 'summary': _summary(rows), 'as_of': today.isoformat()}
 
 
-def _row(pid, st, mv, prod, today, first_stocked=None):
+def _row(pid, st, mv, prod, today):
     stock_units = _f(st and st['stock_units']) or 0.0
     sold = _f(mv and mv['sold']) or 0.0
 
-    # The rate is measured over the days since this product's inventory first came in —
-    # first_stocked, the GRN document's own date (_FIRST_STOCK_SQL), not the first SALE
-    # and not when the receipt happened to be processed. mv['first_move'] (the ledger's
-    # own first sale date, from _MOVE_SQL) is kept only as a fallback for a product with
-    # no matching GRN row at all — see _FIRST_STOCK_SQL's own note for why that can
-    # legitimately happen. Capped at HISTORY_DAYS either way, since `sold` itself can't
-    # see further back than that (_MOVE_SQL's own read bound) — a product older than
-    # that must not be divided by more days than its sales figure can account for.
-    observed_days = HISTORY_DAYS
-    first_seen = first_stocked or (mv and mv['first_move'])
-    if first_seen:
-        if isinstance(first_seen, datetime):
-            first_seen = first_seen.date()
-        observed_days = min(HISTORY_DAYS, max((today - first_seen).days + 1, 1))
+    # The rate is measured over the days since SALES_START_DATE (see its own note) — one
+    # fixed date, the same for every product, rather than each product's own first-GRN
+    # or first-sale date. Still capped at HISTORY_DAYS as an outer bound, though in
+    # practice SALES_START_DATE is inside it: `sold` itself can't see further back than
+    # HISTORY_DAYS (_MOVE_SQL's own read bound), so nothing should ever be divided by
+    # more days than its sales figure can account for.
+    observed_days = min(HISTORY_DAYS, max((today - SALES_START_DATE).days + 1, 1))
 
     # A product that has never shipped has no rate — not a rate of zero. The difference
     # matters downstream: a measured zero means the stock is provably not moving, while
