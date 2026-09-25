@@ -48,17 +48,17 @@ DAYS_PER_MONTH = 30.4375
 # name rather than trusted because its sign happens to be negative.
 SALE_REFERENCE_TYPES = ('INVOICE', 'DMS')
 
-# How far back the ledger is read for a product's first-movement date and lifetime sales.
-# Bounded so the query prunes partitions instead of scanning the archive.
+# How far back the ledger is read for a product's sales, and the outer cap on how many
+# days a product's rate can be divided by (_row's observed_days). This is a technical
+# limit, not an analytical choice: MySQL prunes partitions older than this rather than
+# scanning the archive, so it has to be some bound. It is deliberately NOT a "sale rate
+# measured over N days" recency window — there is no such window any more (removed by
+# request, along with the dropdown that used to pick a shorter one and the floor that
+# used to protect a very new product's rate from one early order). Sale rate is simply
+# every recorded sale within this reach, divided by however many of these days the
+# product has actually existed for.
 HISTORY_MONTHS = 24
-
-# The recency window "sale rate" (and everything derived from it — cover, band,
-# rate-to-clear, at-risk) is measured over. Used to be a dropdown the operator could pick
-# (30/60/90/180/365 days); removed by request, so the risk bands and tiles can't be
-# second-guessed by re-running the report over a different window — one fixed period, not
-# a knob. 90 was the dropdown's own default, kept here so removing the control changed no
-# figures on the day it was removed.
-SALE_RATE_WINDOW_DAYS = 90
+HISTORY_DAYS = int(HISTORY_MONTHS * DAYS_PER_MONTH)
 
 # Ordered worst-first: this is also the order the UI lists them in, and the order that
 # decides which band a product falls into when more than one rule matches.
@@ -105,17 +105,18 @@ SELECT  s.entity_id                                                AS product_id
 """
 
 # Movement, folded to one row per product. created_on is bounded so MySQL prunes the
-# monthly partitions rather than reading the archive. reference_type is restricted to
-# SALE_REFERENCE_TYPES (see its own note) — every row this query sees is already a real
-# sale, so "quantity_changed < 0" only exists here to be defensive; nothing in
-# SALE_REFERENCE_TYPES is ever expected to be positive, but a sign flip anywhere upstream
-# should still fail closed (excluded) rather than be counted as a sale of the wrong sign.
+# monthly partitions rather than reading the archive — HISTORY_DAYS, not a recency
+# window (see its own note: there is no "measured over N days" choice any more). Every
+# sale within that reach counts, once, with nothing narrower cutting it down further.
+# reference_type is restricted to SALE_REFERENCE_TYPES (see its own note) — every row
+# this query sees is already a real sale, so "quantity_changed < 0" only exists here to
+# be defensive; nothing in SALE_REFERENCE_TYPES is ever expected to be positive, but a
+# sign flip anywhere upstream should still fail closed (excluded) rather than be counted
+# as a sale of the wrong sign.
 _MOVE_SQL = """
 SELECT  l.entity_id                                                AS product_id,
-        SUM(CASE WHEN l.quantity_changed < 0 AND l.created_on >= %s
-                 THEN -l.quantity_changed ELSE 0 END)              AS out_window,
         SUM(CASE WHEN l.quantity_changed < 0
-                 THEN -l.quantity_changed ELSE 0 END)              AS out_history,
+                 THEN -l.quantity_changed ELSE 0 END)              AS sold,
         MIN(l.created_on)                                          AS first_move,
         MAX(CASE WHEN l.quantity_changed < 0 THEN l.created_on END) AS last_sale
   FROM  fc_entity_stock_ledger l
@@ -230,22 +231,22 @@ def movement_report(company_ids=None, as_of=None):
     """One row per product: stock, run rate, cover, expiry and what it puts at risk.
 
     company_ids of [] means "scoped to nothing", which returns nothing rather than
-    everything — the same rule the other admin reports follow. The recency window is
-    fixed at SALE_RATE_WINDOW_DAYS, not a caller-supplied parameter — see its own note.
+    everything — the same rule the other admin reports follow. There is no recency
+    window any more — sale rate uses every recorded sale within HISTORY_DAYS' reach
+    (a technical bound, not an analytical one — see its own note).
     """
     if company_ids is not None and not company_ids:
-        return {'rows': [], 'summary': _summary([]), 'window_days': SALE_RATE_WINDOW_DAYS}
+        return {'rows': [], 'summary': _summary([])}
 
     today = as_of or date.today()
     now = datetime.combine(today, datetime.min.time()) + timedelta(days=1)
-    window_start = now - timedelta(days=SALE_RATE_WINDOW_DAYS)
-    history_start = now - timedelta(days=int(HISTORY_MONTHS * DAYS_PER_MONTH))
+    history_start = now - timedelta(days=HISTORY_DAYS)
 
-    # window_start, then the sale-types IN-list, then history_start — must line up
-    # left-to-right with the %s placeholders as they appear in _MOVE_SQL's text.
+    # The sale-types IN-list, then history_start — must line up left-to-right with the
+    # %s placeholders as they appear in _MOVE_SQL's text.
     sale_types_sql = ','.join(['%s'] * len(SALE_REFERENCE_TYPES))
     stock_where, stock_params = '1=1', []
-    move_where, move_params = '1=1', [window_start, *SALE_REFERENCE_TYPES, history_start]
+    move_where, move_params = '1=1', [*SALE_REFERENCE_TYPES, history_start]
     first_stock_where, first_stock_params = '1=1', []
     if company_ids is not None:
         stock_where = _in_clause('s.company_id', company_ids)
@@ -267,7 +268,7 @@ def movement_report(company_ids=None, as_of=None):
     # them would bury the ones that matter.
     ids = sorted(set(stock) | set(moves))
     if not ids:
-        return {'rows': [], 'summary': _summary([]), 'window_days': SALE_RATE_WINDOW_DAYS}
+        return {'rows': [], 'summary': _summary([])}
 
     products = {int(r['product_id']): r for r in (mysql_manager.execute_query(
         _PRODUCT_SQL.format(ids=','.join(['%s'] * len(ids))), tuple(ids)) or [])}
@@ -282,38 +283,39 @@ def movement_report(company_ids=None, as_of=None):
     rows.sort(key=lambda r: (-(r['value_at_risk'] or 0), -(r['stock_value'] or 0),
                              r['product_name'] or ''))
 
-    return {'rows': jsonable(rows), 'summary': _summary(rows),
-            'window_days': SALE_RATE_WINDOW_DAYS, 'as_of': today.isoformat()}
+    return {'rows': jsonable(rows), 'summary': _summary(rows), 'as_of': today.isoformat()}
 
 
 def _row(pid, st, mv, prod, today, first_stocked=None):
     stock_units = _f(st and st['stock_units']) or 0.0
-    out_window = _f(mv and mv['out_window']) or 0.0
-    out_history = _f(mv and mv['out_history']) or 0.0
+    sold = _f(mv and mv['sold']) or 0.0
 
     # The rate is measured over the days the product has actually been available, not
-    # the full window. Stock received three weeks ago has three weeks of history; dividing
-    # its sales by 90 days would report it as a third of its real rate and hide a stockout.
+    # HISTORY_DAYS in full. Stock received three weeks ago has three weeks of history;
+    # dividing its sales by two years would report it as a sliver of its real rate and
+    # hide a stockout. Capped at HISTORY_DAYS at the other end, since `sold` itself can't
+    # see further back than that (_MOVE_SQL's own read bound) — a product older than
+    # that must not be divided by more days than its sales figure can account for.
     #
     # "Available" means since this product's inventory first entered the system at all —
     # sku_batch's own created_on (first_stocked, from _FIRST_STOCK_SQL), not the first
-    # SALE and not bounded by how far back the ledger read goes. The ledger's own
-    # MIN(created_on) (mv['first_move']) is kept only as a fallback for a product with
-    # no sku_batch row (not batch-tracked) — see _FIRST_STOCK_SQL's own note.
-    observed_days = SALE_RATE_WINDOW_DAYS
+    # SALE. The ledger's own MIN(created_on) (mv['first_move']) is kept only as a
+    # fallback for a product with no sku_batch row (not batch-tracked) — see
+    # _FIRST_STOCK_SQL's own note.
+    observed_days = HISTORY_DAYS
     first_seen = first_stocked or (mv and mv['first_move'])
     if first_seen:
         if isinstance(first_seen, datetime):
             first_seen = first_seen.date()
-        observed_days = min(SALE_RATE_WINDOW_DAYS, max((today - first_seen).days + 1, 1))
+        observed_days = min(HISTORY_DAYS, max((today - first_seen).days + 1, 1))
 
     # A product that has never shipped has no rate — not a rate of zero. The difference
     # matters downstream: a measured zero means the stock is provably not moving, while
     # no history at all means nothing can be projected from it yet.
-    ever_sold = out_history > 0
+    ever_sold = sold > 0
     rate_month = None
     if ever_sold:
-        rate_month = out_window / observed_days * DAYS_PER_MONTH
+        rate_month = sold / observed_days * DAYS_PER_MONTH
 
     months_cover = None
     if rate_month:
@@ -362,8 +364,7 @@ def _row(pid, st, mv, prod, today, first_stocked=None):
         'landed_unit': round(landed_unit, 4) if landed_unit is not None else None,
 
         'sale_rate_month': round(rate_month, 1) if rate_month is not None else None,
-        'sold_in_window': round(out_window, 2),
-        'sold_lifetime': round(out_history, 2),
+        'sold': round(sold, 2),
         'observed_days': observed_days,
         'last_sale': mv and mv['last_sale'],
 

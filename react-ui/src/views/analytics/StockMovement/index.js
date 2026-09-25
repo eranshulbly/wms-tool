@@ -598,8 +598,8 @@ const StockMovement = () => {
 
       {data && (
         <Typography variant="caption" className={classes.muted} display="block" sx={{ mt: 1 }}>
-          Showing {productSearch.visible.length} of {rows.length} products · sale rate measured over the last{' '}
-          {data.window_days} days (or however much of that a product has actually been moving for) · as of{' '}
+          Showing {productSearch.visible.length} of {rows.length} products · sale rate is every recorded sale
+          since the product was first stocked, divided by however many days that's been · as of{' '}
           {data.as_of}. Cover is stock ÷ sale rate. Value at risk is the stock that will still be on hand
           when the earliest batch in stock expires, at landed cost — blank where there is no sale history
           to project from.
