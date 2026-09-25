@@ -32,14 +32,6 @@ import { useColumnSearch } from '../../../hooks/useColumnSearch';
 const BASE = 'admin/inventory/analytics/movement';
 const BATCH_BASE = 'admin/inventory/analytics/batches';
 
-const WINDOWS = [
-  { value: 30, label: 'Last 30 days' },
-  { value: 60, label: 'Last 60 days' },
-  { value: 90, label: 'Last 90 days' },
-  { value: 180, label: 'Last 6 months' },
-  { value: 365, label: 'Last 12 months' },
-];
-
 // The bands, worst first. Colour carries the same ordering as the list, so the table
 // reads as a heat map without anyone having to consult the legend.
 const BAND_STYLE = {
@@ -153,7 +145,6 @@ const StockMovement = () => {
   const [view, setView] = useState('product'); // 'product' | 'batch'
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [windowDays, setWindowDays] = useState(90);
   const [picked, setPicked] = useState([]);
   const [band, setBand] = useState('');
   const [sort, setSort] = useState({ key: 'value_at_risk', dir: 'desc' });
@@ -171,7 +162,7 @@ const StockMovement = () => {
     setLoading(true);
     try {
       const { data: d } = await api.get(BASE, {
-        params: { company_id: selectedCompany, window_days: windowDays },
+        params: { company_id: selectedCompany },
       });
       setData(d);
     } catch (e) {
@@ -179,7 +170,7 @@ const StockMovement = () => {
     } finally {
       setLoading(false);
     }
-  }, [selectedCompany, windowDays]);
+  }, [selectedCompany]);
 
   const loadBatches = useCallback(async () => {
     if (!selectedCompany) {
@@ -366,7 +357,7 @@ const StockMovement = () => {
         <>
       <Paper variant="outlined" className={classes.section} style={{ padding: 12 }}>
         <Grid container spacing={2} alignItems="center">
-          <Grid item xs={12} sm={3}>
+          <Grid item xs={12} sm={4}>
             <TextField
               select
               fullWidth
@@ -382,23 +373,7 @@ const StockMovement = () => {
               ))}
             </TextField>
           </Grid>
-          <Grid item xs={12} sm={3}>
-            <TextField
-              select
-              fullWidth
-              size="small"
-              label="Sale rate measured over"
-              value={windowDays}
-              onChange={(e) => setWindowDays(Number(e.target.value))}
-            >
-              {WINDOWS.map((w) => (
-                <MenuItem key={w.value} value={w.value}>
-                  {w.label}
-                </MenuItem>
-              ))}
-            </TextField>
-          </Grid>
-          <Grid item xs={12} sm={3}>
+          <Grid item xs={12} sm={5}>
             {/* freeSolo on purpose: picking products off the list is the common case, but
                 a typed term still works as a search, so "ROSUBEST" can pull every variant
                 without hunting each one down in the dropdown. */}

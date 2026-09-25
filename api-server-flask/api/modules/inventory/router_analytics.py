@@ -38,14 +38,7 @@ class MovementReport(Resource):
         company_ids = resolve_company_scope(current_user, request.args.get('company_id'))
 
         try:
-            window = int(request.args.get('window_days') or 90)
-        except (TypeError, ValueError):
-            window = 90
-        if window not in mv.WINDOW_CHOICES:
-            window = 90
-
-        try:
-            report = mv.movement_report(company_ids=company_ids, window_days=window)
+            report = mv.movement_report(company_ids=company_ids)
         except Exception:
             logger.exception("movement report failed")
             return {'success': False, 'msg': 'Could not build the stock movement report'}, 500

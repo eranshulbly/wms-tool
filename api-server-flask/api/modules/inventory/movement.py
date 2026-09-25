@@ -63,7 +63,13 @@ SALE_REFERENCE_TYPES = ('INVOICE', 'DMS')
 # Bounded so the query prunes partitions instead of scanning the archive.
 HISTORY_MONTHS = 24
 
-WINDOW_CHOICES = (30, 60, 90, 180, 365)
+# The recency window "sale rate" (and everything derived from it — cover, band,
+# rate-to-clear, at-risk) is measured over. Used to be a dropdown the operator could pick
+# (30/60/90/180/365 days); removed by request, so the risk bands and tiles can't be
+# second-guessed by re-running the report over a different window — one fixed period, not
+# a knob. 90 was the dropdown's own default, kept here so removing the control changed no
+# figures on the day it was removed.
+SALE_RATE_WINDOW_DAYS = 90
 
 # Ordered worst-first: this is also the order the UI lists them in, and the order that
 # decides which band a product falls into when more than one rule matches.
@@ -231,19 +237,19 @@ def _band(stock, rate_month, months_cover, months_to_expiry, ever_sold):
     return 'Under 30 days cover'
 
 
-def movement_report(company_ids=None, window_days=90, as_of=None):
+def movement_report(company_ids=None, as_of=None):
     """One row per product: stock, run rate, cover, expiry and what it puts at risk.
 
     company_ids of [] means "scoped to nothing", which returns nothing rather than
-    everything — the same rule the other admin reports follow.
+    everything — the same rule the other admin reports follow. The recency window is
+    fixed at SALE_RATE_WINDOW_DAYS, not a caller-supplied parameter — see its own note.
     """
     if company_ids is not None and not company_ids:
-        return {'rows': [], 'summary': _summary([]), 'window_days': window_days}
+        return {'rows': [], 'summary': _summary([]), 'window_days': SALE_RATE_WINDOW_DAYS}
 
-    window_days = int(window_days) if window_days else 90
     today = as_of or date.today()
     now = datetime.combine(today, datetime.min.time()) + timedelta(days=1)
-    window_start = now - timedelta(days=window_days)
+    window_start = now - timedelta(days=SALE_RATE_WINDOW_DAYS)
     history_start = now - timedelta(days=int(HISTORY_MONTHS * DAYS_PER_MONTH))
 
     # window_start, then the sale-types IN-list, then history_start — must line up
@@ -272,13 +278,13 @@ def movement_report(company_ids=None, window_days=90, as_of=None):
     # them would bury the ones that matter.
     ids = sorted(set(stock) | set(moves))
     if not ids:
-        return {'rows': [], 'summary': _summary([]), 'window_days': window_days}
+        return {'rows': [], 'summary': _summary([]), 'window_days': SALE_RATE_WINDOW_DAYS}
 
     products = {int(r['product_id']): r for r in (mysql_manager.execute_query(
         _PRODUCT_SQL.format(ids=','.join(['%s'] * len(ids))), tuple(ids)) or [])}
 
     rows = [_row(pid, stock.get(pid), moves.get(pid), products.get(pid, {}),
-                 today, window_days, first_stocked.get(pid)) for pid in ids]
+                 today, first_stocked.get(pid)) for pid in ids]
 
     # Worst first: the biggest money that will not clear before it expires. A planner
     # opening this report wants the top of the list to be the next thing to act on.
@@ -288,10 +294,10 @@ def movement_report(company_ids=None, window_days=90, as_of=None):
                              r['product_name'] or ''))
 
     return {'rows': jsonable(rows), 'summary': _summary(rows),
-            'window_days': window_days, 'as_of': today.isoformat()}
+            'window_days': SALE_RATE_WINDOW_DAYS, 'as_of': today.isoformat()}
 
 
-def _row(pid, st, mv, prod, today, window_days, first_stocked=None):
+def _row(pid, st, mv, prod, today, first_stocked=None):
     stock_units = _f(st and st['stock_units']) or 0.0
     out_window = _f(mv and mv['out_window']) or 0.0
     out_history = _f(mv and mv['out_history']) or 0.0
@@ -305,12 +311,12 @@ def _row(pid, st, mv, prod, today, window_days, first_stocked=None):
     # SALE and not bounded by how far back the ledger read goes. The ledger's own
     # MIN(created_on) (mv['first_move']) is kept only as a fallback for a product with
     # no sku_batch row (not batch-tracked) — see _FIRST_STOCK_SQL's own note.
-    observed_days = window_days
+    observed_days = SALE_RATE_WINDOW_DAYS
     first_seen = first_stocked or (mv and mv['first_move'])
     if first_seen:
         if isinstance(first_seen, datetime):
             first_seen = first_seen.date()
-        observed_days = min(window_days, max((today - first_seen).days + 1, 1))
+        observed_days = min(SALE_RATE_WINDOW_DAYS, max((today - first_seen).days + 1, 1))
 
     # A product that has never shipped has no rate — not a rate of zero. The difference
     # matters downstream: a measured zero means the stock is provably not moving, while
