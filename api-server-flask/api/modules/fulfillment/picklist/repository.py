@@ -41,6 +41,64 @@ def find_by_token(token: str):
     return rows[0] if rows else None
 
 
+# Statuses a scan can still do something with. Narrower than "every pick list":
+# typing 3002 should not resurrect a sheet whose order shipped in July, and the
+# fewer rows the suffix search can reach, the less often it is ambiguous.
+SCANNABLE_STATUSES = ('Open', 'Picking', 'Packed', 'Dispatch Ready')
+
+
+def find_live_by_order_suffix(suffix: str, limit: int = 6):
+    """Live pick lists whose order number ENDS in this exact final segment.
+
+    The fallback for a QR that will not read, where the operator types the last
+    digits off the sheet — "3002" for 30305-02-MPDSTN-0926-3002.
+
+    Matches the segment after the last hyphen exactly, not a LIKE '%3002': a
+    trailing-wildcard match would also hit ...-13002 and ...-45880 would hit
+    ...-145880. Exact-segment equality is what makes "one match" mean one sheet.
+
+    Returns every match up to `limit`. Deciding what to do with more than one is
+    the caller's job, and the answer is to refuse — see resolve_scan.
+    """
+    pf_sql, pf_params = partition_filter('potential_order', alias='po')
+    placeholders = ', '.join(['%s'] * len(SCANNABLE_STATUSES))
+    return mysql_manager.execute_query(
+        f"""SELECT pl.picklist_id, pl.potential_order_id, pl.original_order_id,
+                   pl.picklist_code, pl.qr_token, pl.company_id, pl.warehouse_id,
+                   pl.picker_code, pl.picker_raw, pl.picker_assigned_at,
+                   po.status AS order_status
+              FROM order_picklist pl
+              JOIN potential_order po
+                ON po.potential_order_id = pl.potential_order_id
+             WHERE {pf_sql}
+               AND SUBSTRING_INDEX(pl.original_order_id, '-', -1) = %s
+               AND po.status IN ({placeholders})
+             ORDER BY pl.created_at DESC
+             LIMIT %s""",
+        tuple(pf_params) + (suffix.upper(),) + SCANNABLE_STATUSES + (limit,),
+    ) or []
+
+
+def find_live_by_order_no(order_no: str):
+    """A live pick list by its WHOLE order number, for an operator who types it all."""
+    pf_sql, pf_params = partition_filter('potential_order', alias='po')
+    placeholders = ', '.join(['%s'] * len(SCANNABLE_STATUSES))
+    return mysql_manager.execute_query(
+        f"""SELECT pl.picklist_id, pl.potential_order_id, pl.original_order_id,
+                   pl.picklist_code, pl.qr_token, pl.company_id, pl.warehouse_id,
+                   pl.picker_code, pl.picker_raw, pl.picker_assigned_at,
+                   po.status AS order_status
+              FROM order_picklist pl
+              JOIN potential_order po
+                ON po.potential_order_id = pl.potential_order_id
+             WHERE {pf_sql} AND UPPER(pl.original_order_id) = %s
+               AND po.status IN ({placeholders})
+             ORDER BY pl.created_at DESC
+             LIMIT 6""",
+        tuple(pf_params) + (order_no.upper(),) + SCANNABLE_STATUSES,
+    ) or []
+
+
 def find_existing(potential_order_id: int, picklist_code: str):
     """The row a re-upload of the same document would replace, if any."""
     rows = mysql_manager.execute_query(

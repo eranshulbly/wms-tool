@@ -8,6 +8,7 @@ QR token. The order's status is untouched.
 Scan is what moves it, one step along OrderStateMachine's chain.
 """
 
+import re
 from datetime import datetime
 
 from api.core.logging import get_logger
@@ -353,6 +354,81 @@ class ScanRejected(Exception):
         self.to_status = to_status
 
 
+# What a human types when the QR will not read: the last digits of the order
+# number off the printed sheet ("3002" for 30305-02-MPDSTN-0926-3002).
+#
+# Three at minimum. Fewer is not a shortcut, it is a guess — two digits would
+# match a dozen sheets and the operator would spend longer reading the
+# disambiguation list than the whole number.
+_RE_ORDER_SUFFIX = re.compile(r'^[0-9]{3,10}$')
+
+# A whole order number, typed out.
+_RE_ORDER_NO_FULL = re.compile(r'^[0-9A-Z]+(?:-[0-9A-Z]+){2,}$')
+
+
+def resolve_typed(entry: str):
+    """Resolve what an operator TYPED, when the QR could not be scanned.
+
+    Four forms, strongest identifier first:
+
+      1. the whole payload, pasted or re-scanned            -> handled by caller
+      2. the 16-character token printed under the symbol    -> exact, safe
+      3. the whole order number                             -> exact
+      4. the last digits of the order number                -> may be ambiguous
+
+    **This is deliberately weaker than a scan, and that is the trade-off.** A
+    scan proves possession of the printed sheet, because the token is the only
+    way in; a typed suffix proves only that somebody knows five digits. It is
+    still behind a login and the same permission gate, and it only reaches
+    sheets whose orders are live — but it does mean the sheet is no longer
+    required. That is the price of a fallback for a creased or smudged symbol,
+    and the alternative is an operator who cannot move a real order at all.
+
+    Ambiguity is REFUSED, never resolved by picking the newest. The suffix is a
+    per-series counter and there are already two series in play (PSAO around
+    45000, MPDSTN around 3000), so two sheets sharing a suffix is a matter of
+    time. Moving the wrong dealer's order is not recoverable by the person who
+    did it — they would not know it happened.
+    """
+    text = (entry or '').strip().upper()
+    if not text:
+        raise ScanRejected('bad_payload', 'Nothing was entered.')
+
+    # The token: exact, and as strong as a scan because it IS what the scan
+    # carries. Checked before the suffix so an all-digit token cannot be
+    # mistaken for one (the alphabet is base32, so that cannot happen today,
+    # but the ordering costs nothing and does not depend on that staying true).
+    if (len(text) == qrcode_payload.TOKEN_LENGTH
+            and all(c in qrcode_payload._ALPHABET for c in text)):
+        picklist = picklist_repo.find_by_token(text)
+        if not picklist:
+            raise ScanRejected('unknown_token', 'That code is not recognised.')
+        return picklist
+
+    if _RE_ORDER_SUFFIX.match(text):
+        matches = picklist_repo.find_live_by_order_suffix(text)
+    elif _RE_ORDER_NO_FULL.match(text):
+        matches = picklist_repo.find_live_by_order_no(text)
+    else:
+        raise ScanRejected(
+            'bad_payload',
+            'Enter the last digits of the order number, or the whole number.')
+
+    if not matches:
+        raise ScanRejected(
+            'unknown_code',
+            'No live pick list ends in %s. Check the number on the sheet.' % text)
+
+    if len(matches) > 1:
+        listed = ', '.join(m['original_order_id'] for m in matches[:4])
+        raise ScanRejected(
+            'ambiguous_code',
+            '%s matches %d pick lists (%s). Enter more digits.'
+            % (text, len(matches), listed))
+
+    return matches[0]
+
+
 def resolve_scan(payload: str):
     """Turn a scanned payload into (picklist_row, potential_order).
 
@@ -360,11 +436,24 @@ def resolve_scan(payload: str):
     compared against the row that came back. Looking it up by order number instead
     would make the token decorative: order numbers are printed in plain text on
     every sheet, so anyone could move any order by typing one in.
+
+    A payload that is not in the scanned format is treated as something a human
+    typed — see resolve_typed, which is explicit about being the weaker path.
     """
     try:
         parsed = qrcode_payload.parse(payload)
-    except qrcode_payload.PayloadError as e:
-        raise ScanRejected('bad_payload', str(e))
+    except qrcode_payload.PayloadError:
+        # Not a scan. The cross-checks below have nothing to compare against, so
+        # resolve_typed returns the row directly and we skip them; it does its
+        # own exact matching instead.
+        picklist = resolve_typed(payload)
+        order = order_repo.find_by_id(picklist['potential_order_id'])
+        if not order:
+            raise ScanRejected(
+                'unknown_token',
+                'The order this pick list points at no longer exists.',
+                picklist_id=picklist['picklist_id'])
+        return picklist, order
 
     picklist = picklist_repo.find_by_token(parsed['token'])
     if not picklist:

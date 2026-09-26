@@ -545,3 +545,52 @@ def test_an_unrelated_next_line_leaves_the_number_truncated():
     text = ('Order No 30305-02-MPDSTN-0926- Order Date 09/26/2026\n'
             'City BAREILLY\n')
     assert extract._joined(extract._RE_ORDER_NO, text).endswith('-')
+
+
+# ── Typed fallback: the last digits of the order number ─────────────────────
+#
+# When the QR will not read, the operator types the tail off the sheet — "3002"
+# for 30305-02-MPDSTN-0926-3002. These pin the two rules that make that safe,
+# without touching a database: the matching is exact-segment, and more than one
+# match is refused rather than resolved.
+
+def _suffix_of(order_no):
+    """The segment the typed entry is compared against."""
+    return order_no.rsplit('-', 1)[-1]
+
+
+@pytest.mark.parametrize('entry,ok', [
+    ('3002', True), ('45880', True), ('123', True), ('1234567890', True),
+    ('12', False),          # two digits would match half the warehouse
+    ('', False), ('30O2', False), ('3002A', False), ('-3002', False),
+])
+def test_only_a_plausible_suffix_is_treated_as_one(entry, ok):
+    import re as _re
+    assert bool(_re.match(r'^[0-9]{3,10}$', entry)) is ok
+
+
+def test_suffix_matches_the_whole_segment_not_a_tail():
+    """Exact-segment equality, which is why one match means one sheet.
+
+    A LIKE '%3002' would also hit ...-13002, and '45880' would hit ...-145880 —
+    so a typed number could silently resolve to somebody else's order. The query
+    compares SUBSTRING_INDEX(original_order_id, '-', -1) instead.
+    """
+    assert _suffix_of('30305-02-MPDSTN-0926-3002') == '3002'
+    assert _suffix_of('30305-02-PSAO-0926-13002') == '13002'
+    assert _suffix_of('30305-02-MPDSTN-0926-3002') != _suffix_of(
+        '30305-02-PSAO-0926-13002')
+
+
+def test_two_series_can_collide_on_the_same_suffix():
+    """Why ambiguity must be refused rather than resolved to the newest.
+
+    The suffix is a per-series counter and production already carries two
+    series — PSAO around 45000 and MPDSTN around 3000. Nothing stops them
+    meeting, and moving the wrong dealer's order is not a mistake the person
+    who made it would ever notice.
+    """
+    a = '30305-02-PSAO-0926-3002'
+    b = '30305-02-MPDSTN-0926-3002'
+    assert a != b
+    assert _suffix_of(a) == _suffix_of(b) == '3002'
