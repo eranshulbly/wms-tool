@@ -53,3 +53,60 @@ CREATE TABLE IF NOT EXISTS categories (
     INDEX idx_categories_parent (parent_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """, order=11)
+
+
+# ── Packaging ladder ─────────────────────────────────────────────────────────
+#
+# Ported from the product-pack work for ONE consumer: the packing module reads
+# `product_uom.pack_tare_kg` to weight-check a sealed supplier carton. Nothing in
+# this deployment WRITES these tables yet — the product-master upload that loads
+# them was deliberately left behind.
+#
+# They are created empty on purpose rather than left absent. Absent, the first
+# sealed-carton scan dies on a missing table; empty, `uom_rung()` simply finds no
+# rung and packing answers PACK_TARE_MISSING — "no packing weight on record for
+# this carton size" — and the packer opens the carton and scans retail packs.
+# A degraded path with a sentence the operator can act on, instead of a 500.
+
+register_table("uom", """
+CREATE TABLE IF NOT EXISTS uom (
+    uom_code  VARCHAR(16) NOT NULL,
+    name      VARCHAR(64) NOT NULL,
+    uom_type  VARCHAR(16) NOT NULL DEFAULT 'count',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (uom_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""", order=12)
+
+
+# One row per rung of a product's packaging ladder: TAB -> STRIP -> BOX -> CASE for a
+# pharma tablet, a single PCS row for an auto part.
+#
+# `factor_to_base` is ABSOLUTE (a case of 66 boxes of 30 strips of 10 tabs = 19800), not
+# relative to the rung below, so any conversion is one multiply and no code has to walk
+# the ladder. The three flags carry what would otherwise be special-case logic: a rung can
+# be informational (tablets are counted but never ordered), the one the price is quoted
+# against, and the one stock is counted in — and they are independent.
+register_table("product_uom", """
+CREATE TABLE IF NOT EXISTS product_uom (
+    product_uom_id INT AUTO_INCREMENT PRIMARY KEY,
+    product_id     INT NOT NULL,
+    uom_code       VARCHAR(16) NOT NULL,
+    factor_to_base DECIMAL(18,6) NOT NULL DEFAULT 1,
+    -- Weight of THIS rung's packaging, excluding the stock inside it. Packing reads it
+    -- to weight-check a sealed supplier carton, whose tare cannot be measured — you
+    -- would have to empty it. The rung is identified by matching the scanned quantity
+    -- against factor_to_base, which works because the printed codes carry no pack-level
+    -- field. See fulfillment/packing/PACKING_DESIGN.md §6.8.1.
+    pack_tare_kg   DECIMAL(12,3) NULL,
+    level_no       TINYINT NOT NULL DEFAULT 0,
+    label          VARCHAR(64) NULL,
+    is_order_unit  TINYINT(1) NOT NULL DEFAULT 0,
+    is_price_unit  TINYINT(1) NOT NULL DEFAULT 0,
+    is_stock_unit  TINYINT(1) NOT NULL DEFAULT 0,
+    created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_product_uom (product_id, uom_code),
+    INDEX idx_puom_product (product_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""", order=13)
