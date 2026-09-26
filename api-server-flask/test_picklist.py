@@ -336,7 +336,7 @@ DISPATCH = 'order:move_dispatch'
 
 
 @pytest.mark.parametrize('current,expected', [
-    ('Open', ['Picking', 'Packed']),
+    ('Open', ['Picking']),
     ('Picking', ['Packed']),
     ('Packed', ['Dispatch Ready']),
     ('Dispatch Ready', ['Completed']),
@@ -345,6 +345,37 @@ DISPATCH = 'order:move_dispatch'
 ])
 def test_scan_reachable_states(current, expected):
     assert [t.value for t in OrderStateMachine.scan_targets(current)] == expected
+
+
+def test_a_scan_cannot_skip_picking():
+    """Open -> Packed by scan is barred, and Picking is the only way in.
+
+    This is load-bearing, not tidiness. The handheld's packing queue IS
+    `status = 'Picking'`, so an order that skipped it never reaches a packing
+    bench: no boxes, no weights, no scan verification, `box_count` left at its
+    default of 1 for the invoice to read, and a pick list that never closes
+    because its order never left Open.
+
+    It was the majority path before it was closed — 10 of 15 recorded moves into
+    Packed came straight from Open — so this is exactly the kind of convenience
+    that comes back as a one-line 'fix' unless something fails when it does.
+    """
+    assert not OrderStateMachine.can_scan_transition(OrderStatus.OPEN,
+                                                     OrderStatus.PACKED)
+    assert OrderStateMachine.can_scan_transition(OrderStatus.OPEN,
+                                                 OrderStatus.PICKING)
+    assert OrderStateMachine.can_scan_transition(OrderStatus.PICKING,
+                                                 OrderStatus.PACKED)
+
+
+def test_open_offers_exactly_one_target_so_a_scan_needs_no_choice():
+    """With one legal target, plan_transition auto-selects instead of asking.
+
+    A packer scanning an Open sheet now moves it with one trigger pull rather
+    than being shown a two-button chooser — so closing the shortcut made the
+    ordinary path shorter, not longer.
+    """
+    assert _allowed('Open', [PICKPACK]) == ['Picking']
 
 
 def test_scanning_does_not_change_what_bulk_upload_can_do():
@@ -375,7 +406,7 @@ def _allowed(status, codes):
 
 @pytest.mark.parametrize('status,codes,expected', [
     # A pick-and-pack user
-    ('Open',           [PICKPACK], ['Picking', 'Packed']),
+    ('Open',           [PICKPACK], ['Picking']),
     ('Picking',        [PICKPACK], ['Packed']),
     ('Packed',         [PICKPACK], []),            # cannot release for dispatch
     # The dispatch user
@@ -383,7 +414,7 @@ def _allowed(status, codes):
     ('Open',           [DISPATCH], []),            # cannot pick or pack
     ('Dispatch Ready', [DISPATCH], ['Completed']),
     # Someone holding both
-    ('Open',           [PICKPACK, DISPATCH], ['Picking', 'Packed']),
+    ('Open',           [PICKPACK, DISPATCH], ['Picking']),
     ('Packed',         [PICKPACK, DISPATCH], ['Dispatch Ready']),
     # Someone holding neither
     ('Open',           [], []),

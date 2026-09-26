@@ -59,21 +59,40 @@ class OrderStateMachine:
     # ── Transitions a pick-list QR scan may make ─────────────────────────────
     # Deliberately a separate map from BULK_TRANSITIONS, not an edit to it.
     #
-    # It differs in two ways. An Open order can go straight to Packed, because a
-    # small order is picked and packed in one motion at one bench and forcing two
-    # scans would only teach people to double-trigger. And Packed can go to
-    # Dispatch Ready, which the Excel bulk path deliberately cannot.
+    # It differs from BULK_TRANSITIONS in allowing Packed → Dispatch Ready, which
+    # the Excel bulk path deliberately cannot.
     #
-    # THAT SECOND ONE BYPASSES INVOICING. Everywhere else, Dispatch Ready is reached
-    # through /move-to-invoiced after an invoice exists; a scan reaching it means an
-    # order can be released for dispatch with no invoice uploaded. That is the
-    # requested behaviour for the handheld — the dispatch grant is separate
+    # THAT BYPASSES INVOICING. Everywhere else, Dispatch Ready is reached through
+    # /move-to-invoiced after an invoice exists; a scan reaching it means an order
+    # can be released for dispatch with no invoice uploaded. That is the requested
+    # behaviour for the handheld — the dispatch grant is separate
     # (order:move_dispatch) precisely because it is the loose one.
+    #
+    # OPEN NO LONGER OFFERS PACKED. It used to, on the reasoning that a small order
+    # is picked and packed in one motion and forcing two scans would teach people to
+    # double-trigger. That was true when Packed was just a label; it stopped being
+    # true when packing became a module. Skipping Picking now means:
+    #
+    #   • the order never appears in the handheld's packing queue, which is
+    #     `status = 'Picking'` — so no boxes, no weights, no scan verification;
+    #   • `box_count` stays at its default of 1, and that is the number read when
+    #     the invoice and the `order` row are created, so the invoice claims one box
+    #     however many actually shipped;
+    #   • the pick list never closes (a sheet closes when its order leaves Open), so
+    #     it stays in the unprinted queue and can be reprinted after it was packed.
+    #
+    # It was not a theoretical hole: 10 of the 15 recorded moves into Packed came
+    # straight from Open. Picking is now the only way in, which is what makes the
+    # packing module the only writer of packed quantities rather than one of two.
+    #
+    # The web path is a different map (SINGLE_ORDER_TRANSITIONS) and already had no
+    # Open → Packed, so office staff and admins are unaffected and an admin can
+    # still correct a mis-scan there.
     #
     # Keeping the maps separate means a future change to how spreadsheets move
     # orders cannot silently change what a scanner on the floor does, or vice versa.
     SCAN_TRANSITIONS: dict = {
-        OrderStatus.OPEN:           [OrderStatus.PICKING, OrderStatus.PACKED],
+        OrderStatus.OPEN:           [OrderStatus.PICKING],
         OrderStatus.PICKING:        [OrderStatus.PACKED],
         OrderStatus.PACKED:         [OrderStatus.DISPATCH_READY],
         OrderStatus.DISPATCH_READY: [OrderStatus.COMPLETED],
