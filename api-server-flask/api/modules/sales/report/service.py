@@ -114,6 +114,8 @@ def _aggregate(lines, key, label_fields):
         row['margin_pct'] = t['margin_pct']
         row['avg_rate'] = (round(row['revenue'] / row['quantity'], 2)
                            if row['revenue'] and row['quantity'] else None)
+        rates = [l['net_rate'] for l in group_lines if l['net_rate'] is not None]
+        row['max_rate'] = max(rates) if rates else None
         dates = [l['invoice_date'] for l in group_lines if l['invoice_date']]
         row['last_sale'] = max(dates) if dates else None
         # Breadth: how many distinct counterpart entities this group reached — a product
