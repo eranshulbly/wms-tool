@@ -197,6 +197,7 @@ def sales_report(company_ids, date_from=None, date_to=None, product_ids=None, de
             'landing_price': (float(l['landing_price'])
                               if l['landing_price'] is not None else None),
             'invoice_date': invoice_date,
+            'invoice_number': h['invoice_number'],
             'dealer_id': h['dealer_id'],
             'dealer_name': h['dealer_name'] or (
                 f"Dealer {h['dealer_id']}" if h['dealer_id'] else 'Unknown dealer'),

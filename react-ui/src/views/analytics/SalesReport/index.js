@@ -75,27 +75,31 @@ const BATCH_COLUMNS = [
   { key: 'last_sale', label: 'Last Invoice Date', type: 'date' },
 ];
 
+// Line-level, not aggregated: the same dealer buying the same product on two different
+// orders can genuinely pay two different rates (a later order re-priced, a scheme
+// applied to one and not the other...) — averaging them into one "Avg Rate" hid that.
+// One row per actual sale, each showing the real rate that specific sale was billed at.
 const DRILL_PRODUCT_COLUMNS = [
   { key: 'dealer_name', label: 'Dealer', type: 'text' },
+  { key: 'invoice_number', label: 'Invoice #', type: 'text' },
+  { key: 'invoice_date', label: 'Invoice Date', type: 'date' },
   { key: 'quantity', label: 'Qty', type: 'int' },
+  { key: 'net_rate', label: 'Rate', type: 'money' },
   { key: 'revenue', label: 'Revenue', type: 'money' },
-  { key: 'avg_rate', label: 'Avg Rate', type: 'money' },
-  { key: 'orders', label: 'Invoiced Orders', type: 'int' },
-  { key: 'last_sale', label: 'Last Invoice Date', type: 'date' },
 ];
 
 // Same shape as the product drill (a batch is just a product narrowed to one lot) —
-// who bought this exact batch.
+// who bought this exact batch, and at what rate each time.
 const DRILL_BATCH_COLUMNS = DRILL_PRODUCT_COLUMNS;
 
 const DRILL_DEALER_COLUMNS = [
   { key: 'product_name', label: 'Product', type: 'text' },
   { key: 'sku_code', label: 'SKU', type: 'text' },
+  { key: 'invoice_number', label: 'Invoice #', type: 'text' },
+  { key: 'invoice_date', label: 'Invoice Date', type: 'date' },
   { key: 'quantity', label: 'Qty', type: 'int' },
+  { key: 'net_rate', label: 'Rate', type: 'money' },
   { key: 'revenue', label: 'Revenue', type: 'money' },
-  { key: 'avg_rate', label: 'Avg Rate', type: 'money' },
-  { key: 'orders', label: 'Invoiced Orders', type: 'int' },
-  { key: 'last_sale', label: 'Last Invoice Date', type: 'date' },
 ];
 
 const useStyles = makeStyles((theme) => ({
@@ -171,46 +175,23 @@ const StatCard = ({ label, value, sub }) => {
 
 const emptySummary = { order_total: null, landing_cost: null, margin: null, margin_pct: null };
 
-// Groups the raw line list by `groupKey`, computing the same shape of row the drill-down
-// tables show. Kept client-side and deliberately simpler than the backend's order_totals
-// (no partial-cost weighting) — this is a secondary view; the main tables carry the
-// authoritative margin figures.
-const groupLines = (lines, groupKey, labelFields) => {
-  const groups = new Map();
-  lines.forEach((l) => {
-    const gid = l[groupKey];
-    if (gid === null || gid === undefined) return;
-    if (!groups.has(gid)) {
-      const row = { id: gid };
-      labelFields.forEach((f) => {
-        row[f] = l[f];
-      });
-      row.quantity = 0;
-      row.revenue = 0;
-      row._orderIds = new Set();
-      row._lastSale = null;
-      groups.set(gid, row);
-    }
-    const row = groups.get(gid);
-    row.quantity += l.quantity || 0;
-    if (l.net_rate !== null && l.net_rate !== undefined) {
-      row.revenue += l.net_rate * (l.quantity || 0);
-    }
-    if (l.potential_order_id) row._orderIds.add(l.potential_order_id);
-    if (l.invoice_date && (!row._lastSale || l.invoice_date > row._lastSale)) {
-      row._lastSale = l.invoice_date;
-    }
-  });
-  return Array.from(groups.values())
-    .map((row) => ({
-      ...row,
-      revenue: Math.round(row.revenue * 100) / 100,
-      avg_rate: row.quantity ? Math.round((row.revenue / row.quantity) * 100) / 100 : null,
-      orders: row._orderIds.size,
-      last_sale: row._lastSale,
+// One row per actual line, unaggregated — the drill-downs show real per-sale rates now
+// (see DRILL_PRODUCT_COLUMNS' own note), so there is nothing left to average client-side.
+// `id` just needs to be unique within one drill's row set: potential_order_id alone would
+// collide if an order ever named the same product on two lines (a split line, a
+// correction), so batch_id rides along too.
+const lineRows = (lines) =>
+  [...lines]
+    .map((l) => ({
+      ...l,
+      id: `${l.potential_order_id}-${l.product_id}-${l.batch_id || 'x'}`,
+      revenue: l.net_rate !== null && l.net_rate !== undefined
+        ? Math.round(l.net_rate * (l.quantity || 0) * 100) / 100
+        : null,
     }))
-    .sort((a, b) => b.revenue - a.revenue);
-};
+    .sort((a, b) => a.dealer_name?.localeCompare(b.dealer_name || '')
+      || a.product_name?.localeCompare(b.product_name || '')
+      || (a.invoice_date || '').localeCompare(b.invoice_date || ''));
 
 const SalesReport = () => {
   const classes = useStyles();
@@ -283,21 +264,14 @@ const SalesReport = () => {
   const openDrill = (kind, row) => {
     if (kind === 'product' || kind === 'batch') {
       // Batch rows narrow the same product/dealer line filter down to one batch_id —
-      // both drills land on "who bought this", just at a different grain.
+      // both drills land on "who bought this and at what rate", just at a different grain.
       const filterKey = kind === 'batch' ? 'batch_id' : 'product_id';
-      const rows2 = groupLines(
-        lines.filter((l) => l[filterKey] === row.id),
-        'dealer_id',
-        ['dealer_name', 'town']
-      ).map((r) => ({ ...r, dealer_name: dealerLabel(r.dealer_name, r.town) }));
+      const rows2 = lineRows(lines.filter((l) => l[filterKey] === row.id))
+        .map((r) => ({ ...r, dealer_name: dealerLabel(r.dealer_name, r.town) }));
       const label = kind === 'batch' ? `${row.product_name} — Batch ${row.batch_number || row.id}` : row.product_name;
       setDrill({ kind, label, sub: row.sku_code, rows: rows2 });
     } else {
-      const rows2 = groupLines(
-        lines.filter((l) => l.dealer_id === row.id),
-        'product_id',
-        ['product_name', 'sku_code']
-      );
+      const rows2 = lineRows(lines.filter((l) => l.dealer_id === row.id));
       setDrill({ kind, label: row.dealer_name, rows: rows2 });
     }
   };
