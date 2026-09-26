@@ -36,8 +36,21 @@ _RE_CODE = re.compile(r'\bCode\s+(\S+)', re.IGNORECASE)
 _RE_ORDER_NO = re.compile(r'\bOrder\s+No\.?\s+(\S+)', re.IGNORECASE)
 _RE_ORDER_DATE = re.compile(
     r'\bOrder\s+Date\s+(\d{1,2}/\d{1,2}/\d{4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?)?)')
-_RE_NAME = re.compile(r'^\s*Name\s+(.+?)\s*$', re.IGNORECASE | re.MULTILINE)
-_RE_CITY = re.compile(r'^\s*City\s+(.+?)\s*$', re.IGNORECASE | re.MULTILINE)
+# Stop at the next label, not at the end of the line.
+#
+# These sheets come in two layouts. In one, `Name` has its line to itself; in
+# the other it shares with the order, and reading to end-of-line gave a dealer
+# called "OM MARKETING Order No 30305-02-MPDSTN-0926- Order Date 09/26/2026
+# 16:35:27" — which then goes on to create a dealer under that name.
+#
+# The lookahead lists the labels that can follow on the same row, so the value
+# ends where the next field begins, whichever layout printed it.
+_RE_NEXT_LABEL = r'(?=\s+(?:Order\s+No|Order\s+Date|Pick\s*List\s+No|' \
+                 r'Pick\s*List\s+Date|Code|City|State\s+Code|GSTIN)\b|\s*$)'
+_RE_NAME = re.compile(r'^\s*Name\s+(.+?)' + _RE_NEXT_LABEL,
+                      re.IGNORECASE | re.MULTILINE)
+_RE_CITY = re.compile(r'^\s*City\s+(.+?)' + _RE_NEXT_LABEL,
+                      re.IGNORECASE | re.MULTILINE)
 _RE_STATE_CODE = re.compile(r'State\s+Code\s*:\s*(\S+)', re.IGNORECASE)
 _RE_CONTACT = re.compile(r'Contact\s*:\s*([0-9+\-\s]+)', re.IGNORECASE)
 _RE_GSTIN = re.compile(r'GSTIN\s*No\s*:\s*(\S+)', re.IGNORECASE)
@@ -47,7 +60,22 @@ _RE_PAGE = re.compile(r'^\s*Page\s+\d+\s+of\s+\d+\s*$', re.IGNORECASE)
 _RE_LABEL_LINE = re.compile(r'(State\s+Code|GSTIN|Authorized\s+Parts|Contact)\s*:', re.IGNORECASE)
 _RE_AMPM = re.compile(r'\b(AM|PM)\b', re.IGNORECASE)
 
-_DATE_FORMATS = ('%d/%m/%Y %H:%M:%S', '%d/%m/%Y %H:%M', '%d/%m/%Y')
+# MONTH first, then day — and that order is not a guess.
+#
+# The sheets print "09/26/2026 16:35:27". A 26 cannot be a month, so this DMS is
+# unambiguously M/D/Y, and only D/M/Y was accepted here: every pick-list date
+# ever imported failed to parse. All 58 rows in production carry a NULL
+# picklist_date, which is what made this safe to correct rather than a migration
+# — there are no wrongly-parsed dates on file, only absent ones.
+#
+# D/M/Y is kept as a fallback, after: a sheet whose first component is above 12
+# can only be D/M/Y, and trying it second costs nothing. Where a date is
+# genuinely ambiguous ("08/07/2026") M/D/Y wins, which is correct for this
+# source and is what the unambiguous samples from it all say.
+_DATE_FORMATS = (
+    '%m/%d/%Y %H:%M:%S', '%m/%d/%Y %H:%M', '%m/%d/%Y',
+    '%d/%m/%Y %H:%M:%S', '%d/%m/%Y %H:%M', '%d/%m/%Y',
+)
 
 # Column order of the printed grid. The header itself spans two physical rows
 # (Bin Location arches over L1/L2/L3), so rows are identified by shape, not by
@@ -208,13 +236,66 @@ def _joined(pattern, text: str) -> str:
     for _ in range(4):
         if not value.endswith('-'):
             break
-        nxt = _RE_CONTINUATION.match(tail)
-        if not nxt:
+        fragment, tail = _continuation(tail)
+        if not fragment:
             break
-        value += nxt.group(1)
-        tail = tail[nxt.end():]
+        value += fragment
 
     return value
+
+
+# A wrapped tail that landed on a line of its own: digits, optionally with
+# hyphens, and NOTHING else on the line.
+#
+# Deliberately stricter than _RE_CONTINUATION. That one reads whatever follows
+# the match, which is right when the tail is the very next thing; this one is
+# looking further down the page, where being wrong means welding an unrelated
+# number onto an order number. Requiring the fragment to be the entire line is
+# what separates a wrapped tail ("3002") from the first cell of a table row
+# ("1 K9D4 14100KCC910S SHAFT COMP. ..."), which also starts with a digit.
+_RE_LONE_FRAGMENT = re.compile(r'^[0-9][0-9A-Z-]*$')
+
+
+def _continuation(tail: str):
+    """The next piece of a wrapped identifier, and what is left after it.
+
+    Two layouts, because this DMS has two.
+
+    ADJACENT — the tail is the next thing in the text:
+
+        Order No 30305-02-PSAO-0926-
+        45532
+
+    ON ITS OWN LINE, with the rest of the header row in between:
+
+        Name OM MARKETING Order No 30305-02-MPDSTN-0926- Order Date 09/26/2026
+        3002
+
+    The second is the one that was failing. "Order Date ..." sits between the
+    number and its own tail, so looking only at what immediately follows finds
+    a label and gives up — and the sheet was then refused for an order number
+    that was cut off, which it was, recoverably.
+
+    Returns ('', tail) when nothing safe is found; the caller then keeps the
+    truncated value and extract() refuses the document, which is the right
+    outcome for a number that genuinely cannot be pieced back together.
+    """
+    adjacent = _RE_CONTINUATION.match(tail)
+    if adjacent:
+        return adjacent.group(1), tail[adjacent.end():]
+
+    # Only the next line is considered. Scanning further would eventually find a
+    # number somewhere on any page, and a confidently wrong order number is far
+    # worse than a refused upload.
+    newline = tail.find('\n')
+    if newline == -1:
+        return '', tail
+    rest = tail[newline + 1:]
+    end = rest.find('\n')
+    line, remainder = (rest, '') if end == -1 else (rest[:end], rest[end:])
+    if _RE_LONE_FRAGMENT.match(line.strip()):
+        return line.strip(), remainder
+    return '', tail
 
 
 def _first(pattern, text: str) -> str:
@@ -228,7 +309,9 @@ def _parse_date(raw: str):
     cleaned = ' '.join(raw.split())
     # 12-hour stamps ("08:59:37 AM") appear in some builds; %p needs the marker present.
     if _RE_AMPM.search(cleaned):
-        for fmt in ('%d/%m/%Y %I:%M:%S %p', '%d/%m/%Y %I:%M %p'):
+        # Same month-first order as _DATE_FORMATS, for the same reason.
+        for fmt in ('%m/%d/%Y %I:%M:%S %p', '%m/%d/%Y %I:%M %p',
+                    '%d/%m/%Y %I:%M:%S %p', '%d/%m/%Y %I:%M %p'):
             try:
                 return datetime.strptime(cleaned.upper(), fmt).isoformat()
             except ValueError:

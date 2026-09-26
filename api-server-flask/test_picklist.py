@@ -78,7 +78,7 @@ META = {
         'code': PICKLIST_CODE,
         'order_no': ORDER_NO,
         'order_date': '08/07/2026 18:23:55',
-        'order_date_iso': '2026-07-08T18:23:55',
+        'order_date_iso': '2026-08-07T18:23:55',
         'dealer_name': 'BAWA AUTO SALES',
         'city': 'BALRAMPUR',
     },
@@ -234,10 +234,19 @@ def test_mrp_stays_a_string():
     assert extract._to_decimal_str('') is None
 
 
+# MONTH first. The sheets print "09/26/2026 16:35:27" and a 26 is not a month,
+# so this DMS is M/D/Y — which the importer did not accept, and every one of the
+# 58 pick-list dates in production was NULL as a result. An ambiguous date is
+# therefore read month-first, matching every unambiguous sample from this source.
 @pytest.mark.parametrize('raw,expected', [
-    ('08/07/2026 18:23:55', '2026-07-08T18:23:55'),
-    ('03/04/2026 08:59:37 AM', '2026-04-03T08:59:37'),
-    ('08/07/2026', '2026-07-08T00:00:00'),
+    # Unambiguous, straight off a real sheet: only M/D/Y can read this.
+    ('09/26/2026 16:35:27', '2026-09-26T16:35:27'),
+    # Ambiguous — month-first wins.
+    ('08/07/2026 18:23:55', '2026-08-07T18:23:55'),
+    ('03/04/2026 08:59:37 AM', '2026-03-04T08:59:37'),
+    ('08/07/2026', '2026-08-07T00:00:00'),
+    # Unambiguous the other way: 26 cannot be a month, so D/M/Y is tried and wins.
+    ('26/09/2026', '2026-09-26T00:00:00'),
     ('not a date', None),
 ])
 def test_dates(raw, expected):
@@ -291,7 +300,7 @@ def test_order_fields_come_from_the_picklist():
     f = _order_fields_from_meta(META)
     assert f['original_order_id'] == ORDER_NO
     assert f['purchaser_name'] == 'BAWA AUTO SALES'
-    assert f['order_date'] == '2026-07-08T18:23:55'
+    assert f['order_date'] == '2026-08-07T18:23:55'
     assert f['status'] == 'Open'
 
 
@@ -472,3 +481,67 @@ def test_a_still_truncated_order_number_refuses_the_import():
     # And the guard rejects a trailing separator.
     assert not got['order']['order_no'].endswith('-')
     assert meta is not None
+
+
+# ── The "PrePrinted" layout ──────────────────────────────────────────────────
+#
+# A second sheet layout from the same DMS, which the importer refused outright.
+# Header text taken verbatim from GST PickList Parts PrePrinted (3).PDF.
+#
+# Two things differ from the layout above, and both broke it:
+#   1. Name and Order No share one line, so reading Name to end-of-line
+#      swallowed the order number and the date after it.
+#   2. The order number wraps, and its tail lands on the NEXT line with
+#      "Order Date ..." sitting in between — so the rejoin, which only looked
+#      at what immediately followed, found a label and gave up. The sheet was
+#      then refused for an order number that was cut off.
+
+_PREPRINTED_HEADER = (
+    'Page 1 of 2\n'
+    'Pick List\n'
+    'Code 1-31421097210 Pick List No 2-1NN9JM9M Pick List Date 09/26/2026 16:35:37\n'
+    'Name OM MARKETING Order No 30305-02-MPDSTN-0926- Order Date 09/26/2026 16:35:27\n'
+    '3002\n'
+    'City BAREILLY\n'
+)
+
+
+def test_preprinted_order_number_is_rejoined_across_the_line():
+    """The tail is on the next line, with another field in between."""
+    assert (extract._joined(extract._RE_ORDER_NO, _PREPRINTED_HEADER)
+            == '30305-02-MPDSTN-0926-3002')
+
+
+def test_preprinted_name_stops_at_the_next_label():
+    """Sharing a line with Order No must not make the dealer name eat it."""
+    assert extract._first(extract._RE_NAME, _PREPRINTED_HEADER) == 'OM MARKETING'
+    assert extract._first(extract._RE_CITY, _PREPRINTED_HEADER) == 'BAREILLY'
+
+
+def test_preprinted_header_parses_whole():
+    got = extract._parse_order(_PREPRINTED_HEADER)
+    assert got['order_no'] == '30305-02-MPDSTN-0926-3002'
+    assert got['dealer_name'] == 'OM MARKETING'
+    assert got['city'] == 'BAREILLY'
+    assert got['order_date_iso'] == '2026-09-26T16:35:27'
+
+
+def test_a_table_row_is_never_mistaken_for_a_wrapped_tail():
+    """The guard that keeps the next-line rule safe.
+
+    A data row starts with a digit too ("1 K9D4 14100KCC910S ..."), so the
+    fragment must be the WHOLE line to count. Without that, a truncated order
+    number followed by the table would silently gain a "1" — a plausible-looking
+    order number that matches nothing, which is precisely the failure the
+    trailing-hyphen refusal exists to prevent.
+    """
+    text = ('Name OM MARKETING Order No 30305-02-MPDSTN-0926- Order Date 09/26/2026\n'
+            '1 K9D4 14100KCC910S SHAFT COMP. 84831099 20 97 1,210.0 2 2\n')
+    assert extract._joined(extract._RE_ORDER_NO, text) == '30305-02-MPDSTN-0926-'
+
+
+def test_an_unrelated_next_line_leaves_the_number_truncated():
+    """Refusing beats guessing: a cut-off number must stay cut off."""
+    text = ('Order No 30305-02-MPDSTN-0926- Order Date 09/26/2026\n'
+            'City BAREILLY\n')
+    assert extract._joined(extract._RE_ORDER_NO, text).endswith('-')
