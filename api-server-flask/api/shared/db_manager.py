@@ -1434,6 +1434,12 @@ _V2_API_COLUMNS = {
         ('printed_at',  'DATETIME NULL',            'idx_picklist_printed'),
         ('printed_by',  'INT NULL',                 None),
         ('print_count', 'INT NOT NULL DEFAULT 0',   None),
+        # Who is walking the aisles with the sheet, from the card scanned at
+        # Picking. picker_code is the normalised key every report groups by;
+        # picker_raw is the untouched scan, kept so a misread stays recognisable.
+        ('picker_code',        'VARCHAR(64) NULL',  'idx_picklist_picker'),
+        ('picker_raw',         'VARCHAR(128) NULL', None),
+        ('picker_assigned_at', 'DATETIME NULL',     None),
     ],
     'product': [
         ('uom',       'VARCHAR(20) NULL',                 None),

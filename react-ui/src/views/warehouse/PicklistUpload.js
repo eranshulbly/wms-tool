@@ -557,6 +557,7 @@ const PicklistUpload = () => {
                       <TableCell>Order Status</TableCell>
                       <TableCell>State</TableCell>
                       <TableCell>Printed</TableCell>
+                      <TableCell>Picker</TableCell>
                       <TableCell>Uploaded By</TableCell>
                       <TableCell>Uploaded</TableCell>
                     </TableRow>
@@ -564,7 +565,7 @@ const PicklistUpload = () => {
                   <TableBody>
                     {loading && (
                       <TableRow>
-                        <TableCell colSpan={11} align="center">
+                        <TableCell colSpan={12} align="center">
                           <CircularProgress size={22} />
                         </TableCell>
                       </TableRow>
@@ -572,7 +573,7 @@ const PicklistUpload = () => {
 
                     {!loading && !pageRows.length && (
                       <TableRow>
-                        <TableCell colSpan={11} align="center">
+                        <TableCell colSpan={12} align="center">
                           <Box py={3}>
                             <IconQrcode size={28} />
                             <Typography variant="body2" color="textSecondary">
@@ -660,6 +661,34 @@ const PicklistUpload = () => {
                                   </Typography>
                                 )}
                               </Stack>
+                            ) : (
+                              <Typography variant="body2" color="textSecondary">
+                                —
+                              </Typography>
+                            )}
+                          </TableCell>
+                          {/* Assigned by scanning the picker's card when the
+                              order is moved to Picking. The tooltip carries the
+                              untouched scan, which differs from the code shown
+                              only when a card read oddly — precisely the case
+                              worth being able to check. */}
+                          <TableCell>
+                            {row.picker_code ? (
+                              <Chip
+                                size="small"
+                                label={row.picker_code}
+                                variant="outlined"
+                                title={
+                                  (row.picker_raw && row.picker_raw !== row.picker_code
+                                    ? `Scanned as "${row.picker_raw}"\n`
+                                    : '') +
+                                  (row.picker_assigned_at
+                                    ? `Assigned ${new Date(
+                                        row.picker_assigned_at
+                                      ).toLocaleString()}`
+                                    : '')
+                                }
+                              />
                             ) : (
                               <Typography variant="body2" color="textSecondary">
                                 —

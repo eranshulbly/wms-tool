@@ -99,4 +99,5 @@ class V1PicklistMove(Resource):
             target_status=body.get('target_status'),
             box_count=body.get('box_count'),
             device_id=body.get('device_id'),
+            picker_code=body.get('picker_code'),
         )

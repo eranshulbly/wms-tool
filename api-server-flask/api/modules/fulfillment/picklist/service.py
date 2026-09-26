@@ -116,9 +116,17 @@ def preview_scan(payload, user):
         'allowed_targets': [
             {'status': t.value, 'slug': t.to_frontend_slug(),
              # The one target that needs a box count before it can be applied.
-             'needs_box_count': t.value == 'Packed'}
+             'needs_box_count': t.value == 'Packed',
+             # Picking asks for the picker's card. Flagged by the SERVER rather
+             # than hard-coded in the app, for the same reason as the box count:
+             # turning the prompt off, or moving it to another status, is then a
+             # backend change and not a sideloaded APK on every handset.
+             'needs_picker': t.value == 'Picking'}
             for t in targets
         ],
+        # Shown on the confirm screen when a sheet is re-scanned, so a handover
+        # reads as a handover rather than looking like a fresh assignment.
+        'picker_code': picklist.get('picker_code') or '',
         # Distinguishes "nothing you may do here" from "nothing anyone may do here",
         # so the handheld can say which.
         'reachable_any': [t.value for t in
@@ -126,7 +134,7 @@ def preview_scan(payload, user):
     }, 200
 
 def apply_scan(payload, user, target_status=None, box_count=None,
-               device_id=None) -> tuple:
+               device_id=None, picker_code=None) -> tuple:
     """Resolve a scanned QR payload and move its order one step.
 
     Every outcome, including every rejection, is written to order_picklist_scan —
@@ -150,6 +158,39 @@ def apply_scan(payload, user, target_status=None, box_count=None,
         return {'success': False, 'result': e.result, 'msg': e.message}, status_code
 
     from_status = order.status
+
+    # Picking is the moment the sheet leaves the office and becomes somebody's
+    # job, so that is where the picker's card is captured. Refused rather than
+    # defaulted: a Picking row with no picker is indistinguishable afterwards
+    # from one whose picker was never asked for, and the whole point of the
+    # prompt is to know who has the paper.
+    picker = picklist_repo.normalise_picker_code(picker_code)
+    if target.value == 'Picking' and not picker:
+        picklist_repo.record_scan(
+            picklist['picklist_id'], payload, user_id, device_id,
+            from_status, target.value, 'picker_required',
+            'No picker card was scanned.')
+        return {'success': False, 'result': 'picker_required',
+                'msg': 'Scan the picker\'s card to assign this pick list.'}, 400
+
+    # Recorded BEFORE the transition, not after.
+    #
+    # The two writes are not in one transaction — _transition saves the order and
+    # its history row separately, as the rest of this module does — so one of them
+    # can land without the other. Of the two possible half-states, a picker
+    # recorded against a sheet that never moved is harmless and is overwritten by
+    # the next scan; an order sitting in Picking with nobody's name on it is the
+    # thing this feature exists to prevent. So the fragile write goes first.
+    if picker:
+        try:
+            with mysql_manager.get_cursor() as cur:
+                picklist_repo.assign_picker(cur, picklist['picklist_id'],
+                                            picker, picker_code)
+        except Exception:
+            logger.exception("Could not assign picker",
+                             extra={'picklist_id': picklist['picklist_id']})
+            return {'success': False, 'result': 'error',
+                    'msg': 'Could not record the picker; the order was not moved.'}, 400
 
     try:
         new_status = _transition(order, target, user_id, box_count)
@@ -175,6 +216,10 @@ def apply_scan(payload, user, target_status=None, box_count=None,
         'to_status': new_status,
         # A pick list is open while its order is; there is no separate lifecycle.
         'picklist_state': 'open' if new_status in picklist_repo.OPEN_STATUSES else 'closed',
+        # Echoed so the handheld's confirmation can name the picker it just
+        # assigned — the operator scanned a barcode and has no other way to see
+        # what the server actually read from it.
+        'picker_code': picker or '',
     }, 200
 
 

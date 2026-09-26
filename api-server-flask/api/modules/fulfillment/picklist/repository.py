@@ -33,7 +33,8 @@ def find_by_token(token: str):
     """One pick list by its QR token. The ONLY lookup a scan may use."""
     rows = mysql_manager.execute_query(
         """SELECT picklist_id, potential_order_id, original_order_id, picklist_code,
-                  qr_token, company_id, warehouse_id
+                  qr_token, company_id, warehouse_id,
+                  picker_code, picker_raw, picker_assigned_at
            FROM order_picklist WHERE qr_token = %s""",
         (token,),
     )
@@ -187,6 +188,7 @@ def list_picklists(company_ids, warehouse_id=None, state='open', printed=None,
         """SELECT pl.picklist_id, pl.original_order_id, pl.picklist_code,
                   pl.picklist_date, pl.line_count, pl.created_at,
                   pl.printed_at, pl.print_count,
+                  pl.picker_code, pl.picker_raw, pl.picker_assigned_at,
                   po.status AS order_status, po.potential_order_id,
                   d.name AS dealer_name, u.name AS printed_by_name,
                   pl.created_by, owner.name AS uploaded_by_name
@@ -251,6 +253,41 @@ def fetch_for_render(picklist_ids: list, company_ids, owner_id=None):
         if isinstance(row.get('meta'), (str, bytes, bytearray)):
             row['meta'] = json.loads(row['meta'])
     return rows or []
+
+
+def normalise_picker_code(raw):
+    """The key a scanned picker card is stored and grouped under.
+
+    Trimmed, inner whitespace collapsed, upper-cased. There is no picker master
+    to validate against — the scan is taken at face value — so this is the only
+    thing standing between one picker and three spellings of them. A scanner that
+    appends a trailing space, a card read as lower case, and a code typed with a
+    double space would otherwise each become a separate picker in every report.
+
+    Returns '' for anything empty, which the caller treats as "no picker given".
+    """
+    if raw is None:
+        return ''
+    return ' '.join(str(raw).split()).upper()[:64]
+
+
+def assign_picker(cursor, picklist_id: int, code: str, raw: str) -> None:
+    """Record who is picking this sheet, at the moment it goes to Picking.
+
+    Takes the caller's cursor so it can be grouped with other writes. The scan
+    path calls it just BEFORE the status change rather than after — see the
+    comment at that call site for why the order matters.
+
+    Overwrites deliberately. Re-scanning a different card is how a handover is
+    recorded, and the previous holder is still in order_picklist_scan — this
+    column answers "who has it now", and the scan audit answers "who has had it".
+    """
+    cursor.execute(
+        """UPDATE order_picklist
+              SET picker_code = %s, picker_raw = %s, picker_assigned_at = %s
+            WHERE picklist_id = %s""",
+        (code or None, (raw or '')[:128] or None, datetime.utcnow(), picklist_id),
+    )
 
 
 def record_scan(picklist_id, qr_payload, scanned_by, device_id,

@@ -47,6 +47,19 @@ CREATE TABLE IF NOT EXISTS order_picklist (
     printed_at         DATETIME NULL,
     printed_by         INT NULL,
     print_count        INT NOT NULL DEFAULT 0,
+    -- Who is walking the aisles with this sheet, captured by scanning their card
+    -- when the order is moved to Picking.
+    --
+    -- TWO columns for one fact, on purpose. `picker_raw` is exactly what the
+    -- scanner sent and is never touched; `picker_code` is that trimmed, collapsed
+    -- and upper-cased, and is what every query groups by. There is deliberately no
+    -- picker master to validate against, so without a normalised key "pkr 4",
+    -- "PKR-4" and "PKR 4 " become three different pickers the first week and every
+    -- per-picker report is quietly wrong. Keeping the raw string alongside means a
+    -- misread can still be recognised for what it was.
+    picker_code        VARCHAR(64) NULL,
+    picker_raw         VARCHAR(128) NULL,
+    picker_assigned_at DATETIME NULL,
     warehouse_id       INT NULL,
     company_id         INT NULL,
     upload_batch_id    INT NULL,
@@ -60,7 +73,10 @@ CREATE TABLE IF NOT EXISTS order_picklist (
     INDEX idx_picklist_order (potential_order_id),
     INDEX idx_picklist_orig (original_order_id),
     INDEX idx_picklist_company (company_id),
-    INDEX idx_picklist_batch (upload_batch_id)
+    INDEX idx_picklist_batch (upload_batch_id),
+    -- "What is this picker holding right now" and "what did they pick last week"
+    -- are the two questions this column exists to answer, and both scan by code.
+    INDEX idx_picklist_picker (picker_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """, order=80)
 

@@ -183,6 +183,14 @@ class PicklistList(Resource):
                     'printed_by_name': r['printed_by_name'] or '',
                     'uploaded_by_name': r['uploaded_by_name'] or '',
                     'created_by': r['created_by'],
+                    # Who is walking the aisles with this sheet. The raw scan is
+                    # sent alongside the normalised code so the office can see a
+                    # misread card for what it was rather than only its tidied
+                    # form — the two differ exactly when something went wrong.
+                    'picker_code': r['picker_code'] or '',
+                    'picker_raw': r['picker_raw'] or '',
+                    'picker_assigned_at': r['picker_assigned_at'].isoformat()
+                                          if r['picker_assigned_at'] else None,
                 }
                 for r in rows
             ],
