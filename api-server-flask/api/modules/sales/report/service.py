@@ -112,8 +112,6 @@ def _aggregate(lines, key, label_fields):
         row['landing_cost'] = t['landing_cost']
         row['margin'] = t['margin']
         row['margin_pct'] = t['margin_pct']
-        row['avg_rate'] = (round(row['revenue'] / row['quantity'], 2)
-                           if row['revenue'] and row['quantity'] else None)
         rates = [l['net_rate'] for l in group_lines if l['net_rate'] is not None]
         row['max_rate'] = max(rates) if rates else None
         dates = [l['invoice_date'] for l in group_lines if l['invoice_date']]
