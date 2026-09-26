@@ -32,6 +32,12 @@ class P:
     ORDER_READ_ALL = "order:read_all"
     ORDER_WRITE = "order:write"
     ORDER_APPROVE = "order:approve"
+    # Moving an order by scanning the QR on its pick list, from the handheld.
+    # Split in two because the floor is split in two: the people who pick and pack
+    # are not the people who release for dispatch, and releasing without an invoice
+    # is the step that needs the tighter grant.
+    ORDER_MOVE_PICKPACK = "order:move_pickpack"   # -> Picking, Packed
+    ORDER_MOVE_DISPATCH = "order:move_dispatch"   # -> Dispatch Ready
     INVENTORY_READ = "inventory:read"
     INVENTORY_PICK = "inventory:pick"
     INVENTORY_PACK = "inventory:pack"
@@ -116,6 +122,28 @@ def _legacy_codes_for_user(user_id):
     )
     for u in uploads or []:
         codes.add(f"upload:{u['upload_type']}")
+
+    # Scan-to-move rights are DERIVED from the order states the role is already
+    # trusted with, rather than granted separately.
+    #
+    # Nothing seeds the `permissions` table, so a brand-new code granted only there
+    # would reach nobody. More to the point, "which states may this role touch" is a
+    # question the Roles screen already asks and an admin already answers — asking it
+    # a second time in a different place is how the two drift apart and someone can
+    # scan an order into a state the web UI will not let them see.
+    states = {
+        r['state_name']
+        for r in (mysql_manager.execute_query(
+            """SELECT ros.state_name FROM role_order_states ros
+               JOIN roles r ON r.role_id = ros.role_id WHERE r.name = %s""",
+            (role['name'],),
+        ) or [])
+    }
+    if states & {'Picking', 'Packed'}:
+        codes.add(P.ORDER_MOVE_PICKPACK)
+    if 'Dispatch Ready' in states:
+        codes.add(P.ORDER_MOVE_DISPATCH)
+
     return codes
 
 

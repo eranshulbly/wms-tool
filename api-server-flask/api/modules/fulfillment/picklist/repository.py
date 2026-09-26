@@ -8,6 +8,7 @@ instead of the active window.
 """
 
 import json
+from datetime import datetime
 
 from api.db_manager import mysql_manager, partition_filter
 from api.permissions import company_filter_sql
@@ -15,11 +16,17 @@ from api.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Order statuses that leave a pick list "open" — the sheet is still live on the floor.
-# Everything from Packed onwards reads as closed. There is no status column on
-# order_picklist: a stored copy would drift the first time an order moved by a path
-# that forgot to update it.
-OPEN_STATUSES = ('Open', 'Picking')
+# Order statuses that leave a pick list "open" — still issuable to the floor.
+#
+# Only Open. The moment a picker scans the QR and the order moves to Picking, the
+# sheet is closed: someone is walking the aisles with the paper copy, and a second
+# copy printed behind them means two people picking the same order against two
+# sheets. Everything from Picking onwards reads as closed, and a closed sheet
+# cannot be printed or downloaded again (see fetch_for_render's open_only).
+#
+# There is no status column on order_picklist: a stored copy would drift the first
+# time an order moved by a path that forgot to update it.
+OPEN_STATUSES = ('Open',)
 
 
 def find_by_token(token: str):
@@ -75,7 +82,66 @@ def update_in_place(cursor, picklist_id: int, row: dict) -> None:
     )
 
 
-def list_picklists(company_ids, warehouse_id=None, state='open', limit=500, offset=0):
+def mark_printed(picklist_ids, user_id) -> int:
+    """Stamp a batch as printed, bumping the reprint counter.
+
+    Called by the download route when the client asked to PRINT, not merely to
+    save a copy. Done server-side on purpose: the browser cannot tell us whether
+    ink hit paper — the print dialog can be cancelled, the tab closed, the printer
+    offline — so the only honest thing to record is that the sheet was issued for
+    printing. "Mark as not printed" is the correction for the rest.
+    """
+    if not picklist_ids:
+        return 0
+    placeholders = ', '.join(['%s'] * len(picklist_ids))
+    with mysql_manager.get_cursor() as cursor:
+        cursor.execute(
+            f"""UPDATE order_picklist
+                   SET printed_at = %s,
+                       printed_by = %s,
+                       print_count = print_count + 1
+                 WHERE picklist_id IN ({placeholders})""",
+            (datetime.utcnow(), user_id, *picklist_ids),
+        )
+        return cursor.rowcount
+
+
+def unmark_printed(picklist_ids) -> int:
+    """Put a batch back to never-printed.
+
+    The escape hatch for a paper jam, or for a Print that opened the dialog and
+    was then cancelled. Clears the counter too — a sheet that was never
+    successfully printed has not been printed twice either.
+    """
+    if not picklist_ids:
+        return 0
+    placeholders = ', '.join(['%s'] * len(picklist_ids))
+    with mysql_manager.get_cursor() as cursor:
+        cursor.execute(
+            f"""UPDATE order_picklist
+                   SET printed_at = NULL, printed_by = NULL, print_count = 0
+                 WHERE picklist_id IN ({placeholders})""",
+            tuple(picklist_ids),
+        )
+        return cursor.rowcount
+
+
+def clear_printed_on(cursor, picklist_id) -> None:
+    """Forget that a pick list was printed, because it has just been re-uploaded.
+
+    The paper already on the trolley describes the previous version of the sheet,
+    so it is no longer a printed copy of THIS one. The QR token deliberately
+    survives a re-upload; the print state deliberately does not.
+    """
+    cursor.execute(
+        "UPDATE order_picklist SET printed_at = NULL, printed_by = NULL, "
+        "print_count = 0 WHERE picklist_id = %s",
+        (picklist_id,),
+    )
+
+
+def list_picklists(company_ids, warehouse_id=None, state='open', printed=None,
+                   owner_id=None, limit=500, offset=0):
     """Pick lists joined to their order's live status.
 
     `meta` is deliberately absent from the SELECT. Eight lines is ~2KB but a
@@ -99,28 +165,60 @@ def list_picklists(company_ids, warehouse_id=None, state='open', limit=500, offs
         where.append('pl.warehouse_id = %s')
         params.append(warehouse_id)
 
+    # "Not printed" is the work queue — the sheets still waiting to go out to the
+    # floor — so it is a first-class filter rather than something to eyeball.
+    if printed is True:
+        where.append('pl.printed_at IS NOT NULL')
+    elif printed is False:
+        where.append('pl.printed_at IS NULL')
+
+    # Each uploader works their own pile. Scoped on created_by — the person who
+    # uploaded the sheet — so two people importing for the same warehouse do not
+    # end up printing each other's work.
+    #
+    # Deliberately ONLY here and on fetch_for_render. The scan path is not
+    # scoped: a handheld on the floor resolves a QR by token, and which office
+    # user happened to import that sheet is none of the picker's business.
+    if owner_id is not None:
+        where.append('pl.created_by = %s')
+        params.append(owner_id)
+
     rows = mysql_manager.execute_query(
         """SELECT pl.picklist_id, pl.original_order_id, pl.picklist_code,
                   pl.picklist_date, pl.line_count, pl.created_at,
+                  pl.printed_at, pl.print_count,
                   po.status AS order_status, po.potential_order_id,
-                  d.name AS dealer_name
+                  d.name AS dealer_name, u.name AS printed_by_name,
+                  pl.created_by, owner.name AS uploaded_by_name
              FROM order_picklist pl
              JOIN potential_order po
                ON po.potential_order_id = pl.potential_order_id
              LEFT JOIN dealer d ON d.dealer_id = po.dealer_id
+             LEFT JOIN users  u     ON u.id = pl.printed_by
+             LEFT JOIN users  owner ON owner.id = pl.created_by
             WHERE %s
-            ORDER BY pl.created_at DESC
+            -- Newest first, and picklist_id breaks the ties. created_at is a
+            -- DATETIME, so a batch upload stamps a dozen rows with the same
+            -- second and MySQL is then free to return them in any order — which
+            -- it does, differently between page loads. The id is monotonic with
+            -- insert order, so it settles them into the order they arrived.
+            ORDER BY pl.created_at DESC, pl.picklist_id DESC
             LIMIT %%s OFFSET %%s""" % ' AND '.join(where),
         tuple(params) + (limit, offset),
     )
     return rows or []
 
 
-def fetch_for_render(picklist_ids: list, company_ids):
+def fetch_for_render(picklist_ids: list, company_ids, owner_id=None):
     """Full rows, meta included, for the ids the caller selected.
 
     Company-scoped in the same query rather than filtered afterwards, so a caller
     cannot pull another tenant's pick list by guessing an id.
+
+    Carries the order's live status so the caller can tell an OPEN sheet from a
+    CLOSED one. Deliberately does NOT filter closed sheets out: the download route
+    refuses the whole batch and names them, which is a far better answer than a
+    PDF that silently came back one sheet short.
     """
     if not picklist_ids:
         return []
@@ -129,15 +227,22 @@ def fetch_for_render(picklist_ids: list, company_ids):
     cf_sql, cf_params = company_filter_sql(company_ids, alias='po')
     placeholders = ', '.join(['%s'] * len(picklist_ids))
 
+    # The owner filter belongs HERE as well as in the listing, not only there.
+    # Download, print and the printed mark all resolve ids through this function,
+    # and a filtered list is no protection at all if another user's id still
+    # works when typed into the request body.
+    owner_sql = 'pl.created_by = %s' if owner_id is not None else '1=1'
+    owner_params = (owner_id,) if owner_id is not None else ()
+
     rows = mysql_manager.execute_query(
         """SELECT pl.picklist_id, pl.original_order_id, pl.picklist_code,
-                  pl.qr_token, pl.meta
+                  pl.qr_token, pl.meta, po.status AS order_status
              FROM order_picklist pl
              JOIN potential_order po
                ON po.potential_order_id = pl.potential_order_id
-            WHERE pl.picklist_id IN (%s) AND %s AND %s
-            ORDER BY pl.created_at""" % (placeholders, pf_sql, cf_sql),
-        tuple(picklist_ids) + tuple(pf_params) + tuple(cf_params),
+            WHERE pl.picklist_id IN (%s) AND %s AND %s AND %s
+            ORDER BY pl.created_at""" % (placeholders, pf_sql, cf_sql, owner_sql),
+        tuple(picklist_ids) + tuple(pf_params) + tuple(cf_params) + owner_params,
     )
 
     for row in rows or []:

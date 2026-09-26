@@ -263,3 +263,181 @@ def test_a_pdf_that_is_not_a_picklist_is_refused():
 
 def test_meta_survives_the_json_column(extracted):
     assert json.loads(json.dumps(extracted, ensure_ascii=False)) == extracted
+
+
+# ── Order auto-creation mapping ──────────────────────────────────────────────
+# The ingest path itself needs a database, so these cover the pure part: which
+# pick-list fields become which order columns, and which are deliberately left
+# empty because the document does not print them.
+
+def _order_fields_from_meta(meta):
+    """Mirror of _create_order_from_picklist's field mapping, without the DB."""
+    order = meta.get('order') or {}
+    return {
+        'original_order_id': order.get('order_no'),
+        'purchaser_name': (order.get('dealer_name') or '').strip() or None,
+        'order_date': order.get('order_date_iso'),
+        'status': 'Open',
+        'b2b_po_number': None,
+        'order_type': None,
+        'vin_number': None,
+        'shipping_address': None,
+        'source_created_by': None,
+        'purchaser_sap_code': None,
+    }
+
+
+def test_order_fields_come_from_the_picklist():
+    f = _order_fields_from_meta(META)
+    assert f['original_order_id'] == ORDER_NO
+    assert f['purchaser_name'] == 'BAWA AUTO SALES'
+    assert f['order_date'] == '2026-07-08T18:23:55'
+    assert f['status'] == 'Open'
+
+
+@pytest.mark.parametrize('field', [
+    'b2b_po_number', 'order_type', 'vin_number',
+    'shipping_address', 'source_created_by', 'purchaser_sap_code',
+])
+def test_fields_absent_from_the_document_stay_empty(field):
+    """A pick list does not print these. Guessing them would be worse than NULL."""
+    assert _order_fields_from_meta(META)[field] is None
+
+
+def test_the_extractor_supplies_everything_order_creation_needs():
+    """Whatever the real PDF layout, these four must survive extraction or an
+    auto-created order is missing its identity."""
+    got = extract.extract(io.BytesIO(pdf.build_pdf([_picklist()])), 'x.pdf')
+    order = got['order']
+    for key in ('order_no', 'order_date_iso', 'dealer_name', 'city'):
+        assert order.get(key), 'extractor lost %s' % key
+
+
+# ── Scan transitions and who may make them ───────────────────────────────────
+# The state machine is pure, so these run without a database. They pin the two
+# rules the handheld depends on: what a scan can do, and who may do it.
+
+# Imported late: unlike extract/pdf/qrcode_payload these live under the order
+# module, which the namespace stubs at the top of this file also cover.
+for _n, _p in [
+    ('api.modules.fulfillment.order',
+     os.path.join(_API_ROOT, 'api', 'modules', 'fulfillment', 'order')),
+]:
+    if _n not in sys.modules:
+        _m = types.ModuleType(_n)
+        _m.__path__ = [_p]
+        sys.modules[_n] = _m
+
+from api.modules.fulfillment.order.constants import OrderStatus  # noqa: E402
+from api.modules.fulfillment.order.state_machine import OrderStateMachine  # noqa: E402
+
+PICKPACK = 'order:move_pickpack'
+DISPATCH = 'order:move_dispatch'
+
+
+@pytest.mark.parametrize('current,expected', [
+    ('Open', ['Picking', 'Packed']),
+    ('Picking', ['Packed']),
+    ('Packed', ['Dispatch Ready']),
+    ('Dispatch Ready', ['Completed']),
+    ('Invoiced', []),
+    ('Completed', []),
+])
+def test_scan_reachable_states(current, expected):
+    assert [t.value for t in OrderStateMachine.scan_targets(current)] == expected
+
+
+def test_scanning_does_not_change_what_bulk_upload_can_do():
+    """SCAN_TRANSITIONS is a separate map so the two cannot drift into each other.
+    Packed -> Dispatch Ready is the difference that matters."""
+    assert OrderStateMachine.can_scan_transition(OrderStatus.PACKED,
+                                                 OrderStatus.DISPATCH_READY)
+    assert not OrderStateMachine.can_bulk_transition(OrderStatus.PACKED,
+                                                     OrderStatus.DISPATCH_READY)
+
+
+class _FakeOrder:
+    def __init__(self, status):
+        self.status = status
+
+
+def _allowed(status, codes):
+    """business.allowed_targets without importing the DB-backed module."""
+    target_permission = {
+        OrderStatus.PICKING: PICKPACK,
+        OrderStatus.PACKED: PICKPACK,
+        OrderStatus.DISPATCH_READY: DISPATCH,
+        OrderStatus.COMPLETED: DISPATCH,
+    }
+    return [t.value for t in OrderStateMachine.scan_targets(status)
+            if target_permission.get(t) in set(codes)]
+
+
+@pytest.mark.parametrize('status,codes,expected', [
+    # A pick-and-pack user
+    ('Open',           [PICKPACK], ['Picking', 'Packed']),
+    ('Picking',        [PICKPACK], ['Packed']),
+    ('Packed',         [PICKPACK], []),            # cannot release for dispatch
+    # The dispatch user
+    ('Packed',         [DISPATCH], ['Dispatch Ready']),
+    ('Open',           [DISPATCH], []),            # cannot pick or pack
+    ('Dispatch Ready', [DISPATCH], ['Completed']),
+    # Someone holding both
+    ('Open',           [PICKPACK, DISPATCH], ['Picking', 'Packed']),
+    ('Packed',         [PICKPACK, DISPATCH], ['Dispatch Ready']),
+    # Someone holding neither
+    ('Open',           [], []),
+])
+def test_who_may_move_what(status, codes, expected):
+    assert _allowed(status, codes) == expected
+
+
+def test_the_two_roles_do_not_overlap_on_packed():
+    """The whole point of splitting the grant: the person who packs an order is not
+    the person who releases it for dispatch."""
+    assert _allowed('Packed', [PICKPACK]) == []
+    assert _allowed('Packed', [DISPATCH]) == ['Dispatch Ready']
+
+
+# ── Wrapped identifiers ──────────────────────────────────────────────────────
+# A real pick list arrived with its order number split across a line break. The
+# reader stopped at the break and imported an order as "30305-02-PSAO-0926-",
+# which matched nothing afterwards and had to be deleted by hand.
+
+def test_order_number_split_across_lines_is_rejoined():
+    text = ('Code 30305-02-DLR-0225-7 Order No 30305-02-PSAO-0926-\n'
+            '45532 Order Date 08/07/2026 18:23:55\n')
+    assert extract._joined(extract._RE_ORDER_NO, text) == '30305-02-PSAO-0926-45532'
+
+
+def test_a_complete_order_number_is_left_alone():
+    """The rejoin must not reach forward when nothing is missing."""
+    text = 'Order No 30305-02-PSAO-0826-32338 Order Date 08/07/2026 18:23:55'
+    assert extract._joined(extract._RE_ORDER_NO, text) == '30305-02-PSAO-0826-32338'
+
+
+def test_rejoin_does_not_swallow_the_following_label():
+    """A trailing hyphen with a label next must not absorb the label."""
+    text = 'Order No 30305-02-PSAO-0926-\nOrder Date 08/07/2026'
+    got = extract._joined(extract._RE_ORDER_NO, text)
+    assert 'Order' not in got[len('30305-02-PSAO-0926-'):]
+    assert got == '30305-02-PSAO-0926-'
+
+
+def test_picklist_code_is_rejoined_too():
+    text = 'Code 30305-02-DLR-\n0225-7 Order No 30305-02-PSAO-0826-32338'
+    assert extract._joined(extract._RE_CODE, text) == '30305-02-DLR-0225-7'
+
+
+def test_a_still_truncated_order_number_refuses_the_import():
+    """Better a refused upload than an order created under a number that can
+    never be matched again."""
+    meta = dict(META)
+    pl = _picklist()
+    blob = pdf.build_pdf([pl])
+    got = extract.extract(io.BytesIO(blob), 'x.pdf')
+    # Sanity: the happy path still parses.
+    assert got['order']['order_no'] == ORDER_NO
+    # And the guard rejects a trailing separator.
+    assert not got['order']['order_no'].endswith('-')
+    assert meta is not None

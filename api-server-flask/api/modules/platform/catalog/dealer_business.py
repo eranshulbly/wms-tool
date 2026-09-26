@@ -95,6 +95,31 @@ def get_or_create_dealer(dealer_name, dealer_code=None):
         raise e
 
 
+def set_town_if_absent(dealer_id, town):
+    """Fill in a dealer's town, but only when it is currently blank.
+
+    A pick list prints the dealer's city, which is often the only place that value
+    appears at all. It is still the weakest source available — the dealer master and
+    anything a human typed both outrank it — so this never overwrites an existing
+    value, it only fills a hole.
+
+    Best-effort: a dealer whose town cannot be set is not a reason to fail the import
+    that was really about an order.
+    """
+    if not dealer_id or not town:
+        return
+    try:
+        from api.db_manager import mysql_manager
+        mysql_manager.execute_query(
+            "UPDATE dealer SET town = %s, updated_at = %s "
+            "WHERE dealer_id = %s AND (town IS NULL OR town = '')",
+            (town.strip(), datetime.utcnow(), dealer_id), fetch=False,
+        )
+    except Exception:
+        logger.warning("Could not set dealer town",
+                       extra={'dealer_id': dealer_id, 'town': town})
+
+
 def clear_dealer_cache():
     """Clear the dealer cache — useful for testing."""
     global _dealer_cache

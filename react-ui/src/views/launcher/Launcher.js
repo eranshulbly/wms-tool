@@ -86,8 +86,11 @@ const Launcher = () => {
             color: theme.palette.error.dark,
             tint: theme.palette.error.light,
             path: '/analytics/target-tracker',
-            // Visible to everyone for now; gate with a permission when analytics grow.
-            show: true
+            // Gated now that it needed to be: office staff were given the whole of
+            // Order Tracking and nothing else, and Analytics showing to everyone
+            // meant sales figures on a screen that had no business carrying them.
+            // Existing roles default to off, so this is opt-in per role.
+            show: isAdmin || perms.analytics === true
         },
         {
             key: 'admin',

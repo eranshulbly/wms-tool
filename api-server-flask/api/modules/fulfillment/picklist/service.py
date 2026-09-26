@@ -12,6 +12,7 @@ from datetime import datetime
 from api.core.logging import get_logger
 from api.db_manager import mysql_manager
 from api.models import Order, PotentialOrder
+from api.modules.fulfillment.order.state_machine import OrderStateMachine
 from api.modules.fulfillment.picklist import business, repository as picklist_repo
 from api.modules.fulfillment.picklist.extract import PicklistExtractError
 from api.repositories import order_repo
@@ -76,6 +77,54 @@ def _delete_batch(upload_batch_id) -> None:
 
 # ── Scan ─────────────────────────────────────────────────────────────────────
 
+def _permission_codes(user):
+    """The caller's effective permission codes, from either front door.
+
+    The mobile API hands us the dict `auth_v1` decoded from the token, which already
+    carries `permissions`. The web API hands us a User model, so the codes are looked
+    up. Both end up at the same list, which is the point — one authorisation rule,
+    not one per client.
+    """
+    if isinstance(user, dict):
+        return user.get('permissions') or []
+    from api.modules.platform.user_auth.rbac import get_user_permission_codes
+    return get_user_permission_codes(user.id)
+
+
+def preview_scan(payload, user):
+    """Resolve a scanned payload WITHOUT moving anything.
+
+    The handheld calls this first so the operator sees which order they scanned and
+    which moves they may make before committing to one. A pick list sitting on a
+    trolley has no way to tell you it is the wrong sheet; the order number and dealer
+    on screen do.
+    """
+    codes = _permission_codes(user)
+    try:
+        picklist, order = business.resolve_scan(payload)
+    except business.ScanRejected as e:
+        return {'success': False, 'result': e.result, 'msg': e.message}, 400
+
+    targets = business.allowed_targets(order, codes)
+    return {
+        'success': True,
+        'picklist_id': picklist['picklist_id'],
+        'original_order_id': picklist['original_order_id'],
+        'picklist_code': picklist['picklist_code'],
+        'order_status': order.status,
+        'dealer_name': order_repo.get_dealer_name(order.dealer_id) if order.dealer_id else '',
+        'allowed_targets': [
+            {'status': t.value, 'slug': t.to_frontend_slug(),
+             # The one target that needs a box count before it can be applied.
+             'needs_box_count': t.value == 'Packed'}
+            for t in targets
+        ],
+        # Distinguishes "nothing you may do here" from "nothing anyone may do here",
+        # so the handheld can say which.
+        'reachable_any': [t.value for t in
+                          OrderStateMachine.scan_targets(order.status)],
+    }, 200
+
 def apply_scan(payload, user, target_status=None, box_count=None,
                device_id=None) -> tuple:
     """Resolve a scanned QR payload and move its order one step.
@@ -84,23 +133,15 @@ def apply_scan(payload, user, target_status=None, box_count=None,
     a rejected scan leaves no order_state_history row, so without the audit there
     would be nothing at all to look at when someone reports a QR that "does nothing".
     """
-    user_id = user.id
+    # The mobile token dict keys the id as 'user_id'; the web User model as .id.
+    user_id = user['user_id'] if isinstance(user, dict) else user.id
+    codes = _permission_codes(user)
     picklist = None
     try:
         picklist, order = business.resolve_scan(payload)
-        target = business.plan_transition(order, target_status)
-
-        # Same gate the per-order status endpoints apply: a role that is not trusted
-        # to manage orders in a state must not reach that state by scanning either.
-        # Checked here rather than in the router so the refusal is audited with the
-        # order and target it was refused for.
-        from api.permissions import can_see_order_state
-        if not can_see_order_state(user.role, target.value):
-            raise business.ScanRejected(
-                'no_access',
-                'You do not have permission to move orders to %s.' % target.value,
-                picklist_id=picklist['picklist_id'],
-                from_status=order.status, to_status=target.value)
+        # plan_transition applies the permission gate itself, so a refusal carries
+        # the order and target it was refused for and lands in the audit below.
+        target = business.plan_transition(order, codes, target_status)
     except business.ScanRejected as e:
         picklist_repo.record_scan(
             e.picklist_id or (picklist or {}).get('picklist_id'), payload, user_id,
@@ -188,6 +229,33 @@ def _transition(order, target, user_id, box_count):
         order_repo.create_state_history(
             potential_order.potential_order_id, invoiced_state.state_id, user_id, now)
         return 'Invoiced'
+
+    # Reaching Dispatch Ready is where the final `order` record is born — the same
+    # thing /move-to-invoiced does on the web. Created here too, or the order would
+    # sit in Dispatch Ready with nothing for complete-dispatch to finish.
+    #
+    # Note what is NOT here: an invoice. The web route reaches this state after one
+    # exists; a scan does not, by design (see OrderStateMachine.SCAN_TRANSITIONS).
+    # box_count carries over from Packed so the dispatch paperwork still has it.
+    if target_value == 'Dispatch Ready':
+        final_order = order_repo.find_order_by_potential_id(
+            potential_order.potential_order_id)
+        if final_order:
+            # Already invoiced by another path — move the existing record rather
+            # than minting a second one for the same order.
+            final_order.status = 'Dispatch Ready'
+            final_order.updated_at = now
+            final_order.save()
+        else:
+            Order(
+                potential_order_id=potential_order.potential_order_id,
+                order_number='ORD-%s-%s' % (potential_order.potential_order_id,
+                                            now.strftime('%Y%m%d%H%M')),
+                status='Dispatch Ready',
+                box_count=potential_order.box_count,
+                created_at=now,
+                updated_at=now,
+            ).save()
 
     if target_value == 'Completed':
         final_order = order_repo.find_order_by_potential_id(

@@ -629,6 +629,9 @@ def create_all_tables():
         eway_bill_admin BOOLEAN DEFAULT FALSE,
         eway_bill_filling BOOLEAN DEFAULT FALSE,
         supply_sheet BOOLEAN DEFAULT FALSE,
+        -- Analytics (Target Tracker) used to be visible to everyone. Gated once
+        -- office staff needed Order Tracking without it.
+        analytics BOOLEAN DEFAULT FALSE,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
@@ -766,6 +769,7 @@ def create_all_tables():
     import api.modules.platform.catalog.schema      # noqa: F401
     import api.modules.fulfillment.order.schema        # noqa: F401
     import api.modules.fulfillment.picklist.schema     # noqa: F401
+    import api.modules.platform.diagnostics.schema     # noqa: F401
     import api.modules.inventory.schema    # noqa: F401
     import api.modules.fulfillment.assignment.schema   # noqa: F401
     import api.modules.sales.schema                    # noqa: F401
@@ -1387,6 +1391,16 @@ def _migrate_invoice_columns():
 # clone-and-run no longer depends on remembering it.
 #   table -> [(column, ddl, index_name|None)]
 _V2_API_COLUMNS = {
+    'roles': [
+        ('analytics', 'BOOLEAN DEFAULT FALSE', None),
+    ],
+    # Pick-list printing. In the CREATE TABLE too, for a fresh install; here so an
+    # existing deployment gains them on the next boot without hand-run SQL.
+    'order_picklist': [
+        ('printed_at',  'DATETIME NULL',            'idx_picklist_printed'),
+        ('printed_by',  'INT NULL',                 None),
+        ('print_count', 'INT NOT NULL DEFAULT 0',   None),
+    ],
     'product': [
         ('uom',       'VARCHAR(20) NULL',                 None),
         ('size',      'VARCHAR(100) NULL',                None),

@@ -28,23 +28,33 @@ logger = get_logger(__name__)
 # table, it overflows the frame, and adjacent cells then print on top of each other.
 # The assertion below is not decoration: the first draft summed to 201 and the damage
 # only showed up as two headers sharing one cell when the page was read back.
+# A column has to fit its own HEADER, not just its values. The three quantity
+# columns hold one or two digits but are titled "Order Qty", "Allocated Qty" and
+# "Picked Qty"; at 8pt "Allocated" alone needs about 14mm. Sized at 9-10mm they
+# overflowed into each other and the vertical rule between them disappeared, which
+# reads back as a single cell containing "3 3" — the round-trip test caught it.
 _COL_WIDTHS_MM = (
     8,     # S.No.
-    12, 12, 12,   # Bin L1 / L2 / L3
+    15, 11, 11,   # Bin L1 / L2 / L3  (L1 takes "L3H8+9+10" and "NKF-105" whole)
     25,    # Part Number
     # Wide enough that "…-<PART NUMBER>" wraps AT the hyphen instead of hard-breaking
     # the part number in the middle. A mid-token break is ambiguous to read back: a
-    # reader cannot tell it from a real word space.
-    41,    # Description
-    15,    # HSN No.
+    # reader cannot tell it from a real word space — at 33mm "COMBINATION" came back
+    # as "CO MBINATION".
+    38,    # Description
+    14,    # HSN No.
     9,     # MOQ
     12,    # Stock on Hand
-    15,    # MRP
-    10,    # Order Qty
-    10,    # Allocated Qty
-    9,     # Picked Qty
+    14,    # MRP
+    11,    # Order Qty
+    15,    # Allocated Qty
+    11,    # Picked Qty
 )
-_PRINTABLE_WIDTH_MM = 190
+# 8mm side margins, not the usual 10: at 8pt every column has to fit its own
+# header, and the three quantity titles plus a description wide enough to break at
+# word boundaries do not add up inside 190mm. Well within any A4 printer's
+# unprintable edge.
+_PRINTABLE_WIDTH_MM = 194
 assert sum(_COL_WIDTHS_MM) <= _PRINTABLE_WIDTH_MM, (
     "pick-list columns total %dmm, wider than the %dmm printable area"
     % (sum(_COL_WIDTHS_MM), _PRINTABLE_WIDTH_MM))
@@ -74,8 +84,8 @@ def build_pdf(picklists: list) -> bytes:
     doc = SimpleDocTemplate(
         buf,
         pagesize=A4,
-        leftMargin=10 * mm,
-        rightMargin=10 * mm,
+        leftMargin=8 * mm,
+        rightMargin=8 * mm,
         topMargin=8 * mm,
         bottomMargin=10 * mm,
         title='Pick List',
@@ -133,15 +143,19 @@ def _styles():
         return s
 
     return {
-        'centre': make(8, align=TA_CENTER),
-        'centre_bold': make(8, bold=True, align=TA_CENTER),
-        'title': make(12, bold=True, align=TA_CENTER, leading=15),
-        'name': make(10, bold=True, align=TA_CENTER, leading=12),
-        'label': make(8, bold=True, align=TA_LEFT),
-        'value': make(8, align=TA_LEFT),
-        'cell': make(6.5, align=TA_LEFT, leading=8),
-        'cell_centre': make(6.5, align=TA_CENTER, leading=8),
-        'cell_head': make(6.5, bold=True, align=TA_CENTER, leading=8),
+        # Sized against the DMS original rather than to fit as much as possible.
+        # The first cut set the table at 6.5pt, which reads as a shrunken copy of
+        # the sheet next to it on the bench — and these are read at arm's length
+        # off a trolley, so smaller is not a neutral trade.
+        'centre': make(8.5, align=TA_CENTER, leading=10),
+        'centre_bold': make(8.5, bold=True, align=TA_CENTER, leading=10),
+        'title': make(13, bold=True, align=TA_CENTER, leading=16),
+        'name': make(11, bold=True, align=TA_CENTER, leading=13),
+        'label': make(8.5, bold=True, align=TA_LEFT),
+        'value': make(8.5, align=TA_LEFT),
+        'cell': make(8, align=TA_LEFT, leading=9.4),
+        'cell_centre': make(8, align=TA_CENTER, leading=9.4),
+        'cell_head': make(8, bold=True, align=TA_CENTER, leading=9.4),
         'token': make(6, align=TA_CENTER, leading=7),
     }
 
@@ -150,6 +164,35 @@ def _P(text, style):
     from reportlab.platypus import Paragraph
     from xml.sax.saxutils import escape
     return Paragraph(escape('' if text is None else str(text)), style)
+
+
+def _desc_paragraph(desc, part, style):
+    """The description, broken before the part number it ends with.
+
+    These descriptions read "<text>-<PART NUMBER>", and the part number is a single
+    unbreakable token far wider than any column this table can afford — about 49mm
+    at 8pt against a 38mm column. Left alone ReportLab breaks it wherever the line
+    runs out, which lands mid-word: "COMBI NATION".
+
+    The DMS sheet solves it by putting the part number on its own line ("SOCKET 20-"
+    / "070HH198012S"), so this does the same with an explicit break. Two things fall
+    out of matching it: the page looks like the original, and the text survives a
+    round trip — a break at the hyphen is one _repair_desc can undo, whereas one
+    inside a word is not.
+
+    A zero-width space would be the subtler way to offer the break, but ReportLab
+    renders U+200B as a literal "n".
+    """
+    from reportlab.platypus import Paragraph
+    from xml.sax.saxutils import escape
+
+    text = '' if desc is None else str(desc)
+    if part:
+        marker = '-' + part
+        if text.upper().endswith(marker.upper()):
+            head = text[:-len(part)]        # keeps the hyphen on the first line
+            return Paragraph(escape(head) + '<br/>' + escape(part), style)
+    return Paragraph(escape(text), style)
 
 
 # ── Header (letterhead + QR) ─────────────────────────────────────────────────
@@ -182,7 +225,10 @@ def _header_table(pl: dict, meta: dict):
 
     table = Table(
         [[centre, _qr_cell(pl)]],
-        colWidths=[155 * mm, 35 * mm],
+        # The letterhead is centred on the page in the original, so the QR must
+        # cost it as little width as possible — at 35mm the whole block was
+        # visibly shoved left of centre.
+        colWidths=[172 * mm, 22 * mm],
     )
     table.setStyle(TableStyle([
         ('VALIGN', (0, 0), (0, 0), 'MIDDLE'),
@@ -212,7 +258,7 @@ def _qr_cell(pl: dict):
         [_P(pl.get('qr_token', ''), st['token'])],
         [_P('Page 1 of 1', st['token'])],
     ]
-    inner = Table(rows, colWidths=[35 * mm])
+    inner = Table(rows, colWidths=[22 * mm])
     inner.setStyle(TableStyle([
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('LEFTPADDING', (0, 0), (-1, -1), 0),
@@ -235,7 +281,7 @@ def _qr_drawing(payload: str):
     from reportlab.graphics.shapes import Drawing
     from reportlab.lib.units import mm
 
-    side = 25 * mm
+    side = 20 * mm
     widget = qr.QrCodeWidget(payload, barLevel='Q')
     bounds = widget.getBounds()
     width = bounds[2] - bounds[0]
@@ -266,7 +312,7 @@ def _order_block(meta: dict):
         [_P('City', st['label']), _P(order.get('city', ''), st['value']),
          '', '', '', ''],
     ]
-    table = Table(rows, colWidths=[16 * mm, 54 * mm, 20 * mm, 50 * mm, 22 * mm, 28 * mm])
+    table = Table(rows, colWidths=[16 * mm, 56 * mm, 20 * mm, 52 * mm, 22 * mm, 28 * mm])
     table.setStyle(TableStyle([
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('LEFTPADDING', (0, 0), (-1, -1), 0),
@@ -319,7 +365,7 @@ def _lines_table(meta: dict):
             _P(bins[1], st['cell_centre']),
             _P(bins[2], st['cell_centre']),
             _P(line.get('part', ''), st['cell']),
-            _P(line.get('desc', ''), st['cell']),
+            _desc_paragraph(line.get('desc', ''), line.get('part', ''), st['cell']),
             _P(line.get('hsn', ''), st['cell_centre']),
             _P(_num(line.get('moq')), st['cell_centre']),
             _P(_num(line.get('stock')), st['cell_centre']),
@@ -334,7 +380,11 @@ def _lines_table(meta: dict):
     table = Table(
         data,
         colWidths=[w * mm for w in _COL_WIDTHS_MM],
-        repeatRows=2,          # both header rows repeat when a long pick list breaks
+        # No repeatRows, matching the DMS original: its page 2 carries on straight
+        # from row 19 with no column headers. Repeating them reads as a tidier
+        # document but it is a different one, and these are checked side by side
+        # against the sheet the DMS printed.
+        repeatRows=0,
     )
     table.setStyle(TableStyle([
         ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
@@ -350,10 +400,13 @@ def _lines_table(meta: dict):
         ('SPAN', (11, 0), (11, 1)),      # Allocated Qty
         ('SPAN', (12, 0), (12, 1)),      # Picked Qty
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('LEFTPADDING', (0, 0), (-1, -1), 2),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 2),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        # Row padding matched to the original's density: at 2pt the sheet fitted
+        # 24 lines where the DMS fits 18, which is the same complaint as a small
+        # font wearing a different hat.
+        ('LEFTPADDING', (0, 0), (-1, -1), 2.5),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 2.5),
+        ('TOPPADDING', (0, 0), (-1, -1), 3.5),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3.5),
     ]))
     return table
 
@@ -371,7 +424,7 @@ def _footer_table(meta: dict):
         [_P('Packed By', st['label']), _P('Packed Date', st['label']), ''],
         [_P('Remarks', st['label']), '', ''],
     ]
-    table = Table(rows, colWidths=[63 * mm, 63 * mm, 64 * mm], rowHeights=[12 * mm] * 4)
+    table = Table(rows, colWidths=[65 * mm, 65 * mm, 64 * mm], rowHeights=[12 * mm] * 4)
     table.setStyle(TableStyle([
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('LEFTPADDING', (0, 0), (-1, -1), 0),

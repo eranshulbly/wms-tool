@@ -514,22 +514,52 @@ def _delete_order_batch(batch_id: int) -> None:
 
 
 def _delete_picklist_batch(batch_id: int) -> None:
-    """Remove the pick-list documents a batch created.
+    """Remove the pick-list documents a batch created, and any order it invented.
 
-    Only the documents. The upload also REPLACED each order's
-    potential_order_product lines, and that half cannot be undone — whatever those
-    lines held beforehand was overwritten and is not recorded anywhere. Deleting
-    them here would therefore not restore the previous state, it would just leave
-    the order with no lines at all, so they are left in place.
+    Two halves, treated differently.
 
-    The order_picklist_scan rows are kept too. They are an audit of scans that
-    really happened, and a deleted document does not unmake them; their picklist_id
-    is simply left pointing at a row that no longer exists.
+    The documents always go. So does any order the SAME upload created — a
+    pick-list import creates the order when none exists, and leaving those behind
+    made reverting useless: the batch disappeared from the upload history while
+    the orders it had conjured stayed in Manage Orders with no way to reach them.
+    An order that existed before the pick list is left alone; it belongs to
+    whoever made it, and the pick list was only ever a document attached to it.
+
+    What cannot be undone is the line replacement. The upload overwrote each
+    matched order's potential_order_product rows and nothing records what they
+    held first, so for a PRE-EXISTING order the lines stay as they are: removing
+    them would not restore the old ones, it would just leave the order empty.
+
+    order_picklist_scan rows are kept as an audit of scans that really happened.
     """
-    mysql_manager.execute_query(
-        "DELETE FROM order_picklist WHERE upload_batch_id = %s",
-        (batch_id,), fetch=False,
-    )
+    # Orders this upload created, as opposed to ones it merely attached to.
+    pf_sql, pf_params = partition_filter('potential_order', alias='po')
+    own = mysql_manager.execute_query(
+        f"""SELECT DISTINCT po.potential_order_id
+              FROM potential_order po
+             WHERE po.upload_batch_id = %s AND {pf_sql}""",
+        (batch_id, *pf_params),
+    ) or []
+    own_ids = [r['potential_order_id'] for r in own]
+
+    with mysql_manager.get_cursor() as cursor:
+        cursor.execute(
+            "DELETE FROM order_picklist WHERE upload_batch_id = %s", (batch_id,))
+
+        if own_ids:
+            placeholders = ', '.join(['%s'] * len(own_ids))
+            args = tuple(own_ids)
+            cursor.execute(
+                f"DELETE FROM potential_order_product "
+                f"WHERE potential_order_id IN ({placeholders})", args)
+            cursor.execute(
+                f"DELETE FROM order_state_history "
+                f"WHERE potential_order_id IN ({placeholders})", args)
+            cursor.execute(
+                f"DELETE FROM `order` WHERE potential_order_id IN ({placeholders})", args)
+            cursor.execute(
+                f"DELETE FROM potential_order "
+                f"WHERE potential_order_id IN ({placeholders})", args)
 
 
 def _delete_invoice_batch(batch_id: int) -> None:

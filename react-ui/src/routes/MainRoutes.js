@@ -11,6 +11,7 @@ import AdminGuard from './../utils/route-guard/AdminGuard';
 import EwayFillingGuard from './../utils/route-guard/EwayFillingGuard';
 import UploadPermissionGuard from './../utils/route-guard/UploadPermissionGuard';
 import SupplySheetGuard from './../utils/route-guard/SupplySheetGuard';
+import AnalyticsGuard from './../utils/route-guard/AnalyticsGuard';
 
 // system launcher (tile home)
 const Launcher = Loadable(lazy(() => import('../views/launcher/Launcher')));
@@ -49,6 +50,7 @@ const MainRoutes = () => {
                 '/warehouse/submitted-orders',
                 '/warehouse/download-dms',
                 '/warehouse/upload-orders',
+                '/warehouse/upload-picklists',
                 '/warehouse/manage-orders',
                 '/warehouse/upload-invoices',
                 '/warehouse/upload-products',
@@ -116,7 +118,16 @@ const MainRoutes = () => {
                     />
 
                     {/* Analytics — Target Tracker is the only screen, so /analytics lands on it */}
-                    <Route path="/analytics/target-tracker" render={() => <AuthGuard><TargetTracker /></AuthGuard>} />
+                    <Route
+                        path="/analytics/target-tracker"
+                        render={() => (
+                            <AuthGuard>
+                                <AnalyticsGuard>
+                                    <TargetTracker />
+                                </AnalyticsGuard>
+                            </AuthGuard>
+                        )}
+                    />
                     <Route exact path="/analytics" render={() => <Redirect to="/analytics/target-tracker" />} />
 
                     {/* Admin routes */}

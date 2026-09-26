@@ -35,6 +35,18 @@ CREATE TABLE IF NOT EXISTS order_picklist (
     qr_token           VARCHAR(16) NOT NULL,
     line_count         INT NOT NULL DEFAULT 0,
     meta               JSON NOT NULL,
+    -- Printing is a property of the DOCUMENT, not of the order. Deliberately not
+    -- an order status: the state machine that scanning, bulk upload and dispatch
+    -- all depend on has no business gaining a state for "a sheet came out of a
+    -- printer".
+    --
+    -- NULL printed_at means never printed. print_count matters more than it
+    -- looks: two printed copies of the same sheet means two people can each scan
+    -- that QR and move the same order, so a reprint is a hazard worth surfacing,
+    -- not just bookkeeping.
+    printed_at         DATETIME NULL,
+    printed_by         INT NULL,
+    print_count        INT NOT NULL DEFAULT 0,
     warehouse_id       INT NULL,
     company_id         INT NULL,
     upload_batch_id    INT NULL,

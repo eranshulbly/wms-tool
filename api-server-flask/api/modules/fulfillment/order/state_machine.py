@@ -56,6 +56,40 @@ class OrderStateMachine:
     # Reverse lookup: target → required source (used by bulk-status-update business logic)
     _SOURCE_FOR_TARGET: dict = {v: k for k, v in BULK_TRANSITIONS.items()}
 
+    # ── Transitions a pick-list QR scan may make ─────────────────────────────
+    # Deliberately a separate map from BULK_TRANSITIONS, not an edit to it.
+    #
+    # It differs in two ways. An Open order can go straight to Packed, because a
+    # small order is picked and packed in one motion at one bench and forcing two
+    # scans would only teach people to double-trigger. And Packed can go to
+    # Dispatch Ready, which the Excel bulk path deliberately cannot.
+    #
+    # THAT SECOND ONE BYPASSES INVOICING. Everywhere else, Dispatch Ready is reached
+    # through /move-to-invoiced after an invoice exists; a scan reaching it means an
+    # order can be released for dispatch with no invoice uploaded. That is the
+    # requested behaviour for the handheld — the dispatch grant is separate
+    # (order:move_dispatch) precisely because it is the loose one.
+    #
+    # Keeping the maps separate means a future change to how spreadsheets move
+    # orders cannot silently change what a scanner on the floor does, or vice versa.
+    SCAN_TRANSITIONS: dict = {
+        OrderStatus.OPEN:           [OrderStatus.PICKING, OrderStatus.PACKED],
+        OrderStatus.PICKING:        [OrderStatus.PACKED],
+        OrderStatus.PACKED:         [OrderStatus.DISPATCH_READY],
+        OrderStatus.DISPATCH_READY: [OrderStatus.COMPLETED],
+    }
+
+    @classmethod
+    def scan_targets(cls, current) -> list:
+        """Every state a scan could move an order in `current` to, before the
+        scanning user's own permissions narrow it."""
+        return list(cls.SCAN_TRANSITIONS.get(current, []))
+
+    @classmethod
+    def can_scan_transition(cls, current, target) -> bool:
+        """True when a scan may move an order from `current` to `target`."""
+        return target in cls.SCAN_TRANSITIONS.get(current, [])
+
     # ── Per-order transitions (used by individual order status update endpoint) ─
     # This DIFFERS from BULK_TRANSITIONS — it allows the Picking → Open back-transition.
     SINGLE_ORDER_TRANSITIONS: dict = {

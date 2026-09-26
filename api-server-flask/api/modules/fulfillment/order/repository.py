@@ -34,6 +34,83 @@ class OrderRepository(BaseRepository):
         )
         return {r['original_order_id']: PotentialOrder(**r) for r in rows} if rows else {}
 
+    def find_any_by_original_id(self, original_order_id: str):
+        """Find an order by its order number across EVERY partition, not just the
+        active window.
+
+        find_bulk_by_original_ids() is window-scoped, so it cannot tell "this order
+        does not exist" apart from "this order is older than the window". That
+        distinction did not matter while a miss only produced an error message. It
+        matters now that a miss creates an order: `potential_order` carries no unique
+        index on original_order_id (migration_partitions.sql had to drop it — MySQL
+        requires the partition key in every unique index), so creating on a windowed
+        miss would silently produce a second row for an order that already exists.
+
+        Unindexed by partition, but original_order_id is indexed, so this is an index
+        lookup per partition rather than a scan.
+
+        Returns the most recent match, or None.
+        """
+        if not original_order_id:
+            return None
+        from api.models import PotentialOrder
+        rows = self._db.execute_query(
+            "SELECT * FROM potential_order WHERE original_order_id = %s "
+            "ORDER BY created_at DESC LIMIT 1",
+            (original_order_id,)
+        )
+        return PotentialOrder(**rows[0]) if rows else None
+
+    def insert_potential_order_on(self, cursor, fields: dict) -> int:
+        """Insert one potential_order on the CALLER'S cursor and return its id.
+
+        PotentialOrder.save() opens its own cursor and commits, which would land the
+        order on disk even if the rest of the import then failed. Importing a pick
+        list is one transaction, so it needs the insert on the transaction it already
+        holds.
+        """
+        cursor.execute(
+            """INSERT INTO potential_order
+                 (original_order_id, b2b_po_number, order_type, vin_number,
+                  shipping_address, source_created_by, purchaser_sap_code,
+                  purchaser_name, warehouse_id, company_id, dealer_id, order_date,
+                  requested_by, status, box_count, upload_batch_id,
+                  created_at, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                       %s, %s)""",
+            (fields['original_order_id'], fields.get('b2b_po_number'),
+             fields.get('order_type'), fields.get('vin_number'),
+             fields.get('shipping_address'), fields.get('source_created_by'),
+             fields.get('purchaser_sap_code'), fields.get('purchaser_name'),
+             fields.get('warehouse_id'), fields.get('company_id'),
+             fields.get('dealer_id'), fields.get('order_date'),
+             fields.get('requested_by'), fields.get('status', 'Open'),
+             fields.get('box_count', 1), fields.get('upload_batch_id'),
+             fields['created_at'], fields['created_at']),
+        )
+        return cursor.lastrowid
+
+    def build_potential_order(self, fields: dict):
+        """Wrap a dict of freshly-inserted values as a PotentialOrder.
+
+        Used straight after insert_potential_order_on(): the row is not committed yet,
+        so re-reading it would either miss it (another connection) or cost a round
+        trip for values the caller already has.
+        """
+        from api.models import PotentialOrder
+        return PotentialOrder(**fields)
+
+    def create_state_history_on(self, cursor, potential_order_id: int, state_id: int,
+                                user_id: int, changed_at) -> None:
+        """create_state_history, on the caller's cursor. Same reasoning as above —
+        an order and the state history that explains it must commit together."""
+        cursor.execute(
+            """INSERT INTO order_state_history
+                 (potential_order_id, state_id, changed_by, changed_at)
+               VALUES (%s, %s, %s, %s)""",
+            (potential_order_id, state_id, user_id, changed_at),
+        )
+
     def find_by_id(self, potential_order_id: int):
         """Return a single PotentialOrder by primary key, or None."""
         from api.models import PotentialOrder

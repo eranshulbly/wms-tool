@@ -43,6 +43,8 @@ def register_all_routes():
     from ..modules.platform.user_auth import router_v1 as _v1_auth_router        # noqa: F401
     from ..modules.platform.catalog import router_v1 as _v1_catalog_router       # noqa: F401
     from ..modules.fulfillment.order import router_v1 as _v1_order_router           # noqa: F401
+    from ..modules.fulfillment.picklist import router_v1 as _v1_picklist_router     # noqa: F401
+    from ..modules.platform.diagnostics import router_v1 as _v1_diag_router         # noqa: F401
     from ..modules.inventory import router_v1 as _v1_inventory_router   # noqa: F401
     from ..modules.fulfillment.assignment import router_v1 as _v1_assignment_router # noqa: F401
     from ..modules.sales.visit import router_v1 as _v1_visit_router           # noqa: F401

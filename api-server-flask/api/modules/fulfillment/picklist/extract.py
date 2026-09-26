@@ -91,6 +91,20 @@ def extract(file_stream, source_filename=None) -> dict:
     if not order.get('order_no'):
         raise PicklistExtractError(
             "no 'Order No' found on page 1 — this does not look like a pick list")
+
+    # Refuse a truncated order number rather than import under it.
+    #
+    # One got through as "30305-02-PSAO-0926-" — the printer had wrapped it and
+    # the reader stopped at the line break. Nothing downstream could tell that
+    # from a real order number, so an order was created under it, matched nothing
+    # ever again, and had to be deleted by hand. _joined() now rejoins the usual
+    # case; this catches whatever it could not, because a bad import is far more
+    # expensive to undo than a refused one.
+    if order['order_no'].endswith('-'):
+        raise PicklistExtractError(
+            "the order number reads '%s', which is cut off — the sheet's layout "
+            "split it and it could not be pieced back together"
+            % order['order_no'])
     if not lines:
         raise PicklistExtractError(
             "no part lines could be read from the table; the layout may differ from "
@@ -157,13 +171,50 @@ def _parse_distributor(text: str) -> dict:
 def _parse_order(text: str) -> dict:
     raw_date = _first(_RE_ORDER_DATE, text)
     return {
-        'code': _first(_RE_CODE, text),
-        'order_no': _first(_RE_ORDER_NO, text),
+        'code': _joined(_RE_CODE, text),
+        'order_no': _joined(_RE_ORDER_NO, text),
         'order_date': raw_date,
         'order_date_iso': _parse_date(raw_date),
         'dealer_name': _first(_RE_NAME, text),
         'city': _first(_RE_CITY, text),
     }
+
+
+# A continuation of a wrapped identifier: digits and capitals only, and not
+# followed by a lowercase letter. That last part is what stops it swallowing the
+# label that usually comes next — "Order" would otherwise contribute its "O".
+_RE_CONTINUATION = re.compile(r'\s*([0-9A-Z][0-9A-Z-]+)(?![a-z])')
+
+
+def _joined(pattern, text: str) -> str:
+    """Read an identifier, rejoining it when the printer wrapped it mid-number.
+
+    `\\S+` stops at the line break, and these identifiers break at a hyphen:
+    "Order No 30305-02-PSAO-0926-" on one line and "45532" on the next read as an
+    order number ending in a separator. That is not a near-miss — it created a
+    whole order under a truncated number that matched nothing and had to be
+    deleted by hand.
+
+    A trailing hyphen is the signal, because a complete one never ends in one.
+    """
+    m = pattern.search(text or '')
+    if not m:
+        return ''
+    value = m.group(1).strip()
+    tail = text[m.end():]
+
+    # A loop, not a single step: an identifier long enough to wrap once can wrap
+    # twice. Bounded so a malformed document cannot spin here.
+    for _ in range(4):
+        if not value.endswith('-'):
+            break
+        nxt = _RE_CONTINUATION.match(tail)
+        if not nxt:
+            break
+        value += nxt.group(1)
+        tail = tail[nxt.end():]
+
+    return value
 
 
 def _first(pattern, text: str) -> str:

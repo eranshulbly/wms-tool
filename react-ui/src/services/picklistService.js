@@ -26,9 +26,18 @@ export const uploadPicklist = (file, warehouseId, companyId) => {
 /**
  * Pick lists with their order's live status.
  * @param {'open'|'closed'|'all'} state
+ * @param {'printed'|'unprinted'|'all'} printed
  */
-export const getPicklists = (state = 'open', warehouseId, companyId) => {
-  const params = { state };
+export const getPicklists = (
+  state = 'open',
+  warehouseId,
+  companyId,
+  printed = 'all',
+  owner = 'mine'
+) => {
+  // `owner` is a request for a wider view, not a grant of one — the server
+  // ignores it for anyone but an admin and scopes from the token regardless.
+  const params = { state, printed, owner };
   if (warehouseId && warehouseId !== 'all') params.warehouse_id = warehouseId;
   if (companyId && companyId !== 'all') params.company_id = companyId;
   return api.get('picklists', { params }).then((res) => res.data);
@@ -37,12 +46,27 @@ export const getPicklists = (state = 'open', warehouseId, companyId) => {
 /**
  * Rebuild the selected pick lists as ONE PDF, each with its QR code.
  * Returns a Blob — a single print job for the whole stack.
+ *
+ * `markPrinted` tells the SERVER this is a print rather than a save. The mark is
+ * set there, not reported back after window.print(): a print dialog can be
+ * cancelled and a tab closed, and neither returns — so the browser is not a
+ * witness worth trusting. Download passes false and marks nothing.
  */
-export const downloadPicklists = (picklistIds, companyId) =>
+export const downloadPicklists = (picklistIds, companyId, markPrinted = false) =>
   api
     .post(
       'picklists/download',
-      { picklist_ids: picklistIds, company_id: companyId },
+      { picklist_ids: picklistIds, company_id: companyId, mark_printed: markPrinted },
       { responseType: 'blob' }
     )
+    .then((res) => res.data);
+
+/** Set or clear the printed mark by hand — the fix for a jam or a cancelled dialog. */
+export const setPicklistsPrinted = (picklistIds, printed, companyId) =>
+  api
+    .post('picklists/printed', {
+      picklist_ids: picklistIds,
+      printed,
+      company_id: companyId
+    })
     .then((res) => res.data);
