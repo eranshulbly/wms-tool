@@ -603,7 +603,12 @@ def create_or_resume_job(current_user: dict, potential_order_id: int,
             request_id = repo.insert_job(
                 cur, planogram_for_warehouse(order.get('warehouse_id')),
                 order.get('company_id'), potential_order_id, metadata, user_id, now)
-            packed, resumed = {}, False
+            # `boxes` is read unconditionally below, so a brand-new job has to
+            # say "none" rather than leave the name unbound. Without this the
+            # CREATE path raised UnboundLocalError after the transaction had
+            # already committed — so the first tap on a picklist 500'd, silently
+            # left a real job behind, and the second tap "worked" by resuming it.
+            packed, resumed, boxes = {}, False, []
             # Inserted as `created` (the state a job exists in before anyone works
             # it) and flipped in the same transaction, because the caller of this
             # endpoint IS the packer opening it. Two statements rather than one so
