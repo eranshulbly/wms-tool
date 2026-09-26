@@ -51,6 +51,79 @@ export const getTimeInState = (dateString) => {
 export const getTimeInCurrentStatus = getTimeInState;
 
 /**
+ * Parse a backend timestamp as UTC.
+ *
+ * The API sends `datetime.isoformat()` on a naive UTC value, so the string
+ * carries no zone and the browser would read it as LOCAL time — which in
+ * IST puts every event 5½ hours in the past and makes the newest state look
+ * like it was entered before the one before it. Same convention as
+ * getTimeInState, factored out so the two cannot drift apart.
+ */
+const asUtc = (dateString) => {
+  if (!dateString) return null;
+  const s =
+    dateString.endsWith('Z') || dateString.includes('+') ? dateString : `${dateString}Z`;
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+};
+
+/** "2d 5h 30m" / "3h 12m" / "8m" / "<1m" from a millisecond span. */
+export const formatDuration = (ms) => {
+  if (ms == null || isNaN(ms)) return 'N/A';
+  if (ms < 0) return 'N/A'; // clock skew, or history out of order — say nothing rather than lie
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return '<1m';
+  const days = Math.floor(mins / 1440);
+  const hours = Math.floor((mins % 1440) / 60);
+  const rem = mins % 60;
+  if (days > 0) return `${days}d ${hours}h ${rem}m`;
+  if (hours > 0) return `${hours}h ${rem}m`;
+  return `${rem}m`;
+};
+
+/**
+ * How long the order sat in each state.
+ *
+ * A history row records the moment a state was ENTERED, so the time spent in
+ * it is the gap to the next row — and for the last row, the gap to now. That
+ * last one is still running, which is why it is flagged rather than presented
+ * as a settled figure: an order sitting in Packed for three days is the thing
+ * worth noticing, and rendering it identically to a finished span hides it.
+ *
+ * Returns the same rows, each with `durationMs`, `duration` and `isCurrent`.
+ *
+ * @param {Array} history - state_history from the API, oldest first
+ * @param {number} [now]  - injectable for tests
+ */
+export const withDurations = (history, now = Date.now()) => {
+  if (!Array.isArray(history) || history.length === 0) return [];
+
+  // Defensive sort: the API orders by changed_at, but a caller that merged or
+  // reversed the list would otherwise produce negative spans that read as 'N/A'
+  // for every row rather than for the one that is actually wrong.
+  const rows = [...history].sort((a, b) => {
+    const ta = asUtc(a.timestamp)?.getTime() ?? 0;
+    const tb = asUtc(b.timestamp)?.getTime() ?? 0;
+    return ta - tb;
+  });
+
+  return rows.map((row, idx) => {
+    const entered = asUtc(row.timestamp);
+    const isCurrent = idx === rows.length - 1;
+    const left = isCurrent ? now : asUtc(rows[idx + 1].timestamp)?.getTime();
+    const durationMs =
+      entered && left != null ? left - entered.getTime() : null;
+    return {
+      ...row,
+      enteredAt: entered,
+      isCurrent,
+      durationMs,
+      duration: formatDuration(durationMs)
+    };
+  });
+};
+
+/**
  * Get the next manual status for an order, or null if no manual step exists.
  * @param {string} currentStatus - Frontend slug ('open', 'picking', etc.)
  */

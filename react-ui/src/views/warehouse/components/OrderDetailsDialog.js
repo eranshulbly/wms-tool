@@ -30,8 +30,59 @@ import {
   IconClock,
   IconCheck
 } from '@tabler/icons';
-import { formatDate, getTimeInState } from '../utils';
+import { formatDate, getTimeInState, withDurations } from '../utils';
 import StatusChip from './StatusChip';
+
+/**
+ * The order's state history with how long it sat in each one.
+ *
+ * A history row records when a state was ENTERED, so time spent in it is the
+ * gap to the next row — and the last row is still running. The running one is
+ * labelled rather than shown as a plain figure: "2d 4h (so far)" and "2d 4h"
+ * mean different things to someone deciding whether an order is stuck.
+ */
+const StatusTimeline = ({ history, dense = false }) => {
+  const rows = withDurations(history);
+  if (!rows.length) {
+    return (
+      <Typography variant="body2" color="textSecondary">
+        No status history recorded for this order.
+      </Typography>
+    );
+  }
+
+  return (
+    <>
+      {rows.map((state, idx) => (
+        <Box
+          key={`${state.state_name}-${state.timestamp}-${idx}`}
+          style={{
+            padding: dense ? '6px 0' : '8px 0',
+            borderLeft: state.isCurrent ? '3px solid #4caf50' : '3px solid #e0e0e0',
+            paddingLeft: 16,
+            marginLeft: 8
+          }}
+        >
+          <Box display="flex" alignItems="center" flexWrap="wrap" style={{ gap: 8 }}>
+            <Typography variant="subtitle2" style={{ fontWeight: 700 }}>
+              {state.state_name}
+            </Typography>
+            <Chip
+              size="small"
+              label={state.isCurrent ? `${state.duration} (so far)` : state.duration}
+              color={state.isCurrent ? 'primary' : 'default'}
+              variant={state.isCurrent ? 'default' : 'outlined'}
+            />
+          </Box>
+          <Typography variant="body2" color="textSecondary">
+            Entered {formatDate(state.timestamp)}
+          </Typography>
+          {state.user && <Typography variant="caption">{state.user}</Typography>}
+        </Box>
+      ))}
+    </>
+  );
+};
 
 /**
  * Order details modal used by both WarehouseDashboard (read-only) and
@@ -143,13 +194,7 @@ const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) =
           <Divider />
           <Box mt={3}>
             <Typography variant="h5" gutterBottom>Order Timeline</Typography>
-            {order.state_history?.map((state, idx) => (
-              <Box key={idx} className={classes?.timelineItem} mb={2}>
-                <Typography variant="subtitle1">{state.state_name}</Typography>
-                <Typography variant="body2" color="textSecondary">{formatDate(state.timestamp)}</Typography>
-                <Typography variant="body2">Handled by: {state.user}</Typography>
-              </Box>
-            ))}
+            <StatusTimeline history={order.state_history} />
           </Box>
         </DialogContent>
         <DialogActions>
@@ -214,26 +259,10 @@ const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) =
               </Table>
             </TableContainer>
 
-            <Divider style={{ margin: '16px 0' }} />
-            <Typography variant="h6" gutterBottom>Order Timeline</Typography>
-            {order.state_history?.map((state, idx) => (
-              <Box
-                key={idx}
-                style={{
-                  padding: '8px 0',
-                  borderLeft: idx === order.state_history.length - 1
-                    ? '3px solid #4caf50' : '3px solid #e0e0e0',
-                  paddingLeft: '16px',
-                  marginLeft: '8px'
-                }}
-              >
-                <Typography variant="subtitle2" fontWeight="bold">{state.state_name}</Typography>
-                <Typography variant="body2" color="textSecondary">
-                  {new Date(state.timestamp).toLocaleString()}
-                </Typography>
-                <Typography variant="caption">{state.user}</Typography>
-              </Box>
-            ))}
+            {/* The timeline used to live here, on step 0 only — so opening an
+                order that was already Packed showed the step's own panel and
+                nothing else, and the history was unreachable without clicking
+                back. It now renders below the step content for every step. */}
 
             {order.status?.toLowerCase() === 'picking' && (
               <>
@@ -341,6 +370,13 @@ const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) =
           ))}
         </Stepper>
         {renderStepContent()}
+
+        {/* Always visible, whatever step is selected. The stepper says where the
+            order IS; this says how long each leg took to get there, which is
+            the question asked when one is late. */}
+        <Divider style={{ margin: '20px 0 12px' }} />
+        <Typography variant="h6" gutterBottom>Time in each status</Typography>
+        <StatusTimeline history={order.state_history} />
       </DialogContent>
 
       <DialogActions>
