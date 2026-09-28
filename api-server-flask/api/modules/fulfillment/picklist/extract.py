@@ -112,6 +112,24 @@ def extract(file_stream, source_filename=None) -> dict:
         header = _parse_distributor(first_text)
         order = _parse_order(first_text)
 
+        # Re-read the two wrap-prone identifiers by column position, which the
+        # flat text cannot do reliably — see _field_from_words. Position wins
+        # only when it produced something whole: a differently rendered PDF may
+        # have no usable word boxes, and a reader that returns nothing must not
+        # overwrite a value the text reader got right.
+        for key, label in (('order_no', ('Order', 'No')), ('code', ('Code',))):
+            positioned = _field_from_words(pdf.pages[0], label)
+            if positioned and not positioned.endswith('-'):
+                order[key] = positioned
+
+        # The dealer name wraps on the same sheets, and a truncated one creates
+        # a dealer under the wrong name. Only replaces a value it can improve
+        # on: the positional read must contain what the text read found, so a
+        # column misread cannot quietly substitute a different dealer.
+        named = _text_field_from_words(pdf.pages[0], ('Name',))
+        if named and order.get('dealer_name') and named.startswith(order['dealer_name']):
+            order['dealer_name'] = named
+
         lines = []
         for page in pdf.pages:
             lines.extend(_parse_page_lines(page))
@@ -296,6 +314,160 @@ def _continuation(tail: str):
     if _RE_LONE_FRAGMENT.match(line.strip()):
         return line.strip(), remainder
     return '', tail
+
+
+# How far apart two words' `top` may be and still count as the same printed row,
+# and how far apart two x0s may be and still count as the same column. Both in
+# PDF points. The label and its value sit 0.4pt apart vertically on these sheets
+# (122.20 vs 121.81) because the label is bold, and a wrapped cell's second line
+# lands on exactly the same x0 as its first — 345.15 in every sample — so these
+# tolerances are generous rather than finely tuned.
+_ROW_TOL = 3.0
+_COL_TOL = 2.0
+
+# How far below the value to keep looking for its continuation. Two wrapped
+# lines of a header cell, no more; beyond that is the next field or the table.
+_WRAP_SEARCH_PT = 32.0
+
+
+def _field_from_words(page, label: tuple) -> str:
+    """Read one header field by COLUMN POSITION rather than by line of text.
+
+    This is the reliable way to read a value that wrapped, and the reason is in
+    the geometry: these sheets are a table, so when a cell's contents wrap, the
+    second line lands at exactly the same x0 as the first. Every sample agrees —
+    the order number and its tail both sit at x0=345.15.
+
+    Reading the flat text cannot see that. `extract_text()` flattens a row into
+    one string, so a wrap puts the tail on the next LINE, where it may be
+    anywhere:
+
+        Name OM MARKETING Order No 30305-02-MPDSTN-0926- Order Date 09/26/2026
+        3002                                        <- alone, easy
+
+        Name SHRI BANKEY BIHARI AUTO PVT Order No 30305-02-PSAO-0926- Order ...
+        LTD 46150                                   <- behind another field's tail
+
+    The second sheet is what broke the line-based rules: "LTD" belongs to the
+    Name column and "46150" to the order number, and nothing in the string says
+    so. Their x0 values say so unambiguously.
+
+    Returns '' when the label or value is not found, so the caller can fall back
+    to the text-based reader — a differently rendered PDF may carry no usable
+    word boxes at all.
+    """
+    try:
+        words = page.extract_words()
+    except Exception:  # pragma: no cover - a page pdfplumber cannot lay out
+        return ''
+    if not words:
+        return ''
+
+    # Find the label: its words, in order, on one row.
+    anchor = None
+    for i, w in enumerate(words):
+        if w['text'].lower() != label[0].lower():
+            continue
+        row = [w]
+        ok = True
+        for j, part in enumerate(label[1:], start=1):
+            nxt = words[i + j] if i + j < len(words) else None
+            if (nxt is None or nxt['text'].lower() != part.lower()
+                    or abs(nxt['top'] - w['top']) > _ROW_TOL):
+                ok = False
+                break
+            row.append(nxt)
+        if ok:
+            anchor = row[-1]
+            break
+    if anchor is None:
+        return ''
+
+    # The value is the nearest word to the right of the label on the same row.
+    same_row = [w for w in words
+                if abs(w['top'] - anchor['top']) <= _ROW_TOL and w['x0'] > anchor['x1']]
+    if not same_row:
+        return ''
+    head = min(same_row, key=lambda w: w['x0'])
+    value = head['text'].strip()
+
+    # Then walk down that column while the value is still unfinished. A trailing
+    # hyphen is the signal, the same one the text reader uses — a complete
+    # identifier never ends in a separator.
+    for _ in range(4):
+        if not value.endswith('-'):
+            break
+        below = [w for w in words
+                 if w['top'] > head['top'] + _ROW_TOL
+                 and w['top'] - head['top'] <= _WRAP_SEARCH_PT
+                 and abs(w['x0'] - head['x0']) <= _COL_TOL]
+        if not below:
+            break
+        nxt = min(below, key=lambda w: w['top'])
+        value += nxt['text'].strip()
+        head = nxt
+
+    return value
+
+
+# The words that begin a header field. Used to find where one field's value
+# stops and the next field starts on a shared row, and to know that a row below
+# is a new field rather than the wrapped rest of this one.
+_HEADER_LABELS = frozenset(
+    {'code', 'pick', 'list', 'no', 'no.', 'name', 'order', 'date', 'city',
+     'state', 'gstin', 'contact', 'authorized', 's.'})
+
+
+def _text_field_from_words(page, label: tuple) -> str:
+    """A multi-word header value (a dealer name, a city) read by column.
+
+    Same geometry as _field_from_words, but a name is several words and has no
+    trailing hyphen to say it is unfinished — so the bounds come from the
+    layout instead: the value runs from the label to the next FIELD on that row,
+    and continues on the row below only while that row does not start a new
+    field of its own.
+
+    "SHRI BANKEY BIHARI AUTO PVT / LTD" is the case. Read line-wise the name
+    loses its LTD, and a dealer was then created under the truncated name —
+    dealer 267 in production is exactly that.
+    """
+    try:
+        words = page.extract_words()
+    except Exception:  # pragma: no cover
+        return ''
+    if not words:
+        return ''
+
+    anchor = next((w for w in words if w['text'].lower() == label[0].lower()), None)
+    if anchor is None:
+        return ''
+
+    row = sorted((w for w in words
+                  if abs(w['top'] - anchor['top']) <= _ROW_TOL and w['x0'] > anchor['x1']),
+                 key=lambda w: w['x0'])
+    value, first = [], None
+    for w in row:
+        if w['text'].lower() in _HEADER_LABELS:
+            break            # the next field begins here
+        if first is None:
+            first = w
+        value.append(w['text'])
+    if not value:
+        return ''
+
+    # The wrapped remainder: the very next printed row, and only if it does not
+    # open a new field. Stopping at the first labelled row is what keeps "City
+    # BAREILLY" — which sits in almost the same column — out of the name.
+    lower = [w for w in words if w['top'] > anchor['top'] + _ROW_TOL]
+    if lower:
+        next_top = min(w['top'] for w in lower)
+        next_row = sorted((w for w in lower if abs(w['top'] - next_top) <= _ROW_TOL),
+                          key=lambda w: w['x0'])
+        if next_row and next_row[0]['text'].lower() not in _HEADER_LABELS:
+            value += [w['text'] for w in next_row
+                      if abs(w['x0'] - first['x0']) <= _COL_TOL]
+
+    return ' '.join(value).strip()
 
 
 def _first(pattern, text: str) -> str:

@@ -594,3 +594,94 @@ def test_two_series_can_collide_on_the_same_suffix():
     b = '30305-02-MPDSTN-0926-3002'
     assert a != b
     assert _suffix_of(a) == _suffix_of(b) == '3002'
+
+
+# ── Wrapped header cells, read by column ────────────────────────────────────
+#
+# The third layout from this DMS, and the one that proved line-based reading is
+# a dead end. From GST PickList Parts PrePrinted (8).PDF:
+#
+#     Name SHRI BANKEY BIHARI AUTO PVT Order No 30305-02-PSAO-0926- Order Date …
+#     LTD 46150
+#
+# "LTD" belongs to the Name column and "46150" to the order number. Nothing in
+# the flattened string says which is which — their x0 does: every wrapped cell
+# continues at exactly the x0 of its own first line (345.15 for the order
+# number in every sample, 124.65 for the name).
+
+class _FakeWord(dict):
+    """Minimal stand-in for a pdfplumber word box."""
+
+
+def _w(text, top, x0, width=40.0):
+    return {'text': text, 'top': top, 'x0': x0, 'x1': x0 + width,
+            'bottom': top + 8}
+
+
+class _FakePage:
+    def __init__(self, words):
+        self._words = words
+
+    def extract_words(self):
+        return self._words
+
+
+# Coordinates lifted from the real PDF.
+_WRAPPED_HEADER = _FakePage([
+    _w('Name', 122.20, 89.85, 22.5),
+    _w('SHRI', 121.81, 124.65, 20.5),
+    _w('BANKEY', 121.81, 147.40, 37.5),
+    _w('BIHARI', 121.81, 187.15, 31.0),
+    _w('AUTO', 121.81, 220.39, 25.0),
+    _w('PVT', 121.81, 247.64, 17.0),
+    _w('Order', 122.20, 286.65, 24.0),
+    _w('No', 122.20, 312.89, 11.0),
+    _w('30305-02-PSAO-0926-', 121.81, 345.15, 84.5),
+    _w('Order', 122.20, 457.65, 24.0),
+    _w('Date', 122.20, 483.89, 18.0),
+    _w('09/28/2026', 121.81, 525.15, 41.0),
+    _w('LTD', 131.85, 124.65, 17.0),
+    _w('46150', 131.85, 345.15, 25.0),
+    _w('City', 142.29, 89.85, 18.0),
+    _w('BAREILLY', 142.29, 126.90, 45.0),
+])
+
+
+def test_order_number_is_rejoined_from_its_column():
+    """The tail sits under the value, behind another field's wrapped tail."""
+    assert (extract._field_from_words(_WRAPPED_HEADER, ('Order', 'No'))
+            == '30305-02-PSAO-0926-46150')
+
+
+def test_order_no_label_is_not_confused_with_order_date():
+    """Both labels start with 'Order'; only one is followed by 'No'."""
+    got = extract._field_from_words(_WRAPPED_HEADER, ('Order', 'Date'))
+    assert got.startswith('09/28/2026')
+
+
+def test_dealer_name_picks_up_its_wrapped_remainder():
+    assert (extract._text_field_from_words(_WRAPPED_HEADER, ('Name',))
+            == 'SHRI BANKEY BIHARI AUTO PVT LTD')
+
+
+def test_the_name_stops_before_the_next_field_on_the_same_row():
+    """Reading to the end of the row would swallow the order number."""
+    got = extract._text_field_from_words(_WRAPPED_HEADER, ('Name',))
+    assert 'Order' not in got and '30305' not in got
+
+
+def test_the_name_does_not_swallow_the_city_below_it():
+    """City sits at x0=126.90 against the name's 124.65 — 2.25pt apart.
+
+    Close enough that a slightly looser column tolerance would append BAREILLY
+    to every wrapped dealer name. What actually keeps it out is the rule that
+    the wrapped remainder stops at the first row starting with a field label.
+    """
+    got = extract._text_field_from_words(_WRAPPED_HEADER, ('Name',))
+    assert 'BAREILLY' not in got
+
+
+def test_a_page_with_no_word_boxes_falls_back_silently():
+    """A differently rendered PDF must not lose a value the text reader had."""
+    assert extract._field_from_words(_FakePage([]), ('Order', 'No')) == ''
+    assert extract._text_field_from_words(_FakePage([]), ('Name',)) == ''
