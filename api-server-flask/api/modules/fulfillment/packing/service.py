@@ -113,10 +113,34 @@ def planogram_for_warehouse(warehouse_id: Optional[int]) -> int:
     return int(warehouse_id or DEFAULT_PLANOGRAM_ID)
 
 
-def display_id(potential_order_id: int) -> str:
-    """`PL-4821`. A rendering of `potential_order_id`, not an id of its own — there
-    is no picklist entity and no second id space (design D1)."""
-    return f"PL-{potential_order_id}"
+def display_id(potential_order_id: int, original_order_id=None) -> str:
+    """What the packer should see this picklist called.
+
+    The DMS order number when we have it ("30305-02-PSAO-0926-46150"), because
+    that is what is printed on the sheet in their hand, on the dispatch
+    paperwork and in every conversation about the order. "PL-4821" is a
+    rendering of an internal row id that appears nowhere else in the warehouse,
+    so matching a screen against paper meant translating between two numbering
+    schemes for no gain.
+
+    Falls back to PL-<id> where the order number is not to hand — a few
+    conflict messages are raised from a job row alone. Still no second id
+    space: this is a rendering either way (design D1).
+    """
+    text = (str(original_order_id).strip() if original_order_id else "")
+    return text or f"PL-{potential_order_id}"
+
+
+def _job_display(job: dict) -> str:
+    """What to call a job when only the job row is to hand.
+
+    The order number is snapshotted into metadata at creation, so a conflict
+    raised deep in a transaction can name the picklist the way the packer sees
+    it without a second query. Older jobs carry the PL- form there and keep it,
+    which is correct: that is what their operator was shown at the time.
+    """
+    stored = (job.get('metadata') or {}).get('display_id')
+    return stored or display_id(int(job.get('request_identifier') or 0))
 
 
 def _num(value) -> Optional[float]:
@@ -320,7 +344,7 @@ def _require_job_writable(job: dict) -> None:
     status = job['request_status']
     if status in C.RequestStatus.TERMINAL_STATUSES:
         raise ConflictError(
-            f"{display_id(int(job['request_identifier']))} has already been submitted.",
+            f"{_job_display(job)} has already been submitted.",
             C.ErrorCode.JOB_ALREADY_SUBMITTED)
 
 
@@ -369,6 +393,51 @@ def config_payload(warehouse_id: int) -> dict:
     }
 
 
+def resolve_scanned_query(q: str) -> Optional[str]:
+    """Turn a scanned pick-list QR into something the pool search can match.
+
+    The packer at the bench has the same sheet in their hand that the picker
+    carried, and its QR is the fastest way to find it in a queue of forty. But
+    the payload is "PL1*<order>*<code>*<token>" and the pool searches order
+    numbers and merchant names, so scanning it matched nothing at all.
+
+    Resolved through the TOKEN, not by splitting out the order number from the
+    text. The token is the part that proves the sheet is real; the order number
+    printed beside it in the payload is just text, and trusting it would let a
+    hand-typed string name any order. Falls back to the bare 16-character token
+    for a creased symbol keyed in by hand.
+
+    Returns the order number to search for, or None when this is not a scan —
+    in which case the caller searches the typed text as before, which is what
+    makes the last few digits keep working.
+    """
+    text = (q or '').strip()
+    if not text:
+        return None
+
+    from api.modules.fulfillment.picklist import qrcode_payload
+    from api.modules.fulfillment.picklist import repository as picklist_repo
+
+    token = None
+    if qrcode_payload.SEP in text:
+        try:
+            token = qrcode_payload.parse(text)['token']
+        except qrcode_payload.PayloadError:
+            return None
+    elif (len(text) == qrcode_payload.TOKEN_LENGTH
+            and all(c in qrcode_payload._ALPHABET for c in text.upper())):
+        token = text.upper()
+
+    if not token:
+        return None
+
+    row = picklist_repo.find_by_token(token)
+    # An unknown token deliberately falls through to a normal text search rather
+    # than erroring: the pool is a search box, and "no results" is a better
+    # answer there than an exception the packer cannot act on.
+    return (row or {}).get('original_order_id')
+
+
 # ── SCREENS 4 & 5 — the picklist pool ────────────────────────────────────────
 
 def list_picklists(current_user: dict, warehouse_id: int, q: Optional[str] = None,
@@ -378,6 +447,11 @@ def list_picklists(current_user: dict, warehouse_id: int, q: Optional[str] = Non
     Four queries for the whole screen regardless of page size: the pool, its lines,
     the jobs, the sealed-box counts. A per-order query would be 50 round trips.
     """
+    # A scanned QR becomes the order number it points at; anything else is
+    # searched as typed, which is what keeps "the last few digits" working.
+    scanned = resolve_scanned_query(q)
+    if scanned:
+        q = scanned
     page = repo.list_picklists(warehouse_id, _scope(current_user), q, limit, offset)
     orders = page['items']
     if not orders:
@@ -399,7 +473,7 @@ def list_picklists(current_user: dict, warehouse_id: int, q: Optional[str] = Non
         totals = (job or {}).get('metadata', {}).get('totals') or {}
         items.append({
             "potential_order_id": order_id,
-            "display_id": display_id(order_id),
+            "display_id": display_id(order_id, order.get('original_order_id')),
             "merchant": order.get('merchant'),
             "company_id": order.get('company_id'),
             "warehouse_id": order.get('warehouse_id'),
@@ -502,7 +576,7 @@ def get_picklist_detail(current_user: dict, potential_order_id: int) -> dict:
 
     payload = {
         "potential_order_id": potential_order_id,
-        "display_id": display_id(potential_order_id),
+        "display_id": display_id(potential_order_id, order.get('original_order_id')),
         "merchant": order.get('merchant'),
         "company_id": order.get('company_id'),
         "warehouse_id": order.get('warehouse_id'),
@@ -560,7 +634,8 @@ def create_or_resume_job(current_user: dict, potential_order_id: int,
             raise NotFoundError(f"picklist {potential_order_id} not found")
         if order['status'] != OrderStatus.PICKING.value:
             raise ConflictError(
-                f"{display_id(potential_order_id)} is no longer in Picking.",
+                f"{display_id(potential_order_id, order.get('original_order_id'))} "
+                f"is no longer in Picking.",
                 C.ErrorCode.ORDER_NOT_PACKABLE)
 
         lines = repo.order_lines([potential_order_id])
@@ -568,7 +643,8 @@ def create_or_resume_job(current_user: dict, potential_order_id: int,
 
         if job and job['request_status'] in C.RequestStatus.TERMINAL_STATUSES:
             raise ConflictError(
-                f"{display_id(potential_order_id)} has already been submitted.",
+                f"{display_id(potential_order_id, order.get('original_order_id'))} "
+                f"has already been submitted.",
                 C.ErrorCode.JOB_ALREADY_SUBMITTED)
 
         if job:
@@ -585,7 +661,7 @@ def create_or_resume_job(current_user: dict, potential_order_id: int,
         else:
             metadata = {
                 "v": C.JSON_SCHEMA_VERSION,
-                "display_id": display_id(potential_order_id),
+                "display_id": display_id(potential_order_id, order.get('original_order_id')),
                 "dealer_id": order.get('dealer_id') or None,
                 # SNAPSHOT, not a live read: an audit months later must answer
                 # "was this box within tolerance BY THE RULE THAT APPLIED THAT DAY".
@@ -632,7 +708,7 @@ def create_or_resume_job(current_user: dict, potential_order_id: int,
     return {
         "request_id": request_id,
         "potential_order_id": potential_order_id,
-        "display_id": display_id(potential_order_id),
+        "display_id": display_id(potential_order_id, order.get('original_order_id')),
         # The packing screen heads itself with the merchant, and this response is
         # the only thing it has after claiming the job — it never re-reads the
         # picklist. Omitting it left that header blank.
@@ -677,7 +753,7 @@ def _guard_job_in_use(job: dict, user_id: int, now: datetime) -> None:
     if isinstance(touched, datetime) and now - touched > timedelta(minutes=C.JOB_TAKEOVER_MINUTES):
         return
     raise ConflictError(
-        f"{display_id(int(job['request_identifier']))} is already being packed by "
+        f"{_job_display(job)} is already being packed by "
         f"{job.get('metadata', {}).get('last_packer') or 'another packer'}.",
         C.ErrorCode.JOB_IN_USE)
 
@@ -711,7 +787,7 @@ def get_job_state(current_user: dict, request_id: int) -> dict:
     return {
         "request_id": request_id,
         "potential_order_id": order_id,
-        "display_id": display_id(order_id),
+        "display_id": _job_display(job),
         "request_status": job['request_status'],
         "box_seq": job['metadata'].get('box_seq', len(boxes)),
         "tolerance_g": job['metadata'].get('tolerance_g', C.TOLERANCE_G),
@@ -822,7 +898,7 @@ def bind_label(current_user: dict, box_id: int, label_code: str,
     if owner:
         raise ConflictError(
             f"Label {code} is already on a box for "
-            f"{display_id(int(owner['request_identifier'] or 0))}.",
+            f"{_job_display(owner)}.",
             C.ErrorCode.LABEL_ALREADY_USED)
 
     info['status'] = C.BoxStatus.OPEN

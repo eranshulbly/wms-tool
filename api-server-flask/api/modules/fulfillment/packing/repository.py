@@ -190,8 +190,8 @@ def lock_order(cursor, potential_order_id: int) -> Optional[dict]:
     # make two packers claiming two different orders for the same dealer queue on
     # each other for no reason.
     cursor.execute(
-        f"""SELECT po.potential_order_id, po.company_id, po.warehouse_id,
-                   po.dealer_id, po.status, d.name AS merchant
+        f"""SELECT po.potential_order_id, po.original_order_id, po.company_id,
+                   po.warehouse_id, po.dealer_id, po.status, d.name AS merchant
             FROM potential_order po
             LEFT JOIN dealer d ON d.dealer_id = po.dealer_id
             WHERE {pf_sql} AND po.potential_order_id = %s
