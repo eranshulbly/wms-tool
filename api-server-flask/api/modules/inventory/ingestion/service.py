@@ -17,6 +17,7 @@ correction is charged over, not stock. They resolve the product and batch only s
 adjustment lands on the right one, then write to `fc_sku_price_details` alone.
 """
 
+import difflib
 import hashlib
 import json
 import os
@@ -185,7 +186,9 @@ def resolve_or_create_product(cursor, company_id, prefix, line):
     quietly created a second product for goods that were already in the catalogue.
 
     Name matching is kept only as a fallback for a line whose code is not yet in the
-    master, and creating a product is the last resort.
+    master — first an exact match (whitespace/full-stop differences aside), then a
+    high-confidence fuzzy match for the wording drift that survives that (see
+    _fuzzy_lookup_product) — and creating a product is the last resort.
     """
     product_id = _lookup_product(cursor, company_id, prefix, line)
     if product_id is not None:
@@ -204,6 +207,67 @@ def resolve_or_create_product(cursor, company_id, prefix, line):
          line.get('hsn') or None, uom))
     logger.info("created product %s for company %s", new_code, company_id)
     return cursor.lastrowid, 'created'
+
+
+_NUM_RE = re.compile(r'\d+')
+
+# A plain text-similarity ratio is not safe on its own here: on this company's own
+# catalogue, genuinely different products routinely score 0.94-0.97 by raw name
+# similarity alone — POVICIDAL 20 GM CREAM vs POVICIDAL 250 GM CREAM scores 0.9767,
+# higher than an actual confirmed duplicate row (CIPRODAC-500 TABLET vs the typo'd
+# TAABLET, 0.9697). A strength, dosage or pack-size difference must never be papered
+# over by how similar the surrounding words look, so every number printed in the name
+# is required to match exactly before two names are even compared — see _name_tokens.
+_NAME_FUZZY_CUTOFF = 0.965  # see _fuzzy_lookup_product for why this exact value
+
+
+def _name_tokens(name):
+    """(number-stripped normalized text, set of the numbers pulled out of it)."""
+    numbers = frozenset(_NUM_RE.findall(name or ''))
+    text = re.sub(r'\s+', ' ', _NUM_RE.sub(' ', (name or '').upper())).strip()
+    return text, numbers
+
+
+def _fuzzy_lookup_product(cursor, company_id, name):
+    """A high-confidence near match for `name` among this company's products, or None.
+
+    Reached only once _lookup_product's exact (whitespace/full-stop-insensitive) match
+    has already failed. Even with every number required to match exactly first (see
+    _name_tokens), the margin is thin: the closest genuinely-different pair found on
+    this catalogue after that guard — ACENEXT P TAB vs ACENEXT SP TAB, two distinct
+    formulations one letter apart — scores 0.9630, only 0.0067 below the confirmed
+    duplicate's own 0.9697. _NAME_FUZZY_CUTOFF sits inside that gap on purpose; there is
+    no slack to spare, so a fuzzy hit is always logged rather than applied silently, and
+    a document whose lines don't clear it is left to fall through to product creation
+    (or to missing_from_master, before anything is written) rather than risk merging
+    two different products' stock.
+    """
+    text, numbers = _name_tokens(name)
+    if not text:
+        return None
+
+    cursor.execute(
+        "SELECT product_id, name FROM product WHERE company_id = %s AND name IS NOT NULL",
+        (company_id,))
+    candidates = {}
+    for row in cursor.fetchall():
+        pid = row['product_id'] if isinstance(row, dict) else row[0]
+        pname = row['name'] if isinstance(row, dict) else row[1]
+        c_text, c_numbers = _name_tokens(pname)
+        if not c_text or c_numbers != numbers:
+            continue
+        candidates[c_text] = (pid, pname)
+    if not candidates:
+        return None
+
+    close = difflib.get_close_matches(text, list(candidates), n=1, cutoff=_NAME_FUZZY_CUTOFF)
+    if not close:
+        return None
+
+    product_id, matched_name = candidates[close[0]]
+    logger.info("Product resolved by fuzzy name match: %r -> product %s (%r)",
+                name, product_id, matched_name)
+    return product_id
 
 
 def _lookup_product(cursor, company_id, prefix, line):
@@ -241,6 +305,14 @@ def _lookup_product(cursor, company_id, prefix, line):
             " ORDER BY product_string LIKE %s, product_id LIMIT 1",
             (company_id, name.upper().replace(' ', '').replace('.', ''), f'{prefix}-%'))
         row = cursor.fetchone()
+        if not row:
+            # Whitespace/punctuation normalization still missed it — try a high-confidence
+            # fuzzy match (typos, minor wording drift) before giving up on the name. See
+            # _fuzzy_lookup_product for the numeric guard and cutoff this relies on to
+            # avoid merging two genuinely different products.
+            fuzzy_id = _fuzzy_lookup_product(cursor, company_id, name)
+            if fuzzy_id is not None:
+                row = {'product_id': fuzzy_id}
         if row:
             product_id = row['product_id'] if isinstance(row, dict) else row[0]
             # Found by name because the code was missing from the master. Stamp the code
