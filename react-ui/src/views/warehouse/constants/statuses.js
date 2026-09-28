@@ -119,10 +119,15 @@ export const BACKEND_TO_FRONTEND_STATUS = {
 };
 
 // Table columns — base (5) and with Actions (6)
+//
+// `orderNumber` is the DMS number printed on the pick list
+// ("30305-02-PSAO-0926-45937"), not the internal PO id. It is what the
+// warehouse, the dealer and the paperwork all say, so it is the one worth
+// carrying here — it replaced Order Date, which nobody was reading.
 export const TABLE_COLUMNS_BASE = [
+  { id: 'orderNumber',   label: 'Order No' },
   { id: 'dealer',        label: 'Dealer' },
   { id: 'status',        label: 'Status' },
-  { id: 'orderDate',     label: 'Order Date' },
   { id: 'timeInStatus',  label: 'Time in Current Status' },
   { id: 'assignedTo',    label: 'Assigned To' }
 ];

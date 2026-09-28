@@ -23,7 +23,7 @@ import {
   TABLE_COLUMNS_WITH_ACTIONS,
   STATUS_FILTER_OPTIONS
 } from '../constants/statuses';
-import { formatDate, getTimeInState } from '../utils';
+import { getTimeInState } from '../utils';
 import StatusChip from './StatusChip';
 import StatusActionButton from './StatusActionButton';
 
@@ -127,6 +127,17 @@ const OrdersTable = ({
                   onClick={() => onOrderClick(order)}
                   className={classes?.tableRow}
                 >
+                  {/* Monospaced: these are long, similar strings that differ
+                      only in the last digits, and a proportional font makes
+                      45937 and 45987 hard to tell apart at a glance. */}
+                  <TableCell style={{ whiteSpace: 'nowrap' }}>
+                    <Typography
+                      variant="body2"
+                      style={{ fontFamily: 'monospace', fontSize: '0.8rem' }}
+                    >
+                      {order.original_order_id || order.order_request_id || '—'}
+                    </Typography>
+                  </TableCell>
                   <TableCell>{order.dealer_name}</TableCell>
                   <TableCell>
                     <Box display="flex" alignItems="center" style={{ gap: '6px', flexWrap: 'wrap' }}>
@@ -149,7 +160,6 @@ const OrdersTable = ({
                       )}
                     </Box>
                   </TableCell>
-                  <TableCell>{formatDate(order.order_date)}</TableCell>
                   <TableCell>{getTimeInState(order.current_state_time)}</TableCell>
                   <TableCell>{order.assigned_to || 'Unassigned'}</TableCell>
                   {showActions && (
