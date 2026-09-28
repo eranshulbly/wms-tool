@@ -62,8 +62,27 @@ def ingest_picklist(file_stream, filename, warehouse_id, company_id,
 
     lines = meta.get('lines') or []
     current_time = datetime.utcnow()
-    existing = (picklist_repo.find_existing(potential_order.potential_order_id, picklist_code)
-                if potential_order is not None else None)
+
+    # ONE PICK LIST PER ORDER. A second upload is refused, not merged.
+    #
+    # It used to replace the row in place, and that quietly destroyed the thing
+    # the sheet is for. The order's line items are wiped and re-inserted from
+    # the new PDF, so a sheet already printed and walking round the warehouse
+    # would no longer describe what the system thinks is on it — and nothing
+    # recorded that it had changed. The QR on the paper kept working, pointing
+    # at different contents.
+    #
+    # Refusing also closes the gap the old (order, code) key left open: a second
+    # sheet for the same order under a DIFFERENT code was not a replace at all,
+    # it was a second row — two live QR codes for one order, both scannable, and
+    # two people able to move it.
+    #
+    # The database's uq_picklist_order_code is still the backstop for the exact
+    # same code arriving twice at once; this is the check that covers the rest.
+    if potential_order is not None:
+        clash = picklist_repo.find_any_for_order(potential_order.potential_order_id)
+        if clash:
+            raise PicklistIngestError(_duplicate_message(order_no, clash))
 
     with mysql_manager.get_cursor(commit=False) as cursor:
         try:
@@ -97,23 +116,13 @@ def ingest_picklist(file_stream, filename, warehouse_id, company_id,
                 'created_by': user_id,
             }
 
-            if existing:
-                # Keep the token so sheets already printed keep resolving.
-                picklist_repo.update_in_place(cursor, existing['picklist_id'], row)
-                # But forget that it was printed. Any paper already on the trolley
-                # describes the PREVIOUS version of this sheet, so it is not a
-                # printed copy of the one that just replaced it — and leaving the
-                # mark would hide the reprint from the very filter that exists to
-                # catch it. The token survives; the print state does not.
-                picklist_repo.clear_printed_on(cursor, existing['picklist_id'])
-                picklist_id = existing['picklist_id']
-                qr_token = existing['qr_token']
-                replaced = True
-            else:
-                row['qr_token'] = qrcode_payload.new_token()
-                picklist_id = picklist_repo.insert(cursor, row)
-                qr_token = row['qr_token']
-                replaced = False
+            # Always an insert now. The duplicate check above is what decides
+            # whether we get here at all, and there is no in-place update path
+            # left: a pick list is written once and then only ever read.
+            row['qr_token'] = qrcode_payload.new_token()
+            picklist_id = picklist_repo.insert(cursor, row)
+            qr_token = row['qr_token']
+            replaced = False
 
             cursor.connection.commit()
         except Exception:
@@ -146,6 +155,35 @@ def ingest_picklist(file_stream, filename, warehouse_id, company_id,
         'unresolved_parts': unresolved,
         'replaced': replaced,
     }
+
+
+def _duplicate_message(order_no: str, clash: dict) -> str:
+    """Why this upload was refused, in terms the uploader can act on.
+
+    Names the sheet that is already on file and whether it has been printed,
+    because those are different situations: an unprinted one is a mistake to
+    undo, a printed one is paper somebody may already be holding.
+    """
+    when = clash.get('created_at')
+    who = clash.get('uploaded_by_name') or 'someone'
+    code = clash.get('picklist_code') or 'no code'
+
+    detail = 'uploaded %s by %s' % (
+        when.strftime('%d %b %Y at %H:%M') if when else 'earlier', who)
+
+    if clash.get('printed_at'):
+        state = ('It has already been PRINTED%s, so a paper copy may be on the '
+                 'floor.' % (' %d times' % clash['print_count']
+                             if (clash.get('print_count') or 0) > 1 else ''))
+    else:
+        state = 'It has not been printed yet.'
+
+    return (
+        'Duplicate pick list — order %s already has one (code %s, %s). %s '
+        'Re-uploading would rewrite that order\'s lines underneath a sheet '
+        'that may already be printed, so it is refused. Remove the existing '
+        'pick list first if this one is meant to replace it.'
+        % (order_no, code, detail, state))
 
 
 def _match_order(order_no: str):

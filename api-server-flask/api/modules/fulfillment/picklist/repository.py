@@ -99,6 +99,26 @@ def find_live_by_order_no(order_no: str):
     ) or []
 
 
+def find_any_for_order(potential_order_id: int):
+    """Any pick list already held for this order, with enough detail to say so.
+
+    The duplicate check is per ORDER, not per (order, code). An order has one
+    pick list; a second sheet for it — even under a different code — means two
+    live QR codes for one order, and both of them scan.
+    """
+    rows = mysql_manager.execute_query(
+        """SELECT pl.picklist_id, pl.picklist_code, pl.created_at, pl.printed_at,
+                  pl.print_count, u.name AS uploaded_by_name
+             FROM order_picklist pl
+             LEFT JOIN users u ON u.id = pl.created_by
+            WHERE pl.potential_order_id = %s
+            ORDER BY pl.created_at
+            LIMIT 1""",
+        (potential_order_id,),
+    )
+    return rows[0] if rows else None
+
+
 def find_existing(potential_order_id: int, picklist_code: str):
     """The row a re-upload of the same document would replace, if any."""
     rows = mysql_manager.execute_query(
