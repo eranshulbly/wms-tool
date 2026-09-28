@@ -31,13 +31,30 @@ class PicklistIngestError(Exception):
 # ── Upload ───────────────────────────────────────────────────────────────────
 
 def ingest_picklist(file_stream, filename, warehouse_id, company_id,
-                    user_id, upload_batch_id=None) -> dict:
+                    user_id, upload_batch_id=None, dealer_name_override=None) -> dict:
     """Import one pick-list PDF. One file, one transaction.
 
     Returns a summary dict for the uploader. Raises PicklistIngestError with a
     message worth showing to a human when the file cannot be imported.
     """
     meta = extractor.extract(file_stream, source_filename=filename)
+
+    # A typed dealer name replaces the one printed on the sheet.
+    #
+    # Internal (MPDSTN) sheets name the distributor itself in the Name field,
+    # so all 21 of them landed under OM MARKETING and the actual retail customer
+    # was recorded nowhere. The uploader knows who it was; the sheet does not.
+    #
+    # The sheet's own value is KEPT alongside rather than overwritten. Six months
+    # on, 'the sheet said OM MARKETING and Anurag typed Ramesh Traders' is a
+    # different fact from 'the sheet said Ramesh Traders', and only one of them
+    # can be checked against the paper. Whether the caller is allowed to do this
+    # is settled in the router, on the role — never here.
+    override = (dealer_name_override or '').strip()
+    if override:
+        meta['order']['dealer_name_on_sheet'] = meta['order'].get('dealer_name') or ''
+        meta['order']['dealer_name'] = override
+        meta['order']['dealer_name_entered_by'] = user_id
 
     order_no = (meta['order'].get('order_no') or '').strip()
     picklist_code = (meta['order'].get('code') or '').strip()
@@ -150,6 +167,8 @@ def ingest_picklist(file_stream, filename, warehouse_id, company_id,
         # was already there. Surfaced so the operator can tell the two apart.
         'order_created': order_created,
         'dealer_name': (meta.get('order') or {}).get('dealer_name') or '',
+        # Echoed so the upload log can say the name was typed, not read.
+        'dealer_name_overridden': bool(override),
         'line_count': len(lines),
         'products_created': products_created,
         'unresolved_parts': unresolved,

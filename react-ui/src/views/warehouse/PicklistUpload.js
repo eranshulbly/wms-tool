@@ -26,7 +26,8 @@ import {
   ListItemText,
   Snackbar,
   Alert,
-  Divider
+  Divider,
+  TextField
 } from '@material-ui/core';
 import { IconUpload, IconDownload, IconPrinter, IconQrcode, IconRefresh } from '@tabler/icons';
 
@@ -119,6 +120,12 @@ const PicklistUpload = () => {
   const { selectedWarehouse, selectedCompany } = useWarehouse();
   const { user } = useSelector((s) => s.account);
   const isAdmin = user?.role === 'admin';
+  // Granted per ROLE, not per person, and decided by the server — this only
+  // controls whether the box is drawn. Retail sheets name the distributor
+  // itself as the customer, so the uploader is the only one who knows who the
+  // order was actually for.
+  const canNameDealer = Boolean(user?.permissions?.picklist_dealer_entry);
+  const [dealerName, setDealerName] = useState('');
 
   const [uploading, setUploading] = useState(false);
   const [uploadLog, setUploadLog] = useState([]);
@@ -200,7 +207,10 @@ const PicklistUpload = () => {
       );
 
       // eslint-disable-next-line no-await-in-loop
-      const result = await uploadPicklist(file, selectedWarehouse, selectedCompany);
+      const result = await uploadPicklist(
+        file, selectedWarehouse, selectedCompany,
+        canNameDealer ? dealerName : undefined
+      );
       if (result.success) imported += 1;
 
       setUploadLog((prev) =>
@@ -212,6 +222,9 @@ const PicklistUpload = () => {
                 msg: result.success
                   ? `${result.original_order_id} — ${result.line_count} line(s)` +
                     (result.order_created ? ' · order created' : ' · matched existing order') +
+                    (result.dealer_name_overridden
+                      ? ` · dealer set to ${result.dealer_name}`
+                      : '') +
                     (result.products_created
                       ? ` · ${result.products_created} new part(s)`
                       : '') +
@@ -373,6 +386,28 @@ const PicklistUpload = () => {
             pick list carries only what the sheet prints — order number, date, dealer and
             city; B2B PO#, order type, VIN and shipping address stay empty.
           </Typography>
+
+          {/* Only drawn for a role that holds picklist_dealer_entry. The server
+              decides whether the value is honoured; this just avoids showing a
+              box to people for whom it would do nothing. */}
+          {canNameDealer && (
+            <Box mt={2}>
+              <TextField
+                label="Dealer name (optional)"
+                placeholder="Who is this order actually for?"
+                value={dealerName}
+                onChange={(e) => setDealerName(e.target.value)}
+                variant="outlined"
+                size="small"
+                fullWidth
+                helperText={
+                  'Used instead of the name printed on the sheet, which on internal '
+                  + 'orders is the distributor rather than the customer. Applies to '
+                  + 'every file in this upload. Leave blank to keep what the sheet says.'
+                }
+              />
+            </Box>
+          )}
 
           <Box mt={2}>
             <input

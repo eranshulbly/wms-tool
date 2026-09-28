@@ -11,11 +11,16 @@ import api from './api';
  * Resolves with the response body whether the import succeeded or failed, so the
  * caller can show a per-file reason rather than a generic error.
  */
-export const uploadPicklist = (file, warehouseId, companyId) => {
+export const uploadPicklist = (file, warehouseId, companyId, dealerName) => {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('warehouse_id', warehouseId);
   formData.append('company_id', companyId);
+  // Omitted entirely when blank. The server ignores it for any role without
+  // picklist_dealer_entry, so sending it is never how the permission is decided.
+  if (dealerName && dealerName.trim()) {
+    formData.append('dealer_name', dealerName.trim());
+  }
 
   return api
     .post('picklists/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } })

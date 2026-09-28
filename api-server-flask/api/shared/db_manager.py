@@ -646,6 +646,15 @@ def create_all_tables():
         -- Analytics (Target Tracker) used to be visible to everyone. Gated once
         -- office staff needed Order Tracking without it.
         analytics BOOLEAN DEFAULT FALSE,
+        -- Lets this role type a dealer name when uploading a pick list, instead
+        -- of taking whatever the sheet prints. Needed because the DMS names the
+        -- distributor itself on internal (MPDSTN) sheets, so all of them land
+        -- under "OM MARKETING" and the real retail customer is nowhere on file.
+        --
+        -- A ROLE flag, not a check on the email address: the capability belongs
+        -- to the job rather than the person, an email is not an authorisation
+        -- model, and the second retail user would otherwise need a code change.
+        picklist_dealer_entry BOOLEAN DEFAULT FALSE,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
@@ -1427,6 +1436,7 @@ def _migrate_invoice_columns():
 _V2_API_COLUMNS = {
     'roles': [
         ('analytics', 'BOOLEAN DEFAULT FALSE', None),
+        ('picklist_dealer_entry', 'BOOLEAN DEFAULT FALSE', None),
     ],
     # Pick-list printing. In the CREATE TABLE too, for a fresh install; here so an
     # existing deployment gains them on the next boot without hand-run SQL.

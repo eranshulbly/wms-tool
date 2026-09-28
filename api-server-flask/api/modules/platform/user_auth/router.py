@@ -129,6 +129,7 @@ class Login(Resource):
                         "eway_bill_filling":        perms.get('eway_bill_filling', False),
                         "supply_sheet":             perms.get('supply_sheet',      False),
                         "analytics":                perms.get('analytics',         False),
+                        "picklist_dealer_entry":    perms.get('picklist_dealer_entry', False),
                         "warehouse_company_access": wh_access,
                     }
                 }}, 200

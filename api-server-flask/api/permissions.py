@@ -29,10 +29,12 @@ def get_permissions(role_name):
         cache = None
 
     role = mysql_manager.execute_query(
-        "SELECT role_id, all_warehouses, eway_bill_admin, eway_bill_filling, supply_sheet, analytics FROM roles WHERE name = %s", (role_name,)
+        "SELECT role_id, all_warehouses, eway_bill_admin, eway_bill_filling, supply_sheet, "
+        "analytics, picklist_dealer_entry FROM roles WHERE name = %s", (role_name,)
     )
     if not role:
-        result = {'order_states': [], 'uploads': [], 'all_warehouses': False, 'eway_bill_admin': False, 'eway_bill_filling': False, 'supply_sheet': False, 'analytics': False}
+        result = {'order_states': [], 'uploads': [], 'all_warehouses': False, 'eway_bill_admin': False, 'eway_bill_filling': False, 'supply_sheet': False, 'analytics': False,
+                  'picklist_dealer_entry': False}
     else:
         role_id = role[0]['role_id']
         order_states = mysql_manager.execute_query(
@@ -49,6 +51,7 @@ def get_permissions(role_name):
             'eway_bill_filling': bool(role[0]['eway_bill_filling']),
             'supply_sheet': bool(role[0]['supply_sheet']),
             'analytics': bool(role[0]['analytics']),
+            'picklist_dealer_entry': bool(role[0]['picklist_dealer_entry']),
         }
 
     if cache is not None:

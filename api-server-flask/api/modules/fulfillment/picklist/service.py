@@ -23,7 +23,8 @@ logger = get_logger(__name__)
 UPLOAD_TYPE = 'picklists'
 
 
-def upload_one(uploaded_file, warehouse_id, company_id, user_id) -> tuple:
+def upload_one(uploaded_file, warehouse_id, company_id, user_id,
+               dealer_name=None) -> tuple:
     """Import a single pick-list PDF.
 
     One file per request on purpose. nginx caps request bodies at 12M and gunicorn
@@ -44,7 +45,7 @@ def upload_one(uploaded_file, warehouse_id, company_id, user_id) -> tuple:
     try:
         result = business.ingest_picklist(
             uploaded_file.stream, filename, warehouse_id, company_id,
-            user_id, upload_batch_id)
+            user_id, upload_batch_id, dealer_name_override=dealer_name)
     except (PicklistExtractError, business.PicklistIngestError) as e:
         _delete_batch(upload_batch_id)
         return {'success': False, 'filename': filename, 'msg': str(e)}, 400

@@ -21,7 +21,8 @@ from api.modules.fulfillment.picklist import pdf as picklist_pdf
 from api.modules.fulfillment.picklist import repository as picklist_repo
 from api.modules.fulfillment.picklist import service as picklist_service
 from api.permissions import (
-    CompanyAccessDenied, has_all_warehouse_access, resolve_company_scope,
+    CompanyAccessDenied, get_permissions, has_all_warehouse_access,
+    resolve_company_scope,
 )
 
 logger = get_logger(__name__)
@@ -38,6 +39,9 @@ upload_parser.add_argument('file',
                            help='Pick-list PDF')
 upload_parser.add_argument('warehouse_id', type=int, location='form', required=True)
 upload_parser.add_argument('company_id', type=int, location='form', required=True)
+# Optional, and honoured only for a role holding picklist_dealer_entry — see the
+# gate in post(). Sent by the retail uploader, ignored for everyone else.
+upload_parser.add_argument('dealer_name', type=str, location='form', required=False)
 
 scan_model = rest_api.model('PicklistScan', {
     'payload': fields.String(required=True, description='Raw scanned QR string'),
@@ -114,8 +118,19 @@ class PicklistUpload(Resource):
                 return {'success': False,
                         'msg': 'Company with ID %s not found' % company_id}, 400
 
+            # The UI only shows this box to a role that may use it, but the UI is
+            # not the gate: a form field is trivially added by hand, and a dealer
+            # name is written straight onto the order and can create a dealer.
+            # Silently ignored rather than refused — an older client that sends
+            # nothing and a curious one that sends something should both simply
+            # get the sheet's own dealer.
+            dealer_override = None
+            if get_permissions(current_user.role).get('picklist_dealer_entry'):
+                dealer_override = (args.get('dealer_name') or '').strip() or None
+
             return picklist_service.upload_one(
-                args['file'], warehouse_id, company_id, current_user.id)
+                args['file'], warehouse_id, company_id, current_user.id,
+                dealer_name=dealer_override)
 
         except Exception as e:
             logger.exception("Pick-list upload endpoint error")
