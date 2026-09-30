@@ -50,6 +50,10 @@ upload_parser.add_argument('warehouse_id',
 upload_parser.add_argument('company_id',
                            type=int, location='form', required=True,
                            help='Company ID must be provided')
+upload_parser.add_argument('duplicate_action',
+                           type=str, location='form', required=False,
+                           help="'replace' or 'skip' — set only on the confirm re-submit "
+                                "after the initial upload asked about a duplicate order")
 
 order_upload_response = rest_api.model('OrderUploadResponse', {
     'success':            fields.Boolean(description='Success status of upload'),
@@ -163,9 +167,10 @@ class OrderUpload(Resource):
     def post(self, current_user):
         try:
             args = upload_parser.parse_args()
-            uploaded_file = args['file']
-            warehouse_id  = args['warehouse_id']
-            company_id    = args['company_id']
+            uploaded_file    = args['file']
+            warehouse_id     = args['warehouse_id']
+            company_id       = args['company_id']
+            duplicate_action = args.get('duplicate_action')
 
             # Check warehouse+company access for non-admin users
             from api.permissions import has_all_warehouse_access
@@ -185,7 +190,8 @@ class OrderUpload(Resource):
                 return {'success': False, 'msg': f'Company with ID {company_id} not found',
                         'processed_count': 0, 'error_count': 0}, 400
 
-            return order_service.process_order_upload(uploaded_file, warehouse_id, company_id, current_user.id)
+            return order_service.process_order_upload(
+                uploaded_file, warehouse_id, company_id, current_user.id, duplicate_action)
 
         except Exception as e:
             return {'success': False, 'msg': f'Error processing upload: {str(e)}',

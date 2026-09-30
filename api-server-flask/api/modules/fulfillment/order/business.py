@@ -15,7 +15,30 @@ from api.core.logging import get_logger
 logger = get_logger(__name__)
 
 
-def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_id=None):
+def classify_order_duplicates(df, company_id):
+    """Split the order numbers on this file into replaceable vs blocked duplicates.
+
+    'Replaceable' means the order already exists but hasn't reached Invoiced or later
+    (OrderStateMachine.TERMINAL_STATES) — deleting and recreating it costs nothing, since
+    no stock has moved for it yet. 'Blocked' means it has: replacing it would mean
+    reversing real stock/invoice history, which is out of scope here (see
+    process_order_dataframe) and stays a plain skip with no replace option, exactly as
+    before this feature existed.
+
+    Returns (replaceable, blocked): both {original_order_id: existing-order-row}, the
+    row being whatever order_repo.existing_orders_with_status returns for it.
+    """
+    ids = [str(r.get('Sales Order #', '') or '').strip() for _, r in df.iterrows()]
+    ids = [i for i in ids if i]
+    existing = order_repo.existing_orders_with_status(company_id, ids)
+    replaceable, blocked = {}, {}
+    for oid, row in existing.items():
+        (blocked if OrderStateMachine.is_terminal(row['status']) else replaceable)[oid] = row
+    return replaceable, blocked
+
+
+def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_id=None,
+                             duplicate_action=None):
     """
     Process a dataframe of order data (new format: one row = one order).
 
@@ -25,6 +48,14 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
         company_id: Company ID
         user_id: ID of the user processing the orders
         upload_batch_id: Upload batch ID for tracking
+        duplicate_action: None | 'replace' | 'skip' — what to do with an order number
+            already on file for this company AND still replaceable (see
+            classify_order_duplicates). The caller (OrderUploadService.before_processing)
+            is what actually asks the operator and decides this; by the time it reaches
+            here the decision (if any was needed) has already been made, so a replaceable
+            duplicate is deleted and recreated when 'replace', or reported exactly like a
+            blocked one otherwise. A duplicate that's already Invoiced or later is always
+            just reported — never a decision to make, regardless of this argument.
 
     Returns:
         dict: Processing results
@@ -44,12 +75,12 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
     #
     # `seen` additionally catches a number repeated WITHIN one file, which the database
     # could not catch either.
-    existing_orders = order_repo.existing_original_order_ids(
-        company_id,
-        [str(r.get('Sales Order #', '') or '').strip()
-         for _, r in df.iterrows()
-         if str(r.get('Sales Order #', '') or '').strip()],
-    )
+    replaceable, blocked = classify_order_duplicates(df, company_id)
+    existing_orders = {**replaceable, **blocked}
+    # Which replaceable duplicates this call has already deleted — so line 2 of the same
+    # order isn't mistaken for a fresh duplicate and deleted again; it is simply this
+    # order's next line, same as line 2 of a genuinely new order.
+    replaced_now = set()
     seen = set()
     # Order numbers this call actually created. The line-item pass is limited to these,
     # so a re-uploaded file can never rewrite the lines of an order that already exists.
@@ -70,14 +101,24 @@ def process_order_dataframe(df, warehouse_id, company_id, user_id, upload_batch_
                 error_rows.append(_make_error_row('', purchaser_name, f"Row {index}: Missing Sales Order #"))
                 continue
 
-            # A number already in the DB is a genuine re-upload — refused, and reported.
-            if sales_order_id in existing_orders:
-                if sales_order_id not in reported_existing:
-                    reported_existing.add(sales_order_id)
-                    error_rows.append(_make_error_row(
-                        sales_order_id, purchaser_name,
-                        f"Order {sales_order_id} already exists — skipped, nothing changed"))
-                continue
+            if sales_order_id in existing_orders and sales_order_id not in replaced_now:
+                if duplicate_action == 'replace' and sales_order_id in replaceable:
+                    order_repo.delete_order(replaceable[sales_order_id]['potential_order_id'])
+                    replaced_now.add(sales_order_id)
+                    logger.info("Replaced duplicate order",
+                                extra={'order_id': sales_order_id, 'company_id': company_id})
+                    # Falls through to the normal create path below, exactly like a
+                    # brand-new order — including the line-item pass in service.py.
+                else:
+                    # A number already in the DB and not being replaced — refused, and
+                    # reported, same message whether it's blocked (Invoiced or later) or
+                    # the operator chose to skip it.
+                    if sales_order_id not in reported_existing:
+                        reported_existing.add(sales_order_id)
+                        error_rows.append(_make_error_row(
+                            sales_order_id, purchaser_name,
+                            f"Order {sales_order_id} already exists — skipped, nothing changed"))
+                    continue
 
             # A number repeated WITHIN this file is the same document's next line item,
             # not a duplicate order. One order is created from the first such row and the

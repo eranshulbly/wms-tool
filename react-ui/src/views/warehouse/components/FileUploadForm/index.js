@@ -138,6 +138,7 @@ const QUEUE_ICON = {
   success: <CheckCircleOutlineIcon style={{ color: '#4caf50' }} />,
   error: <ErrorOutlineIcon color="error" />,
   needs_approval: <WarningIcon style={{ color: '#f9a825' }} />,
+  needs_confirmation: <WarningIcon style={{ color: '#f9a825' }} />,
   skipped: <BlockIcon color="disabled" />
 };
 
@@ -149,6 +150,8 @@ const queueStatusLabel = (item) => {
       return 'Uploading…';
     case 'needs_approval':
       return 'Needs your approval — see the dialog';
+    case 'needs_confirmation':
+      return 'Duplicate order(s) found — see the dialog';
     case 'skipped':
       return 'Skipped — nothing was saved';
     case 'success': {
@@ -217,6 +220,7 @@ const FileUploadForm = ({
   const [uploadStatus, setUploadStatus] = useState(null); // null | 'uploading' | 'success' | 'error'
   const [uploadResults, setUploadResults] = useState(null);
   const [approval, setApproval] = useState(null); // backend asked a question before writing
+  const [duplicateConfirm, setDuplicateConfirm] = useState(null); // backend found order(s) it can replace
 
   // Multi-file state (allowMultiple = true) — a queue processed one file at a time so
   // each upload runs through the same duplicate-detection and business logic it would
@@ -265,6 +269,7 @@ const FileUploadForm = ({
     setIsUploading(true);
     setUploadStatus('uploading');
     setApproval(null);
+    setDuplicateConfirm(null);
 
     postFile(file, approvals)
       .then((response) => {
@@ -274,6 +279,15 @@ const FileUploadForm = ({
         // written at this point, so declining is a genuine no-op.
         if (data.needs_approval) {
           setApproval(data);
+          setUploadStatus(null);
+          return;
+        }
+
+        // Same idea, for a duplicate order it CAN replace (see FileUploadForm's own
+        // duplicate dialog below) — distinct from needs_approval because "no" here means
+        // "skip these, keep going with the rest of the file", not "cancel everything".
+        if (data.needs_confirmation) {
+          setDuplicateConfirm(data);
           setUploadStatus(null);
           return;
         }
@@ -305,6 +319,14 @@ const FileUploadForm = ({
     setFile(null);
     setUploadStatus(null);
     setUploadResults(null);
+  };
+
+  // action: 'replace' | 'skip' — re-posts the same file with the operator's answer for
+  // the order(s) named in duplicateConfirm. Either way the file finishes processing;
+  // unlike the needs_approval dialog's Reject, there is no "cancel the whole upload" here.
+  const resolveDuplicates = (action) => {
+    setDuplicateConfirm(null);
+    handleUpload({ duplicate_action: action });
   };
 
   // ── multi-file mode ─────────────────────────────────────────────────────────
@@ -353,6 +375,11 @@ const FileUploadForm = ({
         const data = res.data;
         if (data.needs_approval) {
           setQueueItem(item.id, { status: 'needs_approval', approval: data });
+          setIsUploading(false);
+          return;
+        }
+        if (data.needs_confirmation) {
+          setQueueItem(item.id, { status: 'needs_confirmation', duplicateConfirm: data });
           setIsUploading(false);
           return;
         }
@@ -406,6 +433,36 @@ const FileUploadForm = ({
     runQueueFrom(idx + 1, queue);
   };
 
+  const duplicateConfirmItem = queue.find((q) => q.status === 'needs_confirmation');
+
+  // action: 'replace' | 'skip' — re-posts this queue item's file with the answer, then
+  // resumes the rest of the queue same as approveQueueItem/rejectQueueItem do.
+  const resolveQueueDuplicates = async (action) => {
+    const item = duplicateConfirmItem;
+    if (!item) return;
+    setIsUploading(true);
+    setQueueItem(item.id, { status: 'uploading', duplicateConfirm: null });
+    try {
+      const res = await postFile(item.file, { duplicate_action: action });
+      const data = res.data;
+      if (data.needs_confirmation) {
+        // Re-checked on the confirm re-submit and still ambiguous (e.g. another upload
+        // changed one of these orders in between) — ask again rather than guess.
+        setQueueItem(item.id, { status: 'needs_confirmation', duplicateConfirm: data });
+        setIsUploading(false);
+        return;
+      }
+      setQueueItem(item.id, { status: data.success ? 'success' : 'error', result: data });
+    } catch (e) {
+      setQueueItem(item.id, {
+        status: 'error',
+        result: e.response?.data || { success: false, msg: 'Upload failed' }
+      });
+    }
+    const idx = queue.findIndex((q) => q.id === item.id);
+    runQueueFrom(idx + 1, queue);
+  };
+
   const queueAllDone = queue.length > 0 && queue.every((q) => ['success', 'error', 'skipped'].includes(q.status));
   const queueSucceeded = queue.filter((q) => q.status === 'success').length;
   const queueFailed = queue.filter((q) => q.status === 'error' || q.status === 'skipped').length;
@@ -447,6 +504,12 @@ const FileUploadForm = ({
         setApproval(null);
         showSnackbar('Upload cancelled — nothing was saved', 'info');
       };
+
+  // Same unification for the duplicate-order dialog.
+  const activeDuplicateConfirm = allowMultiple ? duplicateConfirmItem?.duplicateConfirm : duplicateConfirm;
+  const activeDuplicateFilename = allowMultiple ? duplicateConfirmItem?.file?.name : file?.name;
+  const onReplaceDuplicates = allowMultiple ? () => resolveQueueDuplicates('replace') : () => resolveDuplicates('replace');
+  const onSkipDuplicates = allowMultiple ? () => resolveQueueDuplicates('skip') : () => resolveDuplicates('skip');
 
   const selectorsLocked = allowMultiple
     ? isUploading || (queueAllDone && queue.length > 0)
@@ -546,7 +609,7 @@ const FileUploadForm = ({
                                   ? `Done — ${queueSucceeded} succeeded, ${queueFailed} failed/skipped, ${queueProcessedTotal} record(s) processed in total`
                                   : `${queue.length} file${queue.length === 1 ? '' : 's'} queued`}
                               </Typography>
-                              {(queueAllDone || (!isUploading && !approvalItem)) && queue.length > 0 && (
+                              {(queueAllDone || (!isUploading && !approvalItem && !duplicateConfirmItem)) && queue.length > 0 && (
                                 <Button size="small" onClick={resetQueue} disabled={isUploading}>
                                   {queueAllDone ? 'Upload More Files' : 'Clear All'}
                                 </Button>
@@ -699,6 +762,7 @@ const FileUploadForm = ({
                                 (requiresCompany && !selectedCompany) ||
                                 isUploading ||
                                 !!approvalItem ||
+                                !!duplicateConfirmItem ||
                                 queueAllDone
                               : !file ||
                                 (requiresWarehouse && !selectedWarehouse) ||
@@ -777,6 +841,46 @@ const FileUploadForm = ({
           <Button onClick={onRejectDialog}>Reject</Button>
           <Button variant="contained" onClick={onApproveDialog}>
             Approve &amp; upload
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* An order number already on file, but not yet invoiced — so replacing it costs
+          nothing: no stock has moved for it yet. Skip leaves it exactly as it is today;
+          Replace deletes it and recreates it from this file. Either way the rest of the
+          file (new orders, and anything already invoiced) is processed regardless. */}
+      <Dialog open={!!activeDuplicateConfirm} onClose={onSkipDuplicates} maxWidth="sm" fullWidth>
+        <DialogTitle>
+          Duplicate order{activeDuplicateConfirm?.duplicate_orders?.length === 1 ? '' : 's'} found
+          {activeDuplicateFilename ? ` — ${activeDuplicateFilename}` : ''}
+        </DialogTitle>
+        <DialogContent>
+          <DialogContentText>{activeDuplicateConfirm?.msg}</DialogContentText>
+          {activeDuplicateConfirm?.duplicate_orders?.length > 0 && (
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Order #</TableCell>
+                  <TableCell>Purchaser</TableCell>
+                  <TableCell>Status</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {activeDuplicateConfirm.duplicate_orders.map((d) => (
+                  <TableRow key={d.order_id}>
+                    <TableCell>{d.order_id}</TableCell>
+                    <TableCell>{d.name || '—'}</TableCell>
+                    <TableCell>{d.status}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={onSkipDuplicates}>Skip these, keep the rest</Button>
+          <Button variant="contained" color="primary" onClick={onReplaceDuplicates}>
+            Replace with new data
           </Button>
         </DialogActions>
       </Dialog>

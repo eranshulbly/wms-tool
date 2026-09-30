@@ -15,8 +15,8 @@ class OrderRepository(BaseRepository):
 
     # ── PotentialOrder ────────────────────────────────────────────────────────
 
-    def existing_original_order_ids(self, company_id, order_ids: list) -> set:
-        """Which of these order numbers this company already has, in one query.
+    def existing_orders_with_status(self, company_id, order_ids: list) -> dict:
+        """Existing orders for these numbers, keyed by number, with id/status/purchaser.
 
         Scoped to the company because the number comes from the customer's own series —
         two tenants can legitimately use the same one, and treating that as a duplicate
@@ -25,17 +25,46 @@ class OrderRepository(BaseRepository):
         Deliberately NOT partition-filtered: an order uploaded outside the active window
         is still an order, and missing it would let a duplicate through — which is the
         whole point of this check.
+
+        Used where a duplicate needs more than a yes/no answer: whether it can be
+        replaced depends on its current status (see OrderStateMachine.TERMINAL_STATES).
         """
         ids = [str(o).strip() for o in (order_ids or []) if str(o).strip()]
         if not ids:
-            return set()
+            return {}
         unique = list(dict.fromkeys(ids))
         placeholders = ','.join(['%s'] * len(unique))
         rows = self._db.execute_query(
-            f"""SELECT DISTINCT original_order_id FROM potential_order
+            f"""SELECT original_order_id, potential_order_id, status, purchaser_name
+                  FROM potential_order
                  WHERE company_id = %s AND original_order_id IN ({placeholders})""",
             (company_id, *unique))
-        return {r['original_order_id'] for r in (rows or [])}
+        return {r['original_order_id']: r for r in (rows or [])}
+
+    def delete_order(self, potential_order_id: int) -> None:
+        """Hard-delete one order's own data — state history, line items, the order row.
+
+        Only ever called on an order still short of Invoiced (the caller checks
+        OrderStateMachine.is_terminal first — see business.py's duplicate-replace flow):
+        no stock has moved for it yet at that point, so unlike admin's whole-batch revert
+        (_delete_order_batch in router_admin.py), which also has to give stock back, there
+        is nothing here to reverse.
+        """
+        pf_osh_sql, pf_osh_params = self._pf('order_state_history', alias='osh')
+        pf_pop_sql, pf_pop_params = self._pf('potential_order_product', alias='pop')
+        pf_po_sql, pf_po_params = self._pf('potential_order')
+        with self._db.get_cursor() as cursor:
+            cursor.execute(
+                f"DELETE osh FROM order_state_history osh"
+                f" WHERE osh.potential_order_id = %s AND {pf_osh_sql}",
+                (potential_order_id, *pf_osh_params))
+            cursor.execute(
+                f"DELETE pop FROM potential_order_product pop"
+                f" WHERE pop.potential_order_id = %s AND {pf_pop_sql}",
+                (potential_order_id, *pf_pop_params))
+            cursor.execute(
+                f"DELETE FROM potential_order WHERE potential_order_id = %s AND {pf_po_sql}",
+                (potential_order_id, *pf_po_params))
 
     def find_bulk_by_original_ids(self, order_ids: list) -> dict:
         """

@@ -34,31 +34,68 @@ class OrderUploadService(BaseUploadService):
     LINE_COLUMNS = ('Part #', 'Reserved Qty')
 
     def before_processing(self, df, context: dict):
-        """Refuse a file that sells a batch this company never received.
+        """Ask about replaceable duplicates, then refuse a file selling unreceived stock.
 
-        Only for files that name batches (the supplier's PDF invoices). The invoice upload
-        closes an order by taking stock out of the exact batches on it, so an order that
-        names a batch never received could be opened but never closed. Refusing here,
-        before anything is written, keeps every open order closable.
+        Two independent gates, in order, both running before anything is written:
 
-        Rows of orders that already exist are left out: the upload skips those anyway, and
-        blaming a batch would hide the real reason the row did nothing.
+        1. Duplicate orders. A number already on file for this company either can be
+           replaced (not yet Invoiced or later — see business.classify_order_duplicates)
+           or can't. A replaceable one needs a decision only the operator can make, so —
+           unless context already carries one, from the confirm re-submit — this stops
+           and asks instead of silently skipping it, the same way ProductUploadService
+           asks about missing part numbers below. A blocked one (already Invoiced or
+           later) was never a decision to make; it stays a plain skip, as before this
+           feature existed.
+
+        2. Batches not received. Only for files that name batches (the supplier's PDF
+           invoices). The invoice upload closes an order by taking stock out of the exact
+           batches on it, so an order that names a batch never received could be opened
+           but never closed. Rows of orders that will end up skipped either way (blocked,
+           or replaceable-but-declined) are left out: the upload skips those anyway, and
+           blaming a batch would hide the real reason the row did nothing. A replaceable
+           duplicate the operator chose to replace IS checked — it is about to be
+           recreated from this file, same as any new order.
         """
+        duplicate_action = context.get('duplicate_action')
+        if 'Sales Order #' in df.columns and not duplicate_action:
+            from api.modules.fulfillment.order.business import classify_order_duplicates
+
+            replaceable, _blocked = classify_order_duplicates(df, context.get('company_id'))
+            if replaceable:
+                logger.info("Order upload awaiting duplicate-replace decision",
+                            extra={'company_id': context.get('company_id'),
+                                   'duplicate_count': len(replaceable)})
+                return {
+                    'success': True,
+                    'needs_confirmation': True,
+                    'msg': (f"{len(replaceable)} order(s) in this file already exist and "
+                            f"have not been invoiced yet, so they can be replaced with the "
+                            f"new data. Choose Replace or Skip for them below."),
+                    'duplicate_orders': [
+                        {'order_id': oid, 'name': row['purchaser_name'] or '',
+                         'status': row['status']}
+                        for oid, row in replaceable.items()
+                    ],
+                    'processed_count': 0,
+                    'error_count': 0,
+                }, 200
+
         if 'Batch #' not in df.columns or 'Part #' not in df.columns:
             return None
 
         from api.modules.platform.catalog.product_upload_business import _batch_key
-        from api.repositories import order_repo, product_repo
+        from api.modules.fulfillment.order.business import classify_order_duplicates
+        from api.repositories import product_repo
 
         company_id = context.get('company_id')
         rows = [r for _, r in df.iterrows() if str(r.get('Batch #') or '').strip()]
         if not rows:
             return None
 
-        existing = order_repo.existing_original_order_ids(
-            company_id, [str(r.get('Sales Order #') or '').strip() for r in rows])
+        replaceable, blocked = classify_order_duplicates(df, company_id)
+        skipped = set(blocked) | (set() if duplicate_action == 'replace' else set(replaceable))
         rows = [r for r in rows
-                if str(r.get('Sales Order #') or '').strip() not in existing]
+                if str(r.get('Sales Order #') or '').strip() not in skipped]
         if not rows:
             return None
 
@@ -108,6 +145,7 @@ class OrderUploadService(BaseUploadService):
             company_id,
             context['user_id'],
             context['upload_batch_id'],
+            context.get('duplicate_action'),
         )
 
         out = {
@@ -162,11 +200,16 @@ class OrderUploadService(BaseUploadService):
 _service = OrderUploadService()
 
 
-def process_order_upload(uploaded_file, warehouse_id, company_id, user_id):
-    """Process an uploaded order file. Returns (result_dict, http_status_code)."""
+def process_order_upload(uploaded_file, warehouse_id, company_id, user_id, duplicate_action=None):
+    """Process an uploaded order file. Returns (result_dict, http_status_code).
+
+    duplicate_action — 'replace' or 'skip', only ever set on the confirm re-submit after
+    before_processing asked about a replaceable duplicate (see OrderUploadService).
+    """
     return _service.execute(
         uploaded_file,
-        {'warehouse_id': warehouse_id, 'company_id': company_id, 'user_id': user_id},
+        {'warehouse_id': warehouse_id, 'company_id': company_id, 'user_id': user_id,
+         'duplicate_action': duplicate_action},
     )
 
 
