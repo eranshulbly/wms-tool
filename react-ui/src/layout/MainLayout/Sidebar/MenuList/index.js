@@ -78,6 +78,12 @@ const MenuList = () => {
         sectionGroup = null;
     }
 
+    // Outstanding Check: same access as Margin Check (backend:
+    // fulfillment/invoice/router.py::OutstandingCheck).
+    if (sectionGroup && sectionGroup.id === 'outstanding-check' && !(isAdmin || isManager)) {
+        sectionGroup = null;
+    }
+
     // Inventory Ingestion: matches its actual route guard (MainRoutes.js:
     // <AdminGuard allowManager>) — admin or manager-type role, not the 'ingestion'
     // upload permission, which nothing on the backend actually checks for this screen.

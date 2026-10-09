@@ -42,6 +42,9 @@ const InventoryIngestion = Loadable(lazy(() => import('../views/inventory/Invent
 // margin check (top-level, admin only) — reads invoices, stores nothing
 const MarginCheck = Loadable(lazy(() => import('../views/margin/MarginCheck')));
 
+// outstanding check (top-level, admin only) — reads a Tally export, stores nothing
+const OutstandingCheck = Loadable(lazy(() => import('../views/outstanding/OutstandingCheck')));
+
 //-----------------------|| MAIN ROUTING ||-----------------------//
 
 const MainRoutes = () => {
@@ -71,6 +74,7 @@ const MainRoutes = () => {
                 // Supplier document ingestion (top-level, admin only)
                 '/inventory-ingestion',
                 '/margin-check',
+                '/outstanding-check',
             ]}
         >
             <MainLayout>
@@ -168,6 +172,20 @@ const MainRoutes = () => {
                             <AuthGuard>
                                 <AdminGuard allowManager>
                                     <MarginCheck />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+
+                    {/* Outstanding Check — dealer outstanding from an uploaded Tally
+                        export. Same access as Margin Check (see AdminGuard's
+                        allowManager): a manager chasing payments needs this day to day. */}
+                    <Route
+                        path="/outstanding-check"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard allowManager>
+                                    <OutstandingCheck />
                                 </AdminGuard>
                             </AuthGuard>
                         )}

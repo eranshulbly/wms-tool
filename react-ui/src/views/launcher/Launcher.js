@@ -18,7 +18,8 @@ import {
     IconSettings,
     IconArrowRight,
     IconReceipt2,
-    IconUpload
+    IconUpload,
+    IconCashBanknote
 } from '@tabler/icons';
 
 import { scopeForRole } from '../../utils/roleScope';
@@ -128,6 +129,17 @@ const Launcher = () => {
             path: '/margin-check',
             // Its own tile, not bundled under Admin — open to manager-type roles as well
             // as admin, see the backend check in fulfillment/invoice/router.py::MarginCheck.
+            show: isAdmin || isManager
+        },
+        {
+            key: 'outstanding-check',
+            title: 'Outstanding Check',
+            description: 'Upload a Tally outstanding statement to see what each dealer owes, and for how long.',
+            icon: IconCashBanknote,
+            color: theme.palette.info.dark,
+            tint: theme.palette.info.light,
+            path: '/outstanding-check',
+            // Same access as Margin Check, see fulfillment/invoice/router.py::OutstandingCheck.
             show: isAdmin || isManager
         }
     ];

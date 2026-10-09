@@ -372,6 +372,40 @@ class MarginCheck(Resource):
                 'combined': combined}, 200
 
 
+@rest_api.route('/api/admin/outstanding-check')
+class OutstandingCheck(Resource):
+    """Dealer outstanding on an uploaded Tally export, computed on read.
+
+    Same shape as Margin Check just above: nothing from the file is stored, and nothing
+    here reads this app's own dealer table either — a dealer is identified purely by
+    what the Tally file itself printed for it (name, division, town).
+    """
+
+    @token_required
+    @active_required
+    def post(self, current_user):
+        from api.modules.fulfillment.invoice import outstanding_check
+
+        # Same access as Margin Check — dealer-level accounts-receivable is the kind of
+        # figure a manager chasing payments needs day to day, not only an admin.
+        if getattr(current_user, 'role', None) not in ('admin', 'manager', 'cadila_manager'):
+            return {'success': False, 'msg': 'Admin access required.'}, 403
+
+        if 'file' not in request.files:
+            return {'success': False, 'msg': 'No file uploaded'}, 400
+        f = request.files['file']
+
+        try:
+            result = outstanding_check.check_outstanding(f.stream, f.filename)
+        except outstanding_check.OutstandingCheckError as e:
+            return {'success': False, 'msg': str(e)}, 400
+        except Exception:
+            logger.exception('outstanding check failed for %s', f.filename)
+            return {'success': False, 'msg': 'Unexpected error — see logs'}, 400
+
+        return {'success': True, **result}, 200
+
+
 # ── Order margin (Analytics tab) ─────────────────────────────────────────────
 #
 # Margin on every order already invoiced through the app — no upload, reads what's on

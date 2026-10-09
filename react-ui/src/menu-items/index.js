@@ -6,23 +6,25 @@ import analytics from './analytics';
 import adminMenu from './admin';
 import inventoryIngestion from './inventory-ingestion';
 import marginCheck from './margin-check';
+import outstandingCheck from './outstanding-check';
 
 //-----------------------|| MENU ITEMS ||-----------------------//
 
 // Full set of groups (used by Breadcrumbs). The sidebar itself renders only the
 // group relevant to the current section — see Sidebar/MenuList.
 const menuItems = {
-    items: [home, warehouse, eway, supply, analytics, adminMenu, inventoryIngestion, marginCheck]
+    items: [home, warehouse, eway, supply, analytics, adminMenu, inventoryIngestion, marginCheck, outstandingCheck]
 };
 
 // Which section a given route belongs to. Keys are section group ids above.
 export const SECTION_FOR_PATH = [
     { match: (p) => p.startsWith('/admin'), section: 'admin' },
-    // Inventory Ingestion and Margin Check each get their own standalone section now
-    // (own Launcher tile, own sidebar group) rather than living under Admin — Admin is
-    // Admin Controls only.
+    // Inventory Ingestion, Margin Check and Outstanding Check each get their own
+    // standalone section now (own Launcher tile, own sidebar group) rather than living
+    // under Admin — Admin is Admin Controls only.
     { match: (p) => p.startsWith('/inventory-ingestion'), section: 'inventory-ingestion' },
     { match: (p) => p.startsWith('/margin-check'), section: 'margin-check' },
+    { match: (p) => p.startsWith('/outstanding-check'), section: 'outstanding-check' },
     { match: (p) => p.startsWith('/analytics'), section: 'analytics' },
     { match: (p) => p === '/warehouse/eway-bill', section: 'eway' },
     { match: (p) => p === '/warehouse/supply-sheet', section: 'supply' },
