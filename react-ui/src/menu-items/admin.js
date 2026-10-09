@@ -1,4 +1,4 @@
-import { IconSettings, IconCalendarStats, IconUpload, IconCashBanknote } from '@tabler/icons';
+import { IconSettings, IconCalendarStats, IconUpload } from '@tabler/icons';
 
 const adminMenu = {
     id: 'admin',
@@ -32,15 +32,6 @@ const adminMenu = {
             // Same nginx caveat as above — path avoids the '/admin/*' prefix.
             url: '/inventory-ingestion',
             icon: IconUpload,
-            breadcrumbs: false,
-        },
-        {
-            id: 'outstanding-check',
-            title: 'Outstanding Check',
-            type: 'item',
-            // Same nginx caveat as above — path avoids the '/admin/*' prefix.
-            url: '/outstanding-check',
-            icon: IconCashBanknote,
             breadcrumbs: false,
         },
         // Future admin menu items go here.
