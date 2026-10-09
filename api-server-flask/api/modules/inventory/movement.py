@@ -288,11 +288,12 @@ def movement_report(company_ids=None, as_of=None):
     rows = [_row(pid, stock.get(pid), moves.get(pid), products.get(pid, {}), today)
             for pid in ids]
 
-    # Worst first: the biggest money that will not clear before it expires. A planner
-    # opening this report wants the top of the list to be the next thing to act on.
-    # Then by stock value, so the tail — the products with no history to project from —
+    # Worst band first (BANDS is already ordered that way) — a planner opening this
+    # report wants the top of the list to be the next thing to act on. Then by stock
+    # value within a band, so the tail — products with no history to project from —
     # still leads with the largest money sitting on the shelf.
-    rows.sort(key=lambda r: (-(r['value_at_risk'] or 0), -(r['stock_value'] or 0),
+    band_rank = {b: i for i, b in enumerate(BANDS)}
+    rows.sort(key=lambda r: (band_rank.get(r['band'], len(BANDS)), -(r['stock_value'] or 0),
                              r['product_name'] or ''))
 
     return {'rows': jsonable(rows), 'summary': _summary(rows), 'as_of': today.isoformat()}
@@ -318,6 +319,11 @@ def _row(pid, st, mv, prod, today):
     if ever_sold:
         rate_month = sold / observed_days * DAYS_PER_MONTH
 
+    # months_cover and months_to_expiry stay local — they only ever existed to feed
+    # _band() below and (formerly) a handful of display-only figures that were removed
+    # by request (months of cover, months to expiry, rate needed to clear, units at
+    # risk, value at risk): none of them fed anything else downstream, so computing
+    # them past what _band() needs would just be dead work on every call.
     months_cover = None
     if rate_month:
         months_cover = stock_units / rate_month
@@ -330,21 +336,6 @@ def _row(pid, st, mv, prod, today):
         elif isinstance(expiry, datetime):
             expiry = expiry.date()
         months_to_expiry = _months_between(expiry, today)
-
-    # What it would take to clear the shelf before the earliest batch expires — the
-    # number to compare against the rate the product is actually selling at.
-    rate_to_clear = None
-    if stock_units > 0 and months_to_expiry is not None and months_to_expiry > 0:
-        rate_to_clear = stock_units / months_to_expiry
-
-    # Units that will still be sitting there on expiry day at today's rate, and what they
-    # cost to buy. This is the number the report exists to surface — so it is left null,
-    # not set to the whole shelf, when there is no rate to project. Calling untested stock
-    # "at risk" would put every new arrival in the total and drown the real cases.
-    units_at_risk = None
-    if stock_units > 0 and months_to_expiry is not None and rate_month is not None:
-        will_sell = rate_month * max(months_to_expiry, 0)
-        units_at_risk = max(stock_units - will_sell, 0.0)
 
     costed_units = _f(st and st['costed_units']) or 0.0
     costed_value = _f(st and st['costed_value']) or 0.0
@@ -369,16 +360,13 @@ def _row(pid, st, mv, prod, today):
         'observed_days': observed_days,
         'last_sale': mv and mv['last_sale'],
 
-        'months_cover': round(months_cover, 2) if months_cover is not None else None,
-
         'first_expiry': expiry.isoformat() if expiry else None,
-        'months_to_expiry': round(months_to_expiry, 2) if months_to_expiry is not None else None,
-        'rate_to_clear': round(rate_to_clear) if rate_to_clear is not None else None,
 
-        'units_at_risk': round(units_at_risk, 2) if units_at_risk is not None else None,
-        'value_at_risk': (round(units_at_risk * landed_unit, 2)
-                          if units_at_risk is not None and landed_unit is not None else None),
-
+        # months of cover, months to expiry, rate needed to clear, units at risk and
+        # value at risk were all computed here (same inputs as above) and shown as
+        # their own columns — removed by request. 'band' still folds the same
+        # months_cover/months_to_expiry comparison into one read, worst-first label,
+        # which is what stayed.
         'band': _band(stock_units, rate_month, months_cover, months_to_expiry, ever_sold),
     }
 
@@ -387,17 +375,15 @@ def _summary(rows):
     """Headline figures for the tiles. Every one of them is a count or a sum of the
     rows below it, so a reader can always find the tile's number in the table.
 
-    'unmeasured' is reported alongside the risk total rather than folded into it. Stock
-    with no sales history is not safe, but it is not measurable either, and adding it to
-    the at-risk figure would make that figure move every time a delivery arrives.
+    'unmeasured' is kept separate from 'at_risk': stock with no sales history is not
+    safe, but it is not measurable either, and folding it into the risk count would
+    make that count move every time a delivery arrives rather than when risk changes.
     """
     at_risk = [r for r in rows if r['band'] in ('Expired', 'Will expire unsold')]
     unmeasured = [r for r in rows if r['band'] == 'No sale data']
     return {
         'products': len(rows),
         'stock_value': round(sum(r['stock_value'] or 0 for r in rows), 2),
-        'value_at_risk': round(sum(r['value_at_risk'] or 0 for r in rows), 2),
-        'units_at_risk': round(sum(r['units_at_risk'] or 0 for r in rows), 2),
         'at_risk_products': len(at_risk),
         'unmeasured_value': round(sum(r['stock_value'] or 0 for r in unmeasured), 2),
         'stockout_products': len([r for r in rows if r['band'] == 'Under 30 days cover']),

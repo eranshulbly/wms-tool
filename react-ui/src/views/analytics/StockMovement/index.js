@@ -54,13 +54,8 @@ const COLUMNS = [
   { key: 'pack', label: 'Pack', type: 'text' },
   { key: 'stock_units', label: 'Stock (units)', type: 'qty' },
   { key: 'sale_rate_month', label: 'Sale rate (units/month)', type: 'qty1' },
-  { key: 'months_cover', label: 'Months of cover', type: 'num2' },
   { key: 'first_expiry', label: 'Batch expiry', type: 'monthyear' },
-  { key: 'months_to_expiry', label: 'Months to expiry', type: 'num2' },
-  { key: 'rate_to_clear', label: 'Rate needed to clear', type: 'qty' },
   { key: 'stock_value', label: 'Stock value', type: 'money' },
-  { key: 'units_at_risk', label: 'Units at risk', type: 'qty' },
-  { key: 'value_at_risk', label: 'Value at risk', type: 'money' },
   { key: 'band', label: 'Push band', type: 'band' },
 ];
 
@@ -147,7 +142,7 @@ const StockMovement = () => {
   const [loading, setLoading] = useState(false);
   const [picked, setPicked] = useState([]);
   const [band, setBand] = useState('');
-  const [sort, setSort] = useState({ key: 'value_at_risk', dir: 'desc' });
+  const [sort, setSort] = useState({ key: 'stock_value', dir: 'desc' });
   const [toast, setToast] = useState(null);
 
   const [batchRows, setBatchRows] = useState([]);
@@ -308,12 +303,6 @@ const StockMovement = () => {
         { label: 'Products', value: nf0.format(s.products), hint: 'Holding stock, or moved in the period.' },
         { label: 'Stock value', value: money(s.stock_value), hint: 'On hand, at landed cost.' },
         {
-          label: 'Value at risk',
-          value: money(s.value_at_risk),
-          hint: 'Stock that will not clear before its earliest batch expires, at the current rate.',
-          color: s.value_at_risk > 0 ? '#b91c1c' : undefined,
-        },
-        {
           label: 'Expiring unsold',
           value: nf0.format(s.at_risk_products),
           hint: 'Products whose cover runs past their expiry.',
@@ -327,7 +316,7 @@ const StockMovement = () => {
         {
           label: 'No sale history',
           value: money(s.unmeasured_value),
-          hint: `${s.no_sale_products} product(s) have never shipped, so no rate can be measured. Not counted in value at risk.`,
+          hint: `${s.no_sale_products} product(s) have never shipped, so no rate can be measured.`,
         },
       ]
     : [];
@@ -582,9 +571,6 @@ const StockMovement = () => {
                         key={c.key}
                         align={isNumeric(c.type) ? 'right' : 'left'}
                         className={isNumeric(c.type) ? classes.num : ''}
-                        style={
-                          c.key === 'value_at_risk' && v > 0 ? { color: '#b91c1c', fontWeight: 600 } : undefined
-                        }
                       >
                         {render(c.type, v)}
                       </TableCell>
@@ -600,9 +586,8 @@ const StockMovement = () => {
         <Typography variant="caption" className={classes.muted} display="block" sx={{ mt: 1 }}>
           Showing {productSearch.visible.length} of {rows.length} products · sale rate is every recorded sale
           since the product was first stocked, divided by however many days that's been · as of{' '}
-          {data.as_of}. Cover is stock ÷ sale rate. Value at risk is the stock that will still be on hand
-          when the earliest batch in stock expires, at landed cost — blank where there is no sale history
-          to project from.
+          {data.as_of}. Push band weighs stock against that rate and the earliest batch's expiry — "Will
+          expire unsold" means it cannot clear before then at the current rate.
         </Typography>
       )}
         </>
