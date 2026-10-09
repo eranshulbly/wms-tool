@@ -22,6 +22,9 @@ export const SECTION_FOR_PATH = [
     // MenuList finds no group to render, so the whole sidebar comes up empty — the page
     // still works, but the user loses all navigation.
     { match: (p) => p.startsWith('/inventory-ingestion'), section: 'admin' },
+    // Outstanding Check likewise — reached from the Admin sidebar group, same as
+    // Monthly Data Upload and Inventory Ingestion above.
+    { match: (p) => p.startsWith('/outstanding-check'), section: 'admin' },
     { match: (p) => p.startsWith('/analytics'), section: 'analytics' },
     { match: (p) => p === '/warehouse/eway-bill', section: 'eway' },
     { match: (p) => p === '/warehouse/supply-sheet', section: 'supply' },

@@ -6,6 +6,7 @@ Invoice management routes:
   GET  /api/invoices/statistics
   GET  /api/invoices
   GET  /api/invoices/<invoice_id>
+  POST /api/admin/outstanding-check   dealer outstanding from an uploaded Tally export
 
 Supply sheet generation has moved to supply_sheet_routes.py
   POST /api/supply-sheet/generate
@@ -302,6 +303,39 @@ class InvoiceDetail(Resource):
 
         except Exception as e:
             return {'success': False, 'msg': f'Error retrieving invoice details: {str(e)}'}, 400
+
+
+@rest_api.route('/api/admin/outstanding-check')
+class OutstandingCheck(Resource):
+    """Dealer outstanding on an uploaded Tally export, computed on read.
+
+    Read-only by design, same shape as Inventory Ingestion's upload: nothing from the
+    file is stored, and nothing here reads this app's own dealer table either — a
+    dealer is identified purely by what the Tally file itself printed for it (name,
+    division, town). See outstanding_check.py for the parser itself.
+    """
+
+    @token_required
+    @active_required
+    def post(self, current_user):
+        from api.modules.fulfillment.invoice import outstanding_check
+
+        if not current_user or current_user.role != 'admin':
+            return {'success': False, 'msg': 'Admin access required.'}, 403
+
+        if 'file' not in request.files:
+            return {'success': False, 'msg': 'No file uploaded'}, 400
+        f = request.files['file']
+
+        try:
+            result = outstanding_check.check_outstanding(f.stream, f.filename)
+        except outstanding_check.OutstandingCheckError as e:
+            return {'success': False, 'msg': str(e)}, 400
+        except Exception:
+            logger.exception('outstanding check failed for %s', f.filename)
+            return {'success': False, 'msg': 'Unexpected error — see logs'}, 400
+
+        return {'success': True, **result}, 200
 
 
 # ---------------------------------------------------------------------------

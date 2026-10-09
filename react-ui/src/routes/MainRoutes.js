@@ -40,6 +40,9 @@ const MonthlyDataUpload = Loadable(lazy(() => import('../views/monthly/MonthlyDa
 // supplier document ingestion (top-level, admin only)
 const InventoryIngestion = Loadable(lazy(() => import('../views/inventory/InventoryIngestion')));
 
+// outstanding check (top-level, admin only) — reads a Tally export, stores nothing
+const OutstandingCheck = Loadable(lazy(() => import('../views/outstanding/OutstandingCheck')));
+
 //-----------------------|| MAIN ROUTING ||-----------------------//
 
 const MainRoutes = () => {
@@ -68,6 +71,7 @@ const MainRoutes = () => {
                 '/monthly-data-upload',
                 // Supplier document ingestion (top-level, admin only)
                 '/inventory-ingestion',
+                '/outstanding-check',
             ]}
         >
             <MainLayout>
@@ -150,6 +154,19 @@ const MainRoutes = () => {
                             <AuthGuard>
                                 <AdminGuard>
                                     <InventoryIngestion />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+
+                    {/* Outstanding Check — dealer outstanding from an uploaded Tally
+                        export, admin only */}
+                    <Route
+                        path="/outstanding-check"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard>
+                                    <OutstandingCheck />
                                 </AdminGuard>
                             </AuthGuard>
                         )}
