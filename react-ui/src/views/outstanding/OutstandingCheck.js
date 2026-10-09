@@ -232,7 +232,6 @@ const OutstandingCheck = () => {
                   placeholder="e.g. 30"
                   value={daysFilter}
                   onChange={(e) => setDaysFilter(e.target.value)}
-                  helperText="Shows bills overdue this many days or more"
                   inputProps={{ min: 0 }}
                 />
               </Grid>
