@@ -16,7 +16,8 @@ import {
     IconClipboardList,
     IconChartBar,
     IconSettings,
-    IconArrowRight
+    IconArrowRight,
+    IconCashBanknote
 } from '@tabler/icons';
 
 import { scopeForRole } from '../../utils/roleScope';
@@ -97,6 +98,18 @@ const Launcher = () => {
             color: theme.palette.warning.dark,
             tint: theme.palette.warning.light,
             path: '/admin-controls',
+            show: isAdmin
+        },
+        {
+            key: 'outstanding-check',
+            title: 'Outstanding Check',
+            description: 'Upload a Tally outstanding statement to see what each dealer owes, and for how long.',
+            icon: IconCashBanknote,
+            color: theme.palette.info.dark,
+            tint: theme.palette.info.light,
+            path: '/outstanding-check',
+            // Same access as the backend (fulfillment/invoice/router.py::OutstandingCheck):
+            // admin only, no manager-bypass concept on this branch.
             show: isAdmin
         }
     ];
