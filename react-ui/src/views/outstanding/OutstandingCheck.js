@@ -15,8 +15,6 @@ import {
   TableHead,
   TableRow,
   Snackbar,
-  Tabs,
-  Tab,
   Chip,
 } from '@material-ui/core';
 import { makeStyles } from '@material-ui/styles';
@@ -53,14 +51,6 @@ const money = (v) =>
     : `₹${Number(v).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 const nf0 = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 });
 
-const DEALER_COLUMNS = [
-  { key: 'dealer_name', label: 'Dealer' },
-  { key: 'town', label: 'Town' },
-  { key: 'bill_count', label: 'Bills', align: 'right' },
-  { key: 'max_days_overdue', label: 'Oldest (days)', align: 'right' },
-  { key: 'amount', label: 'Outstanding', align: 'right' },
-];
-
 const BILL_COLUMNS = [
   { key: 'dealer_name', label: 'Dealer' },
   { key: 'town', label: 'Town' },
@@ -79,7 +69,6 @@ const OutstandingCheck = () => {
   const [result, setResult] = useState(null);
   const [toast, setToast] = useState(null);
 
-  const [view, setView] = useState('dealer'); // 'dealer' | 'bills'
   const [daysFilter, setDaysFilter] = useState('');
   const [dealerFilter, setDealerFilter] = useState('');
 
@@ -109,26 +98,11 @@ const OutstandingCheck = () => {
     setDealerFilter('');
   };
 
-  // Shared across both tabs on purpose — typing a dealer's name narrows the dealer
-  // summary AND its bills at once, which is the closest thing this page has to a
-  // drill-down without a separate dialog.
   const minDays = daysFilter.trim() === '' ? null : Number(daysFilter);
   const dealerTerm = dealerFilter.trim().toLowerCase();
 
   const matchesDealerTerm = (name, town) =>
     !dealerTerm || `${name || ''} ${town || ''}`.toLowerCase().includes(dealerTerm);
-
-  const filteredDealers = useMemo(() => {
-    if (!result) return [];
-    return result.dealers.filter((d) => {
-      if (!matchesDealerTerm(d.dealer_name, d.town)) return false;
-      if (minDays !== null && !Number.isNaN(minDays)) {
-        if ((d.max_days_overdue ?? -1) < minDays) return false;
-      }
-      return true;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [result, dealerTerm, minDays]);
 
   const filteredBills = useMemo(() => {
     if (!result) return [];
@@ -143,8 +117,8 @@ const OutstandingCheck = () => {
   }, [result, dealerTerm, minDays]);
 
   const filteredTotal = useMemo(
-    () => filteredDealers.reduce((sum, d) => sum + (d.amount || 0), 0),
-    [filteredDealers]
+    () => filteredBills.reduce((sum, b) => sum + (b.amount || 0), 0),
+    [filteredBills]
   );
 
   const s = result?.summary;
@@ -258,7 +232,7 @@ const OutstandingCheck = () => {
                   placeholder="e.g. 30"
                   value={daysFilter}
                   onChange={(e) => setDaysFilter(e.target.value)}
-                  helperText="Shows bills/dealers overdue this many days or more"
+                  helperText="Shows bills overdue this many days or more"
                   inputProps={{ min: 0 }}
                 />
               </Grid>
@@ -288,130 +262,67 @@ const OutstandingCheck = () => {
             </Grid>
           </Paper>
 
-          <Tabs
-            value={view}
-            onChange={(e, v) => setView(v)}
-            indicatorColor="primary"
-            textColor="primary"
-            className={classes.section}
-          >
-            <Tab label={`By Dealer (${filteredDealers.length})`} value="dealer" />
-            <Tab label={`All Bills (${filteredBills.length})`} value="bills" />
-          </Tabs>
-
-          {view === 'dealer' && (
-            <TableContainer component={Paper} variant="outlined" style={{ maxHeight: '62vh' }}>
-              <Table size="small" stickyHeader>
-                <TableHead>
+          <TableContainer component={Paper} variant="outlined" style={{ maxHeight: '62vh' }}>
+            <Table size="small" stickyHeader>
+              <TableHead>
+                <TableRow>
+                  {BILL_COLUMNS.map((c) => (
+                    <TableCell key={c.key} align={c.align || 'left'}>
+                      {c.label}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {filteredBills.length === 0 && (
                   <TableRow>
-                    {DEALER_COLUMNS.map((c) => (
-                      <TableCell key={c.key} align={c.align || 'left'}>
-                        {c.label}
-                      </TableCell>
-                    ))}
+                    <TableCell colSpan={BILL_COLUMNS.length} align="center" className={classes.muted}>
+                      No bills match the current filter.
+                    </TableCell>
                   </TableRow>
-                </TableHead>
-                <TableBody>
-                  {filteredDealers.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={DEALER_COLUMNS.length} align="center" className={classes.muted}>
-                        No dealers match the current filter.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                  {filteredDealers.map((d) => {
-                    const overdue = d.amount > 0 && (d.max_days_overdue || 0) > OVER_30_DAYS;
-                    return (
-                      <TableRow key={`${d.dealer_name}|${d.town}`} hover className={overdue ? classes.overdueRow : ''}>
-                        <TableCell>
-                          <Typography variant="body2" style={{ fontWeight: 600 }}>
-                            {d.dealer_name}
-                          </Typography>
-                          {d.division && (
-                            <Typography variant="caption" className={classes.muted}>
-                              {d.division}
-                            </Typography>
-                          )}
-                        </TableCell>
-                        <TableCell>{d.town || '—'}</TableCell>
-                        <TableCell align="right" className={classes.num}>{nf0.format(d.bill_count)}</TableCell>
-                        <TableCell align="right" className={`${classes.num} ${overdue ? classes.overdueText : ''}`}>
-                          {d.max_days_overdue ?? '—'}
-                        </TableCell>
-                        <TableCell align="right" className={`${classes.num} ${overdue ? classes.overdueText : ''}`}>
-                          {money(d.amount)}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-                {filteredDealers.length > 0 && (
-                  <TableBody>
-                    <TableRow>
-                      <TableCell colSpan={DEALER_COLUMNS.length - 1} style={{ fontWeight: 600 }}>
-                        Total (filtered)
-                      </TableCell>
-                      <TableCell align="right" className={classes.num} style={{ fontWeight: 600 }}>
-                        {money(filteredTotal)}
-                      </TableCell>
-                    </TableRow>
-                  </TableBody>
                 )}
-              </Table>
-            </TableContainer>
-          )}
-
-          {view === 'bills' && (
-            <TableContainer component={Paper} variant="outlined" style={{ maxHeight: '62vh' }}>
-              <Table size="small" stickyHeader>
-                <TableHead>
-                  <TableRow>
-                    {BILL_COLUMNS.map((c) => (
-                      <TableCell key={c.key} align={c.align || 'left'}>
-                        {c.label}
+                {filteredBills.map((b) => {
+                  const overdue = b.amount > 0 && b.days_overdue > OVER_30_DAYS;
+                  return (
+                    <TableRow
+                      key={`${b.dealer_name}|${b.town}|${b.ref_no}|${b.bill_date}`}
+                      hover
+                      className={overdue ? classes.overdueRow : ''}
+                    >
+                      <TableCell>{b.dealer_name}</TableCell>
+                      <TableCell>{b.town || '—'}</TableCell>
+                      <TableCell>{b.bill_date}</TableCell>
+                      <TableCell className={classes.mono}>
+                        {b.ref_no}
+                        {b.amount < 0 && (
+                          <Chip label="Credit" size="small" style={{ marginLeft: 6 }} />
+                        )}
                       </TableCell>
-                    ))}
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {filteredBills.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={BILL_COLUMNS.length} align="center" className={classes.muted}>
-                        No bills match the current filter.
+                      <TableCell>{b.due_on}</TableCell>
+                      <TableCell align="right" className={`${classes.num} ${overdue ? classes.overdueText : ''}`}>
+                        {b.days_overdue}
+                      </TableCell>
+                      <TableCell align="right" className={`${classes.num} ${overdue ? classes.overdueText : ''}`}>
+                        {money(b.amount)}
                       </TableCell>
                     </TableRow>
-                  )}
-                  {filteredBills.map((b) => {
-                    const overdue = b.amount > 0 && b.days_overdue > OVER_30_DAYS;
-                    return (
-                      <TableRow
-                        key={`${b.dealer_name}|${b.town}|${b.ref_no}|${b.bill_date}`}
-                        hover
-                        className={overdue ? classes.overdueRow : ''}
-                      >
-                        <TableCell>{b.dealer_name}</TableCell>
-                        <TableCell>{b.town || '—'}</TableCell>
-                        <TableCell>{b.bill_date}</TableCell>
-                        <TableCell className={classes.mono}>
-                          {b.ref_no}
-                          {b.amount < 0 && (
-                            <Chip label="Credit" size="small" style={{ marginLeft: 6 }} />
-                          )}
-                        </TableCell>
-                        <TableCell>{b.due_on}</TableCell>
-                        <TableCell align="right" className={`${classes.num} ${overdue ? classes.overdueText : ''}`}>
-                          {b.days_overdue}
-                        </TableCell>
-                        <TableCell align="right" className={`${classes.num} ${overdue ? classes.overdueText : ''}`}>
-                          {money(b.amount)}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
+                  );
+                })}
+              </TableBody>
+              {filteredBills.length > 0 && (
+                <TableBody>
+                  <TableRow>
+                    <TableCell colSpan={BILL_COLUMNS.length - 1} style={{ fontWeight: 600 }}>
+                      Total (filtered)
+                    </TableCell>
+                    <TableCell align="right" className={classes.num} style={{ fontWeight: 600 }}>
+                      {money(filteredTotal)}
+                    </TableCell>
+                  </TableRow>
                 </TableBody>
-              </Table>
-            </TableContainer>
-          )}
+              )}
+            </Table>
+          </TableContainer>
         </>
       )}
 
