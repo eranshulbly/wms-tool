@@ -8,13 +8,21 @@ the same file — or a fresher one, re-exported tomorrow — can be checked any 
 times without side effects, and nothing here ever touches this app's own `dealer` table.
 
 Tally's own export is a structural report, not a flat table: a dealer's own header row
-("Name | Division | Town", no date or amounts) is followed by one row per pending bill,
-then a subtotal row Tally prints for that dealer, and the sheet ends with one grand
-total row — all three of which look alike (no date, no reference number) and are not
-bills themselves. The one reliable signal that a row IS a bill is that it carries BOTH a
-date and a reference number; everything else carries neither, so rows are classified on
-exactly that, and dealer/grand totals are summed from the bill rows rather than trusted
-from Tally's own — which turns out to matter (see _signed_amount below).
+(sometimes "Name | Division | Town", sometimes just the plain name — see
+_parse_dealer_header) is followed by one row per pending bill, then a subtotal row
+Tally prints for that dealer, and the sheet ends with one grand total row — all three
+of which look alike (no date, no reference number) and are not bills themselves. The
+one reliable signal that a row IS a bill is that it carries BOTH a date and a reference
+number; everything else carries neither, so rows are classified on exactly that, and
+dealer/grand totals are summed from the bill rows rather than trusted from Tally's own
+— which turns out to matter (see _signed_amount below).
+
+Column count and order are NOT stable across companies' own Tally configurations —
+confirmed on two real exports that otherwise look alike: one carries Opening, Pending,
+Post-Dated and Final Balance amount columns (9 columns total), the other only Pending
+(6 columns, no Final Balance at all), and the matching column sits at a different
+position in each. Columns are therefore resolved by reading the two-row printed header
+(see _resolve_columns) rather than assumed by position.
 
 Each bill's own "Overdue by days" column is not used either — it was correct as of
 whenever the report was run in Tally, which goes stale the moment the clock moves on.
@@ -24,18 +32,71 @@ reports today's true age rather than the day it was exported.
 
 from datetime import date, datetime
 
-# Columns, by position, in Tally's fixed "Pending Bills" layout — there is no single
-# header row to resolve by name the way a flat CSV upload would (see module docstring:
-# two header rows, then nested dealer groups), so position is the only stable handle.
-# The full row is Date, Ref.No., Party's Name, Opening, Pending, Post-Dated, Final
-# Balance, Due on, Overdue by days — only the four actually read here are named; the
-# rest (Opening/Pending/Post-Dated/Overdue) are superseded by Final Balance and a
-# freshly-computed days_overdue, see _signed_amount and check_outstanding.
-_COL_DATE, _COL_REF, _COL_NAME, _COL_FINAL, _COL_DUE = 0, 1, 2, 6, 7
-
 
 class OutstandingCheckError(ValueError):
     """The file cannot be read as a Tally outstanding/pending-bills export."""
+
+
+def _resolve_columns(ws):
+    """Find Tally's two-row header and map out which column holds what.
+
+    Returns {'date', 'ref', 'name', 'due', 'amount'} -> column index. 'amount' prefers
+    a Final Balance column (Pending net of Post-Dated cheques) when the export has one,
+    falling back to Pending Amount when it doesn't — exactly what Final Balance would
+    have reduced to anyway, since there is nothing else to net out.
+
+    Raises OutstandingCheckError if no row looks like this report's header at all, or
+    if a required column can't be found once it does.
+    """
+    rows = list(ws.iter_rows())
+    header_row = None
+    for i, row in enumerate(rows):
+        if any(str(c.value or '').strip().lower() == 'date' for c in row):
+            header_row = i
+            break
+    if header_row is None or header_row + 1 >= len(rows):
+        raise OutstandingCheckError(
+            "could not find the column headers (Date / Ref. No. / Party's Name / "
+            "Pending or Final Balance / Due on) this report is expected to have")
+
+    row1, row2 = rows[header_row], rows[header_row + 1]
+    width = max(len(row1), len(row2))
+
+    def cell_text(row, c):
+        return str(row[c].value or '').strip().lower() if c < len(row) else ''
+
+    # The real label is often split across both header rows ("Pending" then "Amount"
+    # below it, "Final" then "Balance", "Overdue" then "by days") — combined here so
+    # either row alone still matches, and 'top' is kept separately for the one column
+    # ("Date") that must match EXACTLY, so it is never confused with "Due on".
+    tops = [cell_text(row1, c) for c in range(width)]
+    combined = [f'{tops[c]} {cell_text(row2, c)}'.strip() for c in range(width)]
+
+    def find(predicate):
+        for c, text in enumerate(combined):
+            if predicate(text):
+                return c
+        return None
+
+    date_col = next((c for c, t in enumerate(tops) if t == 'date'), None)
+    ref_col = find(lambda t: 'ref' in t)
+    name_col = find(lambda t: 'party' in t or 'name' in t)
+    due_col = find(lambda t: 'due' in t)
+    final_col = find(lambda t: 'final' in t)
+    pending_col = find(lambda t: 'pending' in t)
+    amount_col = final_col if final_col is not None else pending_col
+
+    missing = [label for label, v in (
+        ('Date', date_col), ('Ref. No.', ref_col), ("Party's Name", name_col),
+        ('Pending/Final Balance amount', amount_col),
+    ) if v is None]
+    if missing:
+        raise OutstandingCheckError(
+            f"could not find the {', '.join(missing)} column(s) this report is expected "
+            f"to have")
+
+    return {'date': date_col, 'ref': ref_col, 'name': name_col,
+            'due': due_col, 'amount': amount_col}
 
 
 def _as_date(v):
@@ -58,7 +119,10 @@ def _parse_dealer_header(text):
     """'Agarwal Medical Store | Cadila | Badaun' -> (name, division, town).
 
     Division and town are whatever a company's own Tally ledger grouping prints after
-    the name — only the name is required for a header to be recognised at all.
+    the name — only the name is required for a header to be recognised at all. Some
+    exports print no grouping at all, just the bare dealer name with no '|' in sight;
+    splitting plain text on '|' is a no-op (one part, the name itself), so that case
+    falls out of the same code with division and town simply left None.
     """
     parts = [p.strip() for p in (text or '').split('|')]
     name = parts[0].strip() if parts and parts[0].strip() else None
@@ -119,27 +183,33 @@ def check_outstanding(stream, filename, today=None):
 
     today = today or date.today()
     ws = wb.worksheets[0]
+    cols = _resolve_columns(ws)
 
     bills = []
     current_dealer = None  # (name, division, town) from the most recent header row
     for row in ws.iter_rows():
         if not row:
             continue
-        date_cell = row[_COL_DATE] if len(row) > _COL_DATE else None
-        ref_cell = row[_COL_REF] if len(row) > _COL_REF else None
-        name_cell = row[_COL_NAME] if len(row) > _COL_NAME else None
+        date_cell = row[cols['date']] if len(row) > cols['date'] else None
+        ref_cell = row[cols['ref']] if len(row) > cols['ref'] else None
+        name_cell = row[cols['name']] if len(row) > cols['name'] else None
+        amount_cell = row[cols['amount']] if len(row) > cols['amount'] else None
 
         bill_date = _as_date(date_cell.value if date_cell is not None else None)
         ref_no = (str(ref_cell.value).strip()
                   if ref_cell is not None and ref_cell.value not in (None, '') else '')
 
         if bill_date is None and not ref_no:
-            # Not a bill row — a dealer header (Party's Name holds "Name | Div | Town"),
-            # a subtotal, the grand total, or a remark that wrapped onto its own line.
-            # Only a header updates the dealer in progress; the rest carry nothing
-            # needed, since totals below are re-summed from the bill rows themselves.
+            # Not a bill row — a dealer header, a subtotal, the grand total, or a
+            # remark that wrapped onto its own line. A header is the one case with real
+            # text in the name column and NOTHING in the amount column (a subtotal or
+            # wrapped remark always carries a running total there, even when its own
+            # name column is blank or just leftover text — see module docstring). Only
+            # a header updates the dealer in progress; the rest carry nothing needed,
+            # since totals below are re-summed from the bill rows themselves.
             name_val = name_cell.value if name_cell is not None else None
-            if name_val and '|' in str(name_val):
+            amount_val = amount_cell.value if amount_cell is not None else None
+            if name_val and str(name_val).strip() and amount_val in (None, ''):
                 current_dealer = _parse_dealer_header(str(name_val))
             continue
 
@@ -149,12 +219,12 @@ def check_outstanding(stream, filename, today=None):
             # Either way, skipped rather than guessed at.
             continue
 
-        final_cell = row[_COL_FINAL] if len(row) > _COL_FINAL else None
-        amount = _signed_amount(final_cell) if final_cell is not None else None
+        amount = _signed_amount(amount_cell) if amount_cell is not None else None
         if amount is None:
             continue
 
-        due_cell = row[_COL_DUE] if len(row) > _COL_DUE else None
+        due_cell = (row[cols['due']] if cols['due'] is not None and len(row) > cols['due']
+                    else None)
         due_on = _as_date(due_cell.value if due_cell is not None else None) or bill_date
         days_overdue = (today - due_on).days
 
