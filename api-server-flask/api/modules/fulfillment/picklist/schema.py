@@ -60,6 +60,11 @@ CREATE TABLE IF NOT EXISTS order_picklist (
     picker_code        VARCHAR(64) NULL,
     picker_raw         VARCHAR(128) NULL,
     picker_assigned_at DATETIME NULL,
+    -- And who packed it. Same shape, same reasoning: the normalised key every
+    -- report groups by, plus the untouched entry so a mistype stays visible.
+    packer_code        VARCHAR(64) NULL,
+    packer_raw         VARCHAR(128) NULL,
+    packer_assigned_at DATETIME NULL,
     warehouse_id       INT NULL,
     company_id         INT NULL,
     upload_batch_id    INT NULL,

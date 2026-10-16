@@ -78,6 +78,7 @@ def picklist_for_order(potential_order_id: int):
     rows = mysql_manager.execute_query(
         """SELECT pl.picklist_id, pl.picklist_code, pl.line_count,
                   pl.picker_code, pl.picker_raw, pl.picker_assigned_at,
+                  pl.packer_code, pl.packer_raw, pl.packer_assigned_at,
                   pl.printed_at, pl.print_count, pl.created_at AS uploaded_at,
                   u.name AS uploaded_by_name
              FROM order_picklist pl

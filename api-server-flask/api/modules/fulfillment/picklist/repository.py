@@ -34,7 +34,8 @@ def find_by_token(token: str):
     rows = mysql_manager.execute_query(
         """SELECT picklist_id, potential_order_id, original_order_id, picklist_code,
                   qr_token, company_id, warehouse_id,
-                  picker_code, picker_raw, picker_assigned_at
+                  picker_code, picker_raw, picker_assigned_at,
+                  packer_code, packer_raw, packer_assigned_at
            FROM order_picklist WHERE qr_token = %s""",
         (token,),
     )
@@ -267,6 +268,7 @@ def list_picklists(company_ids, warehouse_id=None, state='open', printed=None,
                   pl.picklist_date, pl.line_count, pl.created_at,
                   pl.printed_at, pl.print_count,
                   pl.picker_code, pl.picker_raw, pl.picker_assigned_at,
+                  pl.packer_code, pl.packer_assigned_at,
                   po.status AS order_status, po.potential_order_id,
                   d.name AS dealer_name, u.name AS printed_by_name,
                   pl.created_by, owner.name AS uploaded_by_name
@@ -331,6 +333,58 @@ def fetch_for_render(picklist_ids: list, company_ids, owner_id=None):
         if isinstance(row.get('meta'), (str, bytes, bytearray)):
             row['meta'] = json.loads(row['meta'])
     return rows or []
+
+
+# A name has to be a name.
+#
+# The prompt used to accept anything non-empty, and what it got was a keystroke:
+# 3,332 of the 3,369 names on file are a single letter — J, S, N, M, T. An
+# initial identifies nobody once two pickers share it, which on a floor this
+# size is immediately, so every one of those rows is unattributable.
+#
+# Three letters minimum. Not two words: plenty of real first names are short and
+# demanding a surname would only teach people to type "A B".
+MIN_NAME_LETTERS = 3
+MAX_NAME_CHARS = 64
+
+
+class NameRejected(ValueError):
+    """The entered name is not usable. Carries a message meant for the operator."""
+
+
+def validate_person_name(raw, role='picker'):
+    """Normalise a typed or scanned name, or raise NameRejected.
+
+    Returns the stored form: trimmed, inner whitespace collapsed, upper-cased —
+    the same normalisation picker_code has always used, so one person does not
+    become three spellings.
+    """
+    text = ' '.join(str(raw or '').split())
+    if not text:
+        raise NameRejected("Enter the %s's name." % role)
+
+    letters = sum(1 for c in text if c.isalpha())
+    if letters < MIN_NAME_LETTERS:
+        raise NameRejected(
+            "Enter the %s's full first name, not an initial — at least %d "
+            "letters." % (role, MIN_NAME_LETTERS))
+
+    return text.upper()[:MAX_NAME_CHARS]
+
+
+def assign_packer(cursor, picklist_id: int, name: str, raw: str) -> None:
+    """Record who packed this order, at the moment it goes to Packed.
+
+    Mirrors assign_picker exactly, including keeping the untouched entry
+    alongside the normalised key — the two differ precisely when something was
+    mistyped, which is when you want both.
+    """
+    cursor.execute(
+        """UPDATE order_picklist
+              SET packer_code = %s, packer_raw = %s, packer_assigned_at = %s
+            WHERE picklist_id = %s""",
+        (name or None, (raw or '')[:128] or None, datetime.utcnow(), picklist_id),
+    )
 
 
 def normalise_picker_code(raw):

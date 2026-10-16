@@ -1458,6 +1458,9 @@ _V2_API_COLUMNS = {
         ('picker_code',        'VARCHAR(64) NULL',  'idx_picklist_picker'),
         ('picker_raw',         'VARCHAR(128) NULL', None),
         ('picker_assigned_at', 'DATETIME NULL',     None),
+        ('packer_code',        'VARCHAR(64) NULL',  'idx_picklist_packer'),
+        ('packer_raw',         'VARCHAR(128) NULL', None),
+        ('packer_assigned_at', 'DATETIME NULL',     None),
     ],
     'product': [
         ('uom',       'VARCHAR(20) NULL',                 None),

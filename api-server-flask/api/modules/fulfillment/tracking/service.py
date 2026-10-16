@@ -137,6 +137,9 @@ def detail(potential_order_id: int, company_ids):
             # move — usually a supervisor's handheld, not the picker.
             'picker_code': picklist['picker_code'] or '',
             'picker_assigned_at': _iso(picklist['picker_assigned_at']),
+            # Who packed it, captured the same way at the Packed scan.
+            'packer_code': picklist.get('packer_code') or '',
+            'packer_assigned_at': _iso(picklist.get('packer_assigned_at')),
             'printed_at': _iso(picklist['printed_at']),
             'print_count': int(picklist['print_count'] or 0),
             'uploaded_at': _iso(picklist['uploaded_at']),

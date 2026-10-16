@@ -122,12 +122,16 @@ def preview_scan(payload, user):
              # than hard-coded in the app, for the same reason as the box count:
              # turning the prompt off, or moving it to another status, is then a
              # backend change and not a sideloaded APK on every handset.
-             'needs_picker': t.value == 'Picking'}
+             'needs_picker': t.value == 'Picking',
+             # Packed asks who packed it, for the same reason Picking asks who
+             # picked it: afterwards, nobody can tell.
+             'needs_packer': t.value == 'Packed'}
             for t in targets
         ],
         # Shown on the confirm screen when a sheet is re-scanned, so a handover
         # reads as a handover rather than looking like a fresh assignment.
         'picker_code': picklist.get('picker_code') or '',
+        'packer_code': picklist.get('packer_code') or '',
         # How many boxes were sealed against this order.
         #
         # The number the dispatcher counts the trolley against before releasing
@@ -146,7 +150,7 @@ def preview_scan(payload, user):
     }, 200
 
 def apply_scan(payload, user, target_status=None, box_count=None,
-               device_id=None, picker_code=None) -> tuple:
+               device_id=None, picker_code=None, packer_code=None) -> tuple:
     """Resolve a scanned QR payload and move its order one step.
 
     Every outcome, including every rejection, is written to order_picklist_scan —
@@ -171,19 +175,29 @@ def apply_scan(payload, user, target_status=None, box_count=None,
 
     from_status = order.status
 
-    # Picking is the moment the sheet leaves the office and becomes somebody's
-    # job, so that is where the picker's card is captured. Refused rather than
-    # defaulted: a Picking row with no picker is indistinguishable afterwards
-    # from one whose picker was never asked for, and the whole point of the
-    # prompt is to know who has the paper.
-    picker = picklist_repo.normalise_picker_code(picker_code)
-    if target.value == 'Picking' and not picker:
-        picklist_repo.record_scan(
-            picklist['picklist_id'], payload, user_id, device_id,
-            from_status, target.value, 'picker_required',
-            'No picker card was scanned.')
-        return {'success': False, 'result': 'picker_required',
-                'msg': 'Scan the picker\'s card to assign this pick list.'}, 400
+    # Picking and Packed each capture WHO did the work, because afterwards
+    # nobody can tell. Refused rather than defaulted: a row with no name is
+    # indistinguishable later from one where nobody was asked.
+    #
+    # The name is VALIDATED, not merely required. For as long as this prompt
+    # has existed it took anything non-empty, and what it got was a keystroke:
+    # 3,332 of the 3,369 names on file are a single letter, which identifies
+    # nobody the moment two people share an initial.
+    person, person_raw, role = None, None, None
+    if target.value == 'Picking':
+        person_raw, role = picker_code, 'picker'
+    elif target.value == 'Packed':
+        person_raw, role = packer_code, 'packer'
+
+    if role:
+        try:
+            person = picklist_repo.validate_person_name(person_raw, role)
+        except picklist_repo.NameRejected as e:
+            picklist_repo.record_scan(
+                picklist['picklist_id'], payload, user_id, device_id,
+                from_status, target.value, '%s_required' % role, str(e))
+            return {'success': False, 'result': '%s_required' % role,
+                    'msg': str(e)}, 400
 
     # Recorded BEFORE the transition, not after.
     #
@@ -193,16 +207,21 @@ def apply_scan(payload, user, target_status=None, box_count=None,
     # recorded against a sheet that never moved is harmless and is overwritten by
     # the next scan; an order sitting in Picking with nobody's name on it is the
     # thing this feature exists to prevent. So the fragile write goes first.
-    if picker:
+    if person:
         try:
             with mysql_manager.get_cursor() as cur:
-                picklist_repo.assign_picker(cur, picklist['picklist_id'],
-                                            picker, picker_code)
+                if role == 'picker':
+                    picklist_repo.assign_picker(
+                        cur, picklist['picklist_id'], person, person_raw)
+                else:
+                    picklist_repo.assign_packer(
+                        cur, picklist['picklist_id'], person, person_raw)
         except Exception:
-            logger.exception("Could not assign picker",
+            logger.exception("Could not record %s" % role,
                              extra={'picklist_id': picklist['picklist_id']})
             return {'success': False, 'result': 'error',
-                    'msg': 'Could not record the picker; the order was not moved.'}, 400
+                    'msg': 'Could not record the %s; the order was not moved.'
+                           % role}, 400
 
     try:
         new_status = _transition(order, target, user_id, box_count)
@@ -231,7 +250,9 @@ def apply_scan(payload, user, target_status=None, box_count=None,
         # Echoed so the handheld's confirmation can name the picker it just
         # assigned — the operator scanned a barcode and has no other way to see
         # what the server actually read from it.
-        'picker_code': picker or '',
+        # Echoed so the handheld can name whoever it just recorded.
+        'person_code': person or '',
+        'person_role': role or '',
     }, 200
 
 
