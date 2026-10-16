@@ -377,6 +377,9 @@ def _order_product_rows(potential_order_id, lines, products_map, current_time):
 TARGET_PERMISSION = {
     OrderStatus.PICKING:        PermissionCode.ORDER_MOVE_PICKPACK,
     OrderStatus.PACKED:         PermissionCode.ORDER_MOVE_PICKPACK,
+    # Its own grant, so holding move_pickpack does not confer the ability to
+    # end an order.
+    OrderStatus.CANCELLED:      PermissionCode.ORDER_CANCEL,
     OrderStatus.DISPATCH_READY: PermissionCode.ORDER_MOVE_DISPATCH,
     OrderStatus.COMPLETED:      PermissionCode.ORDER_MOVE_DISPATCH,
 }

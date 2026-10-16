@@ -27,6 +27,14 @@ class OrderStatus(str, Enum):
     COMPLETED           = 'Completed'
     PARTIALLY_COMPLETED = 'Partially Completed'
 
+    # Called off before it shipped. Terminal, and NOT part of the chain — an
+    # order does not progress to cancelled, it leaves.
+    #
+    # Reachable only from the states before an invoice exists (Open, Picking,
+    # Packed). Once invoiced or released for dispatch the paperwork is out and
+    # cancelling would be a credit note, not a status change.
+    CANCELLED = 'Cancelled'
+
     # ── Convenience helpers ────────────────────────────────────────────────
 
     @classmethod
@@ -48,6 +56,7 @@ class OrderStatus(str, Enum):
             'dispatch-ready':      cls.DISPATCH_READY,
             'completed':           cls.COMPLETED,
             'partially-completed': cls.PARTIALLY_COMPLETED,
+            'cancelled':           cls.CANCELLED,
         }
         result = _map.get(slug.lower())
         if result is None:

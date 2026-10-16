@@ -655,6 +655,13 @@ def create_all_tables():
         -- to the job rather than the person, an email is not an authorisation
         -- model, and the second retail user would otherwise need a code change.
         picklist_dealer_entry BOOLEAN DEFAULT FALSE,
+        -- May call an order off (-> Cancelled) from the handheld.
+        --
+        -- Separate from the order states a role is trusted with, because
+        -- cancelling is not a step along the chain. The office roles hold every
+        -- state and therefore move_pickpack; none of them should gain the
+        -- ability to end an order as a side effect of that.
+        can_cancel_orders BOOLEAN DEFAULT FALSE,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
@@ -1437,6 +1444,7 @@ _V2_API_COLUMNS = {
     'roles': [
         ('analytics', 'BOOLEAN DEFAULT FALSE', None),
         ('picklist_dealer_entry', 'BOOLEAN DEFAULT FALSE', None),
+        ('can_cancel_orders', 'BOOLEAN DEFAULT FALSE', None),
     ],
     # Pick-list printing. In the CREATE TABLE too, for a fresh install; here so an
     # existing deployment gains them on the next boot without hand-run SQL.

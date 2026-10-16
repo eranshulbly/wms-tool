@@ -130,6 +130,7 @@ class Login(Resource):
                         "supply_sheet":             perms.get('supply_sheet',      False),
                         "analytics":                perms.get('analytics',         False),
                         "picklist_dealer_entry":    perms.get('picklist_dealer_entry', False),
+                        "can_cancel_orders":        perms.get('can_cancel_orders',     False),
                         "warehouse_company_access": wh_access,
                     }
                 }}, 200

@@ -91,11 +91,21 @@ class OrderStateMachine:
     #
     # Keeping the maps separate means a future change to how spreadsheets move
     # orders cannot silently change what a scanner on the floor does, or vice versa.
+    # CANCELLED hangs off the first three and leads nowhere.
+    #
+    # Only from the states before an invoice exists. After Invoiced or Dispatch
+    # Ready the paperwork has gone out and calling the order off is a credit
+    # note, not a status change — so the handheld must not offer it there.
+    #
+    # It is listed LAST in each row deliberately: these lists are the order the
+    # buttons are drawn in, and the destructive one does not belong under the
+    # packer's thumb next to the move they make forty times a day.
     SCAN_TRANSITIONS: dict = {
-        OrderStatus.OPEN:           [OrderStatus.PICKING],
-        OrderStatus.PICKING:        [OrderStatus.PACKED],
-        OrderStatus.PACKED:         [OrderStatus.DISPATCH_READY],
+        OrderStatus.OPEN:           [OrderStatus.PICKING, OrderStatus.CANCELLED],
+        OrderStatus.PICKING:        [OrderStatus.PACKED, OrderStatus.CANCELLED],
+        OrderStatus.PACKED:         [OrderStatus.DISPATCH_READY, OrderStatus.CANCELLED],
         OrderStatus.DISPATCH_READY: [OrderStatus.COMPLETED],
+        OrderStatus.CANCELLED:      [],
     }
 
     @classmethod
@@ -132,6 +142,7 @@ class OrderStateMachine:
 
     # ── Terminal / pre-packed sets (used by invoice upload business logic) ────
     TERMINAL_STATES: frozenset = frozenset({
+        OrderStatus.CANCELLED,
         OrderStatus.INVOICED,
         OrderStatus.DISPATCH_READY,
         OrderStatus.COMPLETED,

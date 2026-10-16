@@ -38,6 +38,11 @@ class P:
     # is the step that needs the tighter grant.
     ORDER_MOVE_PICKPACK = "order:move_pickpack"   # -> Picking, Packed
     ORDER_MOVE_DISPATCH = "order:move_dispatch"   # -> Dispatch Ready
+    # Calling an order off. Its OWN code rather than part of move_pickpack,
+    # because cancelling is not a step along the chain and the people trusted
+    # to advance an order are not automatically the people who may end it —
+    # the office roles hold move_pickpack and must not gain this with it.
+    ORDER_CANCEL = "order:cancel"                 # -> Cancelled
     INVENTORY_READ = "inventory:read"
     INVENTORY_PICK = "inventory:pick"
     INVENTORY_PACK = "inventory:pack"
@@ -94,7 +99,8 @@ def get_user_permission_codes(user_id):
 def _legacy_codes_for_user(user_id):
     """Derive codes from the old single-role + flags model (transitional safety net)."""
     rows = mysql_manager.execute_query(
-        """SELECT r.name, r.all_warehouses, r.eway_bill_admin, r.eway_bill_filling, r.supply_sheet
+        """SELECT r.name, r.all_warehouses, r.eway_bill_admin, r.eway_bill_filling,
+                  r.supply_sheet, r.can_cancel_orders
            FROM users u LEFT JOIN roles r ON r.name = u.role WHERE u.id = %s""",
         (user_id,),
     )
@@ -114,6 +120,10 @@ def _legacy_codes_for_user(user_id):
         codes.add(P.EWAY_FILL)
     if role['supply_sheet']:
         codes.add(P.SUPPLY_SHEET_VIEW)
+    # Cancelling is granted on the role itself, not derived from the order
+    # states it may touch — see the comment on the column.
+    if role.get('can_cancel_orders'):
+        codes.add(P.ORDER_CANCEL)
 
     uploads = mysql_manager.execute_query(
         """SELECT ru.upload_type FROM role_uploads ru

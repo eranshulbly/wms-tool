@@ -342,15 +342,21 @@ from api.modules.fulfillment.order.state_machine import OrderStateMachine  # noq
 
 PICKPACK = 'order:move_pickpack'
 DISPATCH = 'order:move_dispatch'
+CANCEL = 'order:cancel'
 
 
+# Cancelled hangs off the three pre-invoice states and leads nowhere. It is
+# listed last because these lists are the order the buttons are drawn in, and
+# the destructive one does not belong beside the move made forty times a day.
 @pytest.mark.parametrize('current,expected', [
-    ('Open', ['Picking']),
-    ('Picking', ['Packed']),
-    ('Packed', ['Dispatch Ready']),
+    ('Open', ['Picking', 'Cancelled']),
+    ('Picking', ['Packed', 'Cancelled']),
+    ('Packed', ['Dispatch Ready', 'Cancelled']),
     ('Dispatch Ready', ['Completed']),
     ('Invoiced', []),
     ('Completed', []),
+    # Terminal. An order does not progress to cancelled, it leaves.
+    ('Cancelled', []),
 ])
 def test_scan_reachable_states(current, expected):
     assert [t.value for t in OrderStateMachine.scan_targets(current)] == expected
@@ -387,6 +393,25 @@ def test_open_offers_exactly_one_target_so_a_scan_needs_no_choice():
     assert _allowed('Open', [PICKPACK]) == ['Picking']
 
 
+def test_cancelling_needs_its_own_grant():
+    """move_pickpack advances an order; it must not also end one.
+
+    The office roles hold every order state and therefore move_pickpack. If
+    cancelling rode on that grant, three office accounts would silently have
+    gained the ability to call orders off.
+    """
+    assert _allowed('Picking', [PICKPACK]) == ['Packed']
+    assert _allowed('Picking', [PICKPACK, CANCEL]) == ['Packed', 'Cancelled']
+    assert _allowed('Open', [CANCEL]) == ['Cancelled']
+
+
+def test_cancel_is_not_offered_once_the_paperwork_is_out():
+    """After Invoiced or Dispatch Ready, calling it off is a credit note."""
+    assert _allowed('Invoiced', [PICKPACK, DISPATCH, CANCEL]) == []
+    assert _allowed('Dispatch Ready', [PICKPACK, DISPATCH, CANCEL]) == ['Completed']
+    assert _allowed('Cancelled', [PICKPACK, DISPATCH, CANCEL]) == []
+
+
 def test_scanning_does_not_change_what_bulk_upload_can_do():
     """SCAN_TRANSITIONS is a separate map so the two cannot drift into each other.
     Packed -> Dispatch Ready is the difference that matters."""
@@ -408,6 +433,7 @@ def _allowed(status, codes):
         OrderStatus.PACKED: PICKPACK,
         OrderStatus.DISPATCH_READY: DISPATCH,
         OrderStatus.COMPLETED: DISPATCH,
+        OrderStatus.CANCELLED: CANCEL,
     }
     return [t.value for t in OrderStateMachine.scan_targets(status)
             if target_permission.get(t) in set(codes)]
