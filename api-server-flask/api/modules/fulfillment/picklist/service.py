@@ -128,6 +128,17 @@ def preview_scan(payload, user):
         # Shown on the confirm screen when a sheet is re-scanned, so a handover
         # reads as a handover rather than looking like a fresh assignment.
         'picker_code': picklist.get('picker_code') or '',
+        # How many boxes were sealed against this order.
+        #
+        # The number the dispatcher counts the trolley against before releasing
+        # it. Sent on every scan rather than only for Dispatch Ready, because
+        # the app decides what to show and a second request to learn one
+        # integer would be a round trip in the middle of a scan.
+        #
+        # Defaults to 1 in the schema, so it is only meaningful once the order
+        # has been Packed — before that it is the column default, not a count
+        # anybody made. The app is told which it is by order_status.
+        'box_count': int(getattr(order, 'box_count', 0) or 0),
         # Distinguishes "nothing you may do here" from "nothing anyone may do here",
         # so the handheld can say which.
         'reachable_any': [t.value for t in
