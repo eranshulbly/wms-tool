@@ -3,13 +3,21 @@
 Scratch stock-on-hand for the DMS download step (`temp_inventory`).
 
 The DMS operator uploads a stock sheet (PART# | QTY); building an order's DMS file then
-allocates against it, so the file carries what can actually be supplied rather than what
-was ordered. See schema.py for why the table is keyed on the part number string.
+previews against it (see peek, below), so the file carries what can actually be
+supplied rather than what was ordered. See schema.py for why the table is keyed on the
+part number string.
 
 The upload is a full SNAPSHOT, not a delta: parts named in the sheet get that quantity,
 and every part already on record but ABSENT from the sheet drops to 0. A part missing
 from a stock report means "none in stock", which is not the same as "unchanged" — the
 alternative would leave yesterday's quantity standing and over-promise on it.
+
+The submitted-orders feature this table serves is view-and-preview only: creating a
+submitted order, deleting one, and downloading its DMS file none of them take stock —
+peek reads this table, it never writes to it. The one thing that ever changes what's
+recorded here is the operator's own next stock-sheet upload (replace_stock, a fresh
+snapshot), which is a deliberate act with its own screen, not a side effect of anything
+on the submitted-orders page.
 """
 
 import csv
@@ -278,57 +286,55 @@ def staleness_error():
     return None
 
 
-def allocate(order_items):
-    """Decide what can be supplied for `order_items`, and take it out of stock.
+def peek(order_items):
+    """What `order_items` WOULD get from the uploaded stock sheet right now — without
+    taking any of it. Nothing is written; this is a read.
 
     Each item needs sku_code and quantity. Returns (allocated, shortfalls) where
     `allocated` mirrors the input with `quantity` cut to what stock could cover, and
     `shortfalls` lists {part_number, ordered, supplied} for anything cut — so the caller
-    can tell the operator what was trimmed rather than handing over a quietly smaller file.
+    can tell the operator what was trimmed rather than handing over a quietly smaller
+    file than what was actually ordered.
 
     Lines that can be supplied at all are kept; a line with nothing in stock is dropped,
     because a DMS row asking for zero pieces is not an order for anything.
 
-    Reads and writes inside one transaction: two operators downloading at the same moment
-    must not both be promised the last piece.
+    A line's own on-hand pool (`taken`) is tracked only within this call, so two order
+    lines naming the same part still correctly share one pool rather than each seeing
+    the full total — the same correctness allocate() used to get from locking the real
+    rows, without actually touching them. Used where a figure is needed for what the
+    sheet currently shows without committing to anything — see router_dashboard.py's
+    DMS-download endpoint: a download previews stock, it does not take it; nothing
+    about the submitted-orders feature ever should (see its own module docstring).
     """
     codes = [it['sku_code'] for it in order_items if it.get('sku_code')]
     if not codes:
         return [], []
 
+    ph = ",".join(["%s"] * len(codes))
+    rows = mysql_manager.execute_query(
+        f"SELECT part_number, quantity FROM temp_inventory WHERE part_number IN ({ph})",
+        tuple(codes)) or []
+    on_hand = {r['part_number']: int(r['quantity'] or 0) for r in rows}
+
     allocated, shortfalls = [], []
-    with mysql_manager.get_cursor() as cursor:
-        ph = ",".join(["%s"] * len(codes))
-        # FOR UPDATE so a concurrent download waits rather than reading the same stock.
-        cursor.execute(
-            f"""SELECT part_number, quantity FROM temp_inventory
-                 WHERE part_number IN ({ph}) FOR UPDATE""", tuple(codes))
-        on_hand = {r['part_number']: int(r['quantity'] or 0) for r in cursor.fetchall()}
-
-        taken = {}
-        for it in order_items:
-            part = it.get('sku_code')
-            ordered = int(it.get('quantity') or 0)
-            if not part or ordered <= 0:
-                continue
-            # A part with no row at all is out of stock, same as a row reading 0.
-            available = on_hand.get(part, 0) - taken.get(part, 0)
-            supplied = max(0, min(ordered, available))
-            if supplied < ordered:
-                shortfalls.append({'part_number': part, 'ordered': ordered,
-                                   'supplied': supplied})
-            if supplied <= 0:
-                continue
-            taken[part] = taken.get(part, 0) + supplied
-            line = dict(it)
-            line['quantity'] = supplied
-            allocated.append(line)
-
-        for part, qty in taken.items():
-            # Guarded with GREATEST so a race can never drive stock negative.
-            cursor.execute(
-                """UPDATE temp_inventory
-                      SET quantity = GREATEST(0, quantity - %s)
-                    WHERE part_number = %s""", (qty, part))
+    taken = {}
+    for it in order_items:
+        part = it.get('sku_code')
+        ordered = int(it.get('quantity') or 0)
+        if not part or ordered <= 0:
+            continue
+        # A part with no row at all is out of stock, same as a row reading 0.
+        available = on_hand.get(part, 0) - taken.get(part, 0)
+        supplied = max(0, min(ordered, available))
+        if supplied < ordered:
+            shortfalls.append({'part_number': part, 'ordered': ordered,
+                               'supplied': supplied})
+        if supplied <= 0:
+            continue
+        taken[part] = taken.get(part, 0) + supplied
+        line = dict(it)
+        line['quantity'] = supplied
+        allocated.append(line)
 
     return allocated, shortfalls

@@ -1712,10 +1712,13 @@ class SubmittedOrderDmsFile(Resource):
     orders, or entered via the part-convertor upload for photo orders). Returns a CSV
     laid out for the order's company (Hero known; others fall back to Hero's layout).
 
-    Previews live stock to size the file and report shortfalls, but does not take any
-    of it — a download is not a sale. Stock only actually leaves when the real invoice
-    for this order is later closed (deduct_batches), the only other live-stock path
-    besides an ingested credit/debit note explicitly marked as a return.
+    Previews stock (fc_entity_stock, or the uploaded temp_inventory sheet, whichever
+    this company uses) to size the file and report shortfalls, but does not take any of
+    it — a download is not a sale, and nothing about the submitted-orders feature ever
+    commits to one: creating, deleting and downloading are all view/preview actions.
+    Stock only actually leaves when the real invoice for this order is later closed
+    (deduct_batches), the only other live-stock path besides an ingested credit/debit
+    note explicitly marked as a return.
     """
 
     @rest_api.response(400, 'Error', dash_error_response)
@@ -1765,11 +1768,11 @@ class SubmittedOrderDmsFile(Resource):
 
         # An order already downloaded replays its stored allocation rather than previewing
         # fresh stock again. Not because taking a second look would double-deduct anything
-        # — a download no longer takes stock at all, see peek_live_stock — but because
-        # other orders moving stock in the meantime would otherwise make a re-download of
-        # the SAME order show different numbers than the file the DMS already received.
-        # Replaying also means a re-download is not subject to the freshness rule, since
-        # it reads nothing new.
+        # — a download never takes stock at all, from either source (see peek_live_stock /
+        # temp_inventory.peek below) — but because other orders moving stock in the
+        # meantime would otherwise make a re-download of the SAME order show different
+        # numbers than the file the DMS already received. Replaying also means a
+        # re-download is not subject to the freshness rule, since it reads nothing new.
         already_allocated = any(i['dms_quantity'] is not None for i in items)
         shortfalls = []
 
@@ -1794,18 +1797,20 @@ class SubmittedOrderDmsFile(Resource):
                 lines, shortfalls = inventory_service.peek_live_stock(
                     items, head['company_id'], planogram_id=head.get('warehouse_id'))
                 out_of_stock_msg = ('none of the parts on this order are in stock — '
-                                    'receive stock against a GRN, or reject the order.')
+                                    'receive stock against a GRN, or delete the order.')
             else:
-                # Stock older than the freshness window cannot be allocated against —
+                # Stock older than the freshness window cannot be previewed against —
                 # someone has probably picked from it since, so the file would promise
                 # parts that are no longer on the shelf.
                 stale = temp_inventory.staleness_error()
                 if stale:
                     return {'success': False, 'msg': stale}, 409
 
-                lines, shortfalls = temp_inventory.allocate(items)
+                # Same preview-not-deduction rule as the live_stock branch above: the
+                # uploaded sheet's own recorded quantity is never reduced by a download.
+                lines, shortfalls = temp_inventory.peek(items)
                 out_of_stock_msg = ('none of the parts on this order are in stock — '
-                                    'upload current inventory, or reject the order.')
+                                    'upload current inventory, or delete the order.')
 
             if not lines:
                 return {'success': False, 'msg': out_of_stock_msg}, 409

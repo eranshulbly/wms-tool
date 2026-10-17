@@ -430,8 +430,8 @@ def peek_live_stock(order_items, company_id, planogram_id=None):
     first — without taking any of it. Nothing is updated, deleted, or written to the
     ledger; this is a read.
 
-    Returns (allocated, shortfalls), the same shape temp_inventory.allocate returns, so
-    the caller treats both stock sources the same way.
+    Returns (allocated, shortfalls), the same shape temp_inventory.peek returns, so the
+    caller treats both stock sources the same way.
 
     FEFO, not FIFO, for the same reason a real allocation would use it: stock is
     batch-tracked with an expiry, and reporting a later-expiring batch as what fills the
