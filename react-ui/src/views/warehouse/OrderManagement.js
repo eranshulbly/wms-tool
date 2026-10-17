@@ -122,7 +122,7 @@ const OrderManagement = () => {
         case 'picking':
         case 'packed':
           response = await updateOrderStatus(order.order_request_id, action, additionalData);
-          successMessage = `Order ${order.order_request_id} moved to ${action}`;
+          successMessage = `Order ${order.original_order_id || order.order_request_id} moved to ${action}`;
           break;
 
         case 'complete-dispatch':
@@ -179,7 +179,7 @@ const OrderManagement = () => {
 
         default:
           response = await updateOrderStatus(order.order_request_id, action, additionalData);
-          successMessage = `Order ${order.order_request_id} moved to ${action}`;
+          successMessage = `Order ${order.original_order_id || order.order_request_id} moved to ${action}`;
           break;
       }
 

@@ -85,7 +85,7 @@ const StatusActionButton = ({ order, onStatusUpdate, classes }) => {
         <DialogContent>
           <Typography variant="body2" color="textSecondary" style={{ marginBottom: 12 }}>
             Enter the number of boxes for packing order{' '}
-            <strong>{order.order_request_id}</strong>.
+            <strong>{order.original_order_id || order.order_request_id}</strong>.
           </Typography>
           <TextField
             label="Number of Boxes"

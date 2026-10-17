@@ -38,6 +38,12 @@ import StatusChip from './StatusChip';
  * Order details modal used by both WarehouseDashboard (read-only) and
  * OrderManagement (with status action buttons).
  *
+ * The order's own number — original_order_id, "O_A000062" or similar — is what's shown
+ * anywhere the ID appears on screen. order_request_id ("PO123", the WMS's own internal
+ * potential_order_id) is kept only for the API calls that key on it (getOrderDetails,
+ * updateOrderStatus, completeDispatch in OrderManagement.js) — it is never the right
+ * thing for a person to read, only for a route to parse.
+ *
  * Props:
  *   open            — bool
  *   order           — order object (with products and state_history)
@@ -115,7 +121,7 @@ const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) =
     const url = URL.createObjectURL(new Blob([rows], { type: 'text/csv;charset=utf-8;' }));
     const a = document.createElement('a');
     a.href = url;
-    a.download = `Picklist_${order.order_request_id}.csv`;
+    a.download = `Picklist_${order.original_order_id || order.order_request_id}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -151,7 +157,9 @@ const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) =
         <DialogTitle>
           <div className={classes?.detailsHeader}>
             <IconPackage className={classes?.orderIcon} size={24} />
-            <Typography variant="h4">Order Details: {order.order_request_id}</Typography>
+            <Typography variant="h4">
+              Order Details: {order.original_order_id || order.order_request_id}
+            </Typography>
           </div>
         </DialogTitle>
         <DialogContent>
@@ -177,8 +185,7 @@ const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) =
 
           <Grid container spacing={2} className={classes?.infoSection}>
             {[
-              ['Order ID', order.order_request_id],
-              ['Original Order ID', order.original_order_id],
+              ['Order ID', order.original_order_id || order.order_request_id],
               ['Dealer', order.dealer_name],
               ['Total Products', order.products],
               ['Current Status', <StatusChip key="s" status={order.status} classes={classes} />],
@@ -219,7 +226,9 @@ const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) =
             <Grid container spacing={2}>
               <Grid item xs={12} md={6}>
                 <Typography variant="subtitle2" gutterBottom>Order ID:</Typography>
-                <Typography variant="body1" gutterBottom>{order.order_request_id}</Typography>
+                <Typography variant="body1" gutterBottom>
+                  {order.original_order_id || order.order_request_id}
+                </Typography>
               </Grid>
               <Grid item xs={12} md={6}>
                 <Typography variant="subtitle2" gutterBottom>Status:</Typography>
@@ -440,7 +449,9 @@ const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) =
         <Box display="flex" alignItems="center" justifyContent="space-between">
           <Box display="flex" alignItems="center">
             <IconPackage size={24} style={{ marginRight: 8 }} />
-            <Typography variant="h5">Order Management: {order.order_request_id}</Typography>
+            <Typography variant="h5">
+              Order Management: {order.original_order_id || order.order_request_id}
+            </Typography>
           </Box>
           <Chip label={order.status?.replace('-', ' ') || 'Unknown'} color="primary" size="small" />
         </Box>
