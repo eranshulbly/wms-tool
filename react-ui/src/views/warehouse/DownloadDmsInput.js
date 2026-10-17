@@ -31,7 +31,7 @@ import {
   Autocomplete
 } from '@material-ui/core';
 import {
-  IconPhoto, IconX, IconPlus, IconChevronRight, IconDownload, IconBan
+  IconPhoto, IconX, IconPlus, IconChevronRight, IconTrash
 } from '@tabler/icons';
 import SubmittedOrderItems from './components/SubmittedOrderItems';
 
@@ -41,35 +41,16 @@ import { useWarehouse } from '../../context/WarehouseContext';
 import {
   getSubmittedOrders,
   fetchSubmittedOrderPhoto,
-  getSubmittedOrderItems,
-  rejectSubmittedOrder,
+  deleteSubmittedOrder,
   createCartOrder,
   getOrderDealers,
   getOrderProducts
 } from '../../services/orderService';
 import { dealerLabel } from '../../utils/dealerLabel';
 
-// Push a blob at the browser as a download, then release the object URL.
-const saveBlob = (blob, filename) => {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-};
-
-// A CSV cell, quoted only when it needs to be — a comma, quote or newline in the value.
-const csvCell = (v) => {
-  const s = String(v ?? '');
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-};
-
 // Submitted Orders — orders raised by hand here (Add Order, built from the catalogue) or
-// brought in from the app. Viewing, creating, downloading a plain product/quantity list,
-// and rejecting; no DMS file generation or stock-upload step lives on this screen.
+// brought in from the app. Viewing, creating, and deleting; no DMS file generation,
+// product-list download or stock-upload step lives on this screen.
 
 // The grid's column headers show the plain word a rep actually says ("Box", "Case")
 // rather than the pack-specific code the catalogue stores ("30X10T").
@@ -89,7 +70,6 @@ const DownloadDmsInput = () => {
   const [rowsPerPage, setRowsPerPage] = useState(25);
 
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
-  const [busyId, setBusyId] = useState(null);
   // Clicking a row opens that order's line items in a modal (the order object, or
   // null when closed).
   const [detailOrder, setDetailOrder] = useState(null);
@@ -101,10 +81,9 @@ const DownloadDmsInput = () => {
   const [photoError, setPhotoError] = useState(null);
   const [photoOpen, setPhotoOpen] = useState(false);
 
-  // Reject dialog.
-  const [rejectOrder, setRejectOrder] = useState(null);
-  const [rejectNote, setRejectNote] = useState('');
-  const [rejecting, setRejecting] = useState(false);
+  // Delete confirmation.
+  const [deleteOrder, setDeleteOrder] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   // Add-order dialog — raise an order by hand, built line by line from the catalogue.
   // It becomes an ordinary order in this same list.
@@ -389,51 +368,22 @@ const DownloadDmsInput = () => {
     setPhotoError(null);
   }, []);
 
-  // A plain product/quantity list — Product, SKU, Quantity, Unit — not the company's
-  // DMS layout, no stock allocation, nothing marked Done. Quantity/Unit is the same
-  // pair the order-detail dialog shows: the true count in the product's own stock unit
-  // (strips, bottles, vials…), not whatever pack it was ordered in.
-  const handleDownload = useCallback(async (order) => {
-    setBusyId(order.order_id);
+  const submitDelete = async () => {
+    if (!deleteOrder) return;
+    setDeleting(true);
     try {
-      const data = await getSubmittedOrderItems(order.order_id);
-      if (!data.success) {
-        notify(data.msg || 'Could not load this order.', 'error');
-        return;
-      }
-      const rows = [
-        ['Product', 'SKU', 'Quantity', 'Unit'],
-        ...(data.items || []).map((it) => [it.product_name, it.sku_code, it.quantity, it.uom || ''])
-      ];
-      const csv = rows.map((r) => r.map(csvCell).join(',')).join('\n');
-      saveBlob(
-        new Blob([csv], { type: 'text/csv;charset=utf-8;' }),
-        `${(order.order_number || `order_${order.order_id}`)}_products.csv`
-      );
-    } catch (e) {
-      notify(e?.response?.data?.msg || 'Could not download this order.', 'error');
-    } finally {
-      setBusyId(null);
-    }
-  }, []);
-
-  const submitReject = async () => {
-    if (!rejectOrder || !rejectNote.trim()) return;
-    setRejecting(true);
-    try {
-      const data = await rejectSubmittedOrder(rejectOrder.order_id, rejectNote.trim());
+      const data = await deleteSubmittedOrder(deleteOrder.order_id);
       if (data.success) {
-        notify(`${rejectOrder.order_number || `#${rejectOrder.order_id}`} rejected — back in Submitted Orders`);
-        setRejectOrder(null);
-        setRejectNote('');
+        notify(`${deleteOrder.order_number || `#${deleteOrder.order_id}`} deleted`);
+        setDeleteOrder(null);
         await fetchOrders();
       } else {
-        notify(data.msg || 'Could not reject the order.', 'error');
+        notify(data.msg || 'Could not delete the order.', 'error');
       }
     } catch (e) {
-      notify(e?.response?.data?.msg || 'Could not reject the order.', 'error');
+      notify(e?.response?.data?.msg || 'Could not delete the order.', 'error');
     } finally {
-      setRejecting(false);
+      setDeleting(false);
     }
   };
 
@@ -578,32 +528,18 @@ const DownloadDmsInput = () => {
                           )}
                         </TableCell>
                         <TableCell>
-                          <Stack direction="row" spacing={1} alignItems="center">
-                            <Button
-                              size="small"
-                              variant="contained"
-                              disabled={busyId === o.order_id}
-                              startIcon={<IconDownload size={16} />}
-                              onClick={(e) => { e.stopPropagation(); handleDownload(o); }}
-                            >
-                              Download
-                            </Button>
-                            <Button
-                              size="small"
-                              variant="outlined"
-                              color="error"
-                              disabled={busyId === o.order_id}
-                              startIcon={<IconBan size={16} />}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setRejectOrder(o);
-                                setRejectNote('');
-                              }}
-                            >
-                              Reject
-                            </Button>
-                            {busyId === o.order_id && <CircularProgress size={18} />}
-                          </Stack>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            color="error"
+                            startIcon={<IconTrash size={16} />}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDeleteOrder(o);
+                            }}
+                          >
+                            Delete
+                          </Button>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -1030,39 +966,29 @@ const DownloadDmsInput = () => {
         </DialogActions>
       </Dialog>
 
-      {/* Reject dialog — a note is required; rejecting clears the parts and sends the
-          order back to Submitted Orders as Re-Submitted. */}
-      <Dialog open={!!rejectOrder} onClose={() => !rejecting && setRejectOrder(null)} maxWidth="sm" fullWidth>
+      {/* Delete confirmation — hard-deletes the order; it drops out of this list for
+          good, not sent back anywhere. */}
+      <Dialog open={!!deleteOrder} onClose={() => !deleting && setDeleteOrder(null)} maxWidth="sm" fullWidth>
         <DialogTitle>
-          Reject {rejectOrder?.order_number || (rejectOrder && `#${rejectOrder.order_id}`)}
+          Delete {deleteOrder?.order_number || (deleteOrder && `#${deleteOrder.order_id}`)}?
         </DialogTitle>
         <DialogContent dividers>
-          <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
-            The order returns to Submitted Orders and its parts are cleared. This note is shown
-            to whoever re-submits it.
+          <Typography variant="body2" color="textSecondary">
+            This permanently removes the order and its parts. This can&apos;t be undone.
           </Typography>
-          <TextField
-            autoFocus
-            fullWidth
-            multiline
-            minRows={3}
-            label="Reason for rejection"
-            value={rejectNote}
-            onChange={(e) => setRejectNote(e.target.value)}
-          />
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setRejectOrder(null)} disabled={rejecting}>
+          <Button onClick={() => setDeleteOrder(null)} disabled={deleting}>
             Cancel
           </Button>
           <Button
             variant="contained"
             color="error"
-            onClick={submitReject}
-            disabled={rejecting || !rejectNote.trim()}
-            startIcon={rejecting ? <CircularProgress size={16} color="inherit" /> : <IconBan size={16} />}
+            onClick={submitDelete}
+            disabled={deleting}
+            startIcon={deleting ? <CircularProgress size={16} color="inherit" /> : <IconTrash size={16} />}
           >
-            Reject
+            Delete
           </Button>
         </DialogActions>
       </Dialog>

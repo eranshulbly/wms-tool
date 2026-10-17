@@ -1902,3 +1902,55 @@ class SubmittedOrderReject(Resource):
             )
 
         return {'success': True}, 200
+
+
+@rest_api.route('/api/orders/submitted/<int:order_id>')
+class SubmittedOrderDelete(Resource):
+    """Hard-delete a submitted order.
+
+    submitted_orders is its own store, entirely separate from potential_order/Order
+    Tracking (see SubmittedOrdersList's own docstring) — nothing elsewhere references
+    this row, so deleting it is self-contained. Nothing here has ever taken live stock
+    either: a submitted order only ever becomes a real sale once its own invoice closes
+    an order via deduct_batches, which deletion cannot have outrun. So there is nothing
+    to reverse, which is what makes a plain hard delete the right action here, unlike
+    an admin upload-batch revert, which has to give stock back first.
+    """
+
+    @rest_api.response(404, 'Not found', dash_error_response)
+    @token_required
+    @active_required
+    def delete(self, current_user, order_id):
+        head = mysql_manager.execute_query(
+            "SELECT submitted_order_id FROM submitted_orders WHERE submitted_order_id = %s",
+            (order_id,),
+        )
+        if not head:
+            return {'success': False, 'msg': 'order not found'}, 404
+
+        attachments = mysql_manager.execute_query(
+            "SELECT file_path FROM submitted_order_attachments WHERE submitted_order_id = %s",
+            (order_id,),
+        ) or []
+
+        with mysql_manager.get_cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM submitted_order_attachments WHERE submitted_order_id = %s",
+                (order_id,))
+            cursor.execute(
+                "DELETE FROM submitted_order_products WHERE submitted_order_id = %s",
+                (order_id,))
+            cursor.execute(
+                "DELETE FROM submitted_order_status_history WHERE submitted_order_id = %s",
+                (order_id,))
+            cursor.execute(
+                "DELETE FROM submitted_orders WHERE submitted_order_id = %s", (order_id,))
+
+        # Best-effort, after the rows are gone: an orphaned photo file costs nothing a
+        # user can see, so it is cleaned up but never allowed to block the delete itself.
+        for att in attachments:
+            media.delete_media(att['file_path'])
+
+        logger.info("submitted order %s deleted", order_id,
+                    extra={'deleted_by': getattr(current_user, 'id', None)})
+        return {'success': True}, 200
