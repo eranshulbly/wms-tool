@@ -1463,7 +1463,7 @@ def _resolve_cart_line(product_id, product_name, sku_code, company_id, sub_lines
     """Turn every cart entry for ONE product — `sub_lines` is [(uom, qty), ...] — into
     the single submitted_order_products row that product gets on this order.
 
-    Merged rather than written one row per entry: stock allocation (allocate_live)
+    Merged rather than written one row per entry: stock preview (peek_live_stock)
     walks each order line's stock rows once and has no way to know a second line for
     the same product is drawing against stock the first already spoke for, so two rows
     for one product on one order silently under-allocates the second. A rep ordering
@@ -1711,6 +1711,11 @@ class SubmittedOrderDmsFile(Resource):
     Built from the order's lines in submitted_order_products (present for itemised
     orders, or entered via the part-convertor upload for photo orders). Returns a CSV
     laid out for the order's company (Hero known; others fall back to Hero's layout).
+
+    Previews live stock to size the file and report shortfalls, but does not take any
+    of it — a download is not a sale. Stock only actually leaves when the real invoice
+    for this order is later closed (deduct_batches), the only other live-stock path
+    besides an ingested credit/debit note explicitly marked as a return.
     """
 
     @rest_api.response(400, 'Error', dash_error_response)
@@ -1758,11 +1763,13 @@ class SubmittedOrderDmsFile(Resource):
 
         from api.modules.fulfillment.order import temp_inventory
 
-        # An order already downloaded replays its stored allocation. It must NOT allocate
-        # again: the stock it consumed is already gone, so a second pass would deduct the
-        # same parts twice and — reading the reduced quantities — hand over a SMALLER file
-        # than the one the DMS already received. Replaying also means a re-download is not
-        # subject to the freshness rule, because it takes nothing new out of stock.
+        # An order already downloaded replays its stored allocation rather than previewing
+        # fresh stock again. Not because taking a second look would double-deduct anything
+        # — a download no longer takes stock at all, see peek_live_stock — but because
+        # other orders moving stock in the meantime would otherwise make a re-download of
+        # the SAME order show different numbers than the file the DMS already received.
+        # Replaying also means a re-download is not subject to the freshness rule, since
+        # it reads nothing new.
         already_allocated = any(i['dms_quantity'] is not None for i in items)
         shortfalls = []
 
@@ -1770,7 +1777,7 @@ class SubmittedOrderDmsFile(Resource):
             lines = [dict(i, quantity=i['dms_quantity']) for i in items
                      if (i['dms_quantity'] or 0) > 0]
         else:
-            # Where this company's stock lives decides how it is allocated. Stock received
+            # Where this company's stock lives decides how it is previewed. Stock received
             # through goods receipts is held in fc_entity_stock and is current by
             # construction — there is no sheet to upload and therefore no staleness to
             # check. temp_inventory has no company column at all, so applying its
@@ -1780,11 +1787,12 @@ class SubmittedOrderDmsFile(Resource):
             live_stock = inventory_service.uses_live_stock(head['company_id'])
 
             if live_stock:
-                lines, shortfalls = inventory_service.allocate_live(
-                    items, head['company_id'],
-                    planogram_id=head.get('warehouse_id'),
-                    reference_id=order_id, reference_type='DMS',
-                    user=getattr(current_user, 'username', 'dms'))
+                # A preview, not a deduction: fc_entity_stock is taken only once a real
+                # invoice closes the order (deduct_batches) or an ingested credit/debit
+                # note is marked as a return — not by the rep downloading this file, which
+                # is a step before any sale is final and must not commit to one.
+                lines, shortfalls = inventory_service.peek_live_stock(
+                    items, head['company_id'], planogram_id=head.get('warehouse_id'))
                 out_of_stock_msg = ('none of the parts on this order are in stock — '
                                     'receive stock against a GRN, or reject the order.')
             else:

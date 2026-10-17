@@ -39,13 +39,17 @@ logger = get_logger(__name__)
 DAYS_PER_MONTH = 30.4375
 
 # The only ledger reference_types that represent a genuine sale — real stock leaving to
-# fill a dealer's order. Both close an actual order: 'INVOICE' when an order is closed
-# directly on its invoice (fulfillment/invoice/repository.py -> inventory.service.
-# deduct_batches), 'DMS' when an app-submitted order's parts are allocated against live
-# stock for its DMS download (order/router_dashboard.py -> inventory.service.
-# allocate_live). Everything else that can carry a negative quantity_changed is an
-# administrative movement, not a sale — see the module docstring — and is excluded by
-# name rather than trusted because its sign happens to be negative.
+# fill a dealer's order. 'INVOICE' is written when an order is closed directly on its
+# invoice (fulfillment/invoice/repository.py -> inventory.service.deduct_batches) — the
+# only reference_type live writes use going forward. 'DMS' is kept in this list for
+# historical rows only: downloading an app-submitted order's DMS file used to allocate
+# and take live stock at that moment (inventory.service.allocate_live), which really was
+# a sale at the time, but that function no longer exists — a DMS download now only
+# previews stock (inventory.service.peek_live_stock) and takes nothing, because a
+# download is a step before a sale, not the sale itself; the invoice closing the order
+# is. Everything else that can carry a negative quantity_changed is an administrative
+# movement, not a sale — see the module docstring — and is excluded by name rather than
+# trusted because its sign happens to be negative.
 SALE_REFERENCE_TYPES = ('INVOICE', 'DMS')
 
 # How far back the ledger is read for a product's sales, and the outer cap on how many
@@ -127,11 +131,12 @@ SELECT  s.entity_id                                                AS product_id
 # moment the invoice was uploaded and processed, not the date printed on it. An invoice
 # dated 1 Aug uploaded on the 10th would otherwise make the product look like it sold on
 # the 10th. last_sale below uses invoice.invoice_date instead, for exactly the rows that
-# can disagree with created_on this way (reference_type='INVOICE'); DMS rows have no
-# separate document to lag behind — allocate_live() deducts stock at the moment the DMS
-# file is generated, so created_on already is the real dispatch moment for those, and is
-# kept as-is. (observed_days no longer reads a first-sale date from here at all — see
-# SALES_START_DATE; last_sale is kept purely for display/inspection.)
+# can disagree with created_on this way (reference_type='INVOICE'); historical DMS rows
+# have no separate document to lag behind either — the allocate_live() that used to write
+# them deducted stock at the moment the DMS file was generated, so their created_on
+# already is the real dispatch moment, and is kept as-is. (observed_days no longer reads
+# a first-sale date from here at all — see SALES_START_DATE; last_sale is kept purely
+# for display/inspection.)
 #
 # reference_type is restricted to SALE_REFERENCE_TYPES (see its own note) — every row
 # this query sees is already a real sale, so "quantity_changed < 0" only exists here to
