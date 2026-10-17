@@ -13,6 +13,12 @@ Both sides are ex-GST, so tax cannot inflate the margin. Cost is found by the ba
 number printed on the line — the batch that actually shipped — which is sharper than
 the FEFO inference used for orders, where the batch has to be guessed.
 
+Each resolved line is also checked against stock on hand for that exact batch right
+now (fc_entity_stock). A line billing more than is on hand — or a batch with nothing on
+hand at all — doesn't change the margin figure (that's still the true cost whether or
+not units remain), but it is exactly the kind of thing worth a second look before the
+invoice is trusted, so it is flagged rather than silently computed through.
+
 A batch number is only guaranteed unique WITHIN one product — sku_batch.batch_hash is
 (sku_id, batch_number), not batch_number alone (see ingestion/service.py:batch_hash) —
 so the same printed text can genuinely belong to two different products, and does: e.g.
@@ -46,7 +52,7 @@ class MarginCheckError(ValueError):
 
 
 def _costs_by_batch(batch_numbers, company_id):
-    """{BATCH NUMBER: [{'cost', 'master_name', 'sku_code'}, ...]}.
+    """{BATCH NUMBER: [{'cost', 'master_name', 'sku_code', 'stock_qty'}, ...]}.
 
     One entry per distinct PRODUCT the batch number resolves to — never collapsed into
     one, since two different products can share a batch number (see module docstring).
@@ -57,6 +63,13 @@ def _costs_by_batch(batch_numbers, company_id):
     out of the picture entirely (only one candidate is ever costed, so there is nothing
     to disambiguate). It does not help when both rows actually have stock, which is
     exactly when _resolve_line_cost is needed.
+
+    stock_qty is the units of this exact batch on hand right now (fc_entity_stock,
+    summed across bins/locations; 0 when the batch has no stock row at all, never null —
+    this is a real figure to compare the invoice's own quantity against, not a "no data"
+    case). It says nothing about whether the stock existed when THIS invoice was cut —
+    only a point-in-time ledger read could say that, and this is a read of right now — so
+    it is reported as a fact for the operator to weigh, not treated as proof of anything.
     """
     wanted = sorted({(b or '').strip().upper() for b in batch_numbers if b})
     if not wanted:
@@ -65,22 +78,29 @@ def _costs_by_batch(batch_numbers, company_id):
     rows = mysql_manager.execute_query(
         f"""SELECT UPPER(JSON_UNQUOTE(JSON_EXTRACT(b.batch_params, '$.batch_number'))) AS batch,
                    p.name AS master_name, p.product_string AS sku_code,
-                   pr.landing_price, pr.cn_rate
+                   pr.landing_price, pr.cn_rate, COALESCE(stk.qty, 0) AS stock_qty
               FROM sku_batch b
               JOIN fc_sku_price_details pr
                 ON pr.entity_id = b.sku_id AND pr.batch_id = b.id AND pr.company_id = %s
               JOIN product p ON p.product_id = b.sku_id
+              LEFT JOIN (
+                    SELECT entity_id, batch_id, SUM(quantity) AS qty
+                      FROM fc_entity_stock
+                     WHERE entity_type = 'sku' AND company_id = %s
+                     GROUP BY entity_id, batch_id
+                   ) stk ON stk.entity_id = b.sku_id AND stk.batch_id = b.id
              WHERE pr.batch_id > 0
                AND pr.landing_price > 0
                AND UPPER(JSON_UNQUOTE(JSON_EXTRACT(b.batch_params, '$.batch_number'))) IN ({ph})""",
-        (company_id, *wanted)) or []
+        (company_id, company_id, *wanted)) or []
 
     by_batch = {}
     for r in rows:
         cost = round(float(r['landing_price']) - float(r['cn_rate'] or 0), 4)
-        opt = {'cost': cost, 'master_name': r['master_name'], 'sku_code': r['sku_code']}
+        opt = {'cost': cost, 'master_name': r['master_name'], 'sku_code': r['sku_code'],
+               'stock_qty': float(r['stock_qty'])}
         options = by_batch.setdefault(r['batch'], [])
-        if opt not in options:  # same product, same cost — not a second candidate
+        if opt not in options:  # same product, same cost, same stock — not a second candidate
             options.append(opt)
     return by_batch
 
@@ -140,7 +160,7 @@ def check_invoice(stream, filename, company_id):
     costs = _costs_by_batch([l['raw_batch'] for l in doc['lines']], company_id)
 
     lines = []
-    collision_warnings = []  # one per (batch, printed name) actually seen on this invoice
+    line_warnings = []  # one per (batch, printed name) collision or stock shortfall seen
     for l in doc['lines']:
         qty = float(l['quantity'] or 0)
         sale_rate = float(l['rate']) if qty else None
@@ -161,7 +181,20 @@ def check_invoice(stream, filename, company_id):
             note = (f"line {l['line_no']}: batch {l['raw_batch']} is also on record for "
                     f"{others}" + (f" — matched to {match['master_name']} by name"
                                     if match else " — could not tell which by name, so no cost was used"))
-            collision_warnings.append(note)
+            line_warnings.append(note)
+
+        # Stock is only checked once the line resolves to exactly one product — 'ambiguous'
+        # already has more than one candidate batch/product, each potentially with its own
+        # stock, so reporting one of them would just be a second guess layered on the first.
+        # 0 here is a real reading ("nothing on hand"), not "unknown" — _costs_by_batch
+        # never returns null for it.
+        stock_qty = match['stock_qty'] if match else None
+        if stock_qty is not None and stock_qty < qty:
+            short_note = (
+                f"line {l['line_no']} ({l['raw_product_name']}): batch {l['raw_batch']} has "
+                f"{stock_qty:g} unit(s) on hand but the invoice bills {qty:g}" +
+                (" — nothing in stock" if stock_qty == 0 else ""))
+            line_warnings.append(short_note)
 
         margin_rate = (sale_rate - cost) if (sale_rate is not None and cost is not None) else None
         lines.append({
@@ -182,6 +215,10 @@ def check_invoice(stream, filename, company_id):
             'margin_pct': (round(margin_rate / sale_rate * 100, 2)
                            if margin_rate is not None and sale_rate else None),
             'status': status,
+            # Units of this exact batch on hand right now (see _costs_by_batch) — None
+            # when the line has no single resolved batch to check (no_cost/ambiguous).
+            'stock_qty': stock_qty,
+            'stock_short': stock_qty is not None and stock_qty < qty,
         })
 
     return {
@@ -192,10 +229,10 @@ def check_invoice(stream, filename, company_id):
         'grand_total': doc.get('grand_total'),
         'lines': lines,
         'totals': totals_for(lines),
-        # Parser warnings first, then batch/product collisions — the collisions are
-        # about a specific line's cost, so they read as a continuation of the same list
-        # rather than a separate concern.
-        'warnings': list(doc.get('warnings') or []) + collision_warnings,
+        # Parser warnings first, then batch/product collisions and stock shortfalls — both
+        # are about a specific line, so they read as a continuation of the same list rather
+        # than a separate concern.
+        'warnings': list(doc.get('warnings') or []) + line_warnings,
     }
 
 

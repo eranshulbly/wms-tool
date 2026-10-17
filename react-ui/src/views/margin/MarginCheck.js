@@ -60,6 +60,14 @@ const STATUS_NOTE = {
   ambiguous: 'This batch has more than one cost on record, so no single cost is used',
 };
 
+// Stock is checked separately from cost — a batch can be fully costed and still be short
+// or sold out, which doesn't change the margin figure but is worth a second look before
+// the invoice is trusted.
+const stockNote = (l) =>
+  l.stock_qty === 0
+    ? 'Nothing in stock for this batch'
+    : `Only ${l.stock_qty.toLocaleString('en-IN')} of this batch on hand — invoice bills ${l.quantity.toLocaleString('en-IN')}`;
+
 const Totals = ({ totals, classes }) => {
   const tone = totals.margin > 0 ? classes.positive : totals.margin < 0 ? classes.negative : '';
   return (
@@ -119,6 +127,7 @@ const InvoiceResult = ({ inv, classes }) => (
             <TableCell>Product</TableCell>
             <TableCell>Batch</TableCell>
             <TableCell align="right">Qty</TableCell>
+            <TableCell align="right">Stock on hand</TableCell>
             <TableCell align="right">Sold at / unit (ex-GST)</TableCell>
             <TableCell align="right">Cost / unit (ex-GST)</TableCell>
             <TableCell align="right">Margin / unit (ex-GST)</TableCell>
@@ -142,9 +151,21 @@ const InvoiceResult = ({ inv, classes }) => (
                       {STATUS_NOTE[l.status]}
                     </Typography>
                   )}
+                  {l.stock_short && (
+                    <Typography variant="caption" display="block" className={classes.negative}>
+                      {stockNote(l)}
+                    </Typography>
+                  )}
                 </TableCell>
                 <TableCell className={classes.mono}>{l.batch || '—'}</TableCell>
                 <TableCell align="right" className={classes.num}>{qty(l.quantity)}</TableCell>
+                <TableCell
+                  align="right"
+                  className={`${classes.num} ${l.stock_short ? classes.negative : ''}`}
+                  style={l.stock_short ? { fontWeight: 600 } : undefined}
+                >
+                  {l.stock_qty === null || l.stock_qty === undefined ? '—' : qty(l.stock_qty)}
+                </TableCell>
                 <TableCell align="right" className={classes.num}>{unit(l.sale_rate)}</TableCell>
                 <TableCell align="right" className={classes.num}>{unit(l.cost_rate)}</TableCell>
                 <TableCell align="right" className={`${classes.num} ${tone}`}>{unit(l.margin_rate)}</TableCell>
@@ -205,8 +226,10 @@ const MarginCheck = () => {
         Upload Marg order invoices to see the margin on each product and overall. Margin is the
         rate sold at (after discount, ex-GST) less that batch&apos;s landed cost (after credit
         notes, ex-GST). Both sides exclude GST: it is charged on the sale and reclaimed on the
-        purchase, so counting it would flatter the margin rather than measure it. Nothing from
-        this check is saved.
+        purchase, so counting it would flatter the margin rather than measure it. Each line is
+        also checked against stock on hand for that exact batch right now — short or sold-out
+        stock doesn&apos;t change the margin figure, but it&apos;s flagged since it&apos;s worth a
+        second look. Nothing from this check is saved.
       </Typography>
 
       <Paper variant="outlined" className={classes.section} style={{ padding: 16 }}>
