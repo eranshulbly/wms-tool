@@ -1772,7 +1772,7 @@ def insert_default_states():
 
 
 ALL_ORDER_STATES = ['Open', 'Picking', 'Packed', 'Invoiced', 'Dispatch Ready', 'Completed', 'Partially Completed']
-ALL_UPLOAD_TYPES = ['orders', 'invoices', 'products']
+ALL_UPLOAD_TYPES = ['orders', 'invoices', 'products', 'ingestion']
 
 
 # The single-screen roles, named once here because several places must agree on each

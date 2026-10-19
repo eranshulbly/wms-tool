@@ -19,6 +19,24 @@ const UPLOAD_PERMISSION_MAP = {
     'upload-products': 'products'
 };
 
+// Admin-section items a non-admin can be granted one at a time. Anything absent from
+// this map stays admin-only, so granting stock receipt does not open user management.
+const ADMIN_PERMISSION_MAP = {
+    'inventory-ingestion': 'ingestion'
+};
+
+// Filter the admin group for a non-admin: only the items whose permission they hold.
+const filterAdmin = (group, isAdmin, allowedUploads) => {
+    if (isAdmin || !group.children) return group;
+    return {
+        ...group,
+        children: group.children.filter((child) => {
+            const requiredPerm = ADMIN_PERMISSION_MAP[child.id];
+            return requiredPerm ? (allowedUploads || []).includes(requiredPerm) : false;
+        })
+    };
+};
+
 // Filter an order-tracking group's children by the user's upload permissions.
 const filterOrderTracking = (group, allowedUploads) => {
     if (!group.children || allowedUploads === null) return group;
@@ -46,6 +64,10 @@ const MenuList = () => {
     // A single-screen role sees only its own item, and no Home link — the launcher is
     // one of the places it is not allowed to go, so offering the link would just bounce.
     const scope = scopeForRole(user?.role);
+
+    if (sectionGroup && sectionGroup.id === 'admin') {
+        sectionGroup = filterAdmin(sectionGroup, user?.role === 'admin', allowedUploads);
+    }
 
     if (sectionGroup && sectionGroup.id === 'order-tracking') {
         sectionGroup = filterOrderTracking(sectionGroup, allowedUploads);

@@ -16,6 +16,7 @@ import {
     IconClipboardList,
     IconChartBar,
     IconSettings,
+    IconUpload,
     IconArrowRight
 } from '@tabler/icons';
 
@@ -88,6 +89,18 @@ const Launcher = () => {
             path: '/analytics/inventory-report',
             // Visible to everyone for now; gate with a permission when analytics grow.
             show: true
+        },
+        {
+            key: 'ingestion',
+            title: 'Inventory Ingestion',
+            description: 'Receive supplier invoices and credit notes into stock.',
+            icon: IconUpload,
+            color: theme.palette.warning.dark,
+            tint: theme.palette.warning.light,
+            path: '/inventory-ingestion',
+            // Its own tile only for a non-admin who holds the permission — an admin
+            // reaches the same screen through the Admin tile below.
+            show: !isAdmin && (perms.uploads || []).includes('ingestion')
         },
         {
             key: 'admin',
