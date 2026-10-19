@@ -435,12 +435,22 @@ class OrderStateHistory(MySQLModel):
 
     @classmethod
     def get_history_for_order(cls, potential_order_id):
-        """Get state history for an order (active window only)"""
+        """State history for an order (active window only), with WHO moved it.
+
+        The name is joined here rather than left to each caller. Six endpoints
+        render this list and every one of them was formatting the raw id as
+        "User 17" — which is not a name, it is the absence of one, shown to a
+        warehouse manager who has no way to look it up.
+
+        LEFT joined: changed_by is null on rows written by an import, and a
+        history row with no user is still a real transition.
+        """
         pf_sql, pf_params = partition_filter('order_state_history', alias='osh')
         results = mysql_manager.execute_query(
-            f"""SELECT osh.*, os.state_name
+            f"""SELECT osh.*, os.state_name, u.name AS changed_by_name
                FROM order_state_history osh
                JOIN order_state os ON osh.state_id = os.state_id
+               LEFT JOIN users u ON u.id = osh.changed_by
                WHERE {pf_sql} AND osh.potential_order_id = %s
                ORDER BY osh.changed_at""",
             pf_params + (potential_order_id,)

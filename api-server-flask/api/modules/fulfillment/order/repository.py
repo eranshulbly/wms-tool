@@ -174,6 +174,62 @@ class OrderRepository(BaseRepository):
 
     # ── Dealer (name lookup only) ────────────────────────────────────────────
 
+    def format_state_history(self, potential_order_id, rows) -> list:
+        """The timeline, naming the PERSON rather than the account.
+
+        For Picking and Packed that is the name captured at the scan — the
+        picker and the packer. Everywhere else it is the account that made the
+        move, which is the only name those rows have.
+
+        The distinction matters on a floor where one supervisor's handheld
+        makes every move: without it the timeline says "Hero Warehouse
+        Manager" four times and answers nobody's question.
+        """
+        people = {}
+        try:
+            from api.modules.fulfillment.picklist import repository as pl_repo
+            people = pl_repo.people_for_order(potential_order_id) or {}
+        except Exception:
+            # An order with no pick list, or the module unavailable. The
+            # account names below are still worth showing.
+            people = {}
+
+        by_state = {
+            'Picking': (people.get('picker_code') or '').strip(),
+            'Packed': (people.get('packer_code') or '').strip(),
+        }
+
+        out = []
+        for row in rows or []:
+            account = (row.get('changed_by_name')
+                       or self.get_user_name(row.get('changed_by')) or 'Unknown')
+            person = by_state.get(row['state_name']) or ''
+            out.append({
+                'state_name': row['state_name'],
+                'timestamp': row['changed_at'].isoformat() if row['changed_at'] else None,
+                # What the screen shows: the person who did the work where we
+                # know it, the account otherwise.
+                'user': person or account,
+                # Both kept, so a screen can show "picked by RAMESH, moved by
+                # Hero Warehouse Manager" without a second request.
+                'person': person,
+                'account': account,
+            })
+        return out
+
+    def get_user_name(self, user_id) -> str:
+        """A user's display name, or '' when there is nobody to name.
+
+        Used for the handful of rows whose name could not be joined — an
+        import writes history with no user, and an account can be deleted
+        after it moved something.
+        """
+        if not user_id:
+            return ''
+        rows = self._db.execute_query(
+            "SELECT name FROM users WHERE id = %s", (user_id,))
+        return (rows[0]['name'] if rows else '') or ''
+
     def get_dealer_name(self, dealer_id: int) -> str:
         """Return the dealer's name for a given dealer_id, or empty string."""
         from api.models import Dealer

@@ -27,8 +27,25 @@ from api.models import (
 from api.db_manager import partition_filter
 from api.services import order_service
 from api.core.logging import get_logger
+from api.repositories import order_repo
 
 logger = get_logger(__name__)
+
+
+def _who(user_id) -> str:
+    """Name the person behind a user id, for the rows the join could not.
+
+    Returns 'Unknown' rather than 'User 17'. An id rendered as a name is worse
+    than admitting we do not know: it looks like information, so the reader
+    stops looking for the answer.
+    """
+    if not user_id:
+        return 'Unknown'
+    try:
+        from api.repositories import order_repo
+        return order_repo.get_user_name(user_id) or 'Unknown'
+    except Exception:
+        return 'Unknown'
 
 # ── Models ───────────────────────────────────────────────────────────────────
 
@@ -308,13 +325,8 @@ class OrderDetailWithProducts(Resource):
 
             # Get complete state history
             state_history = OrderStateHistory.get_history_for_order(numeric_id)
-            formatted_history = []
-            for history in state_history:
-                formatted_history.append({
-                    'state_name': history['state_name'],
-                    'timestamp':  history['changed_at'].isoformat(),
-                    'user':       f"User {history['changed_by']}"
-                })
+            formatted_history = order_repo.format_state_history(
+                numeric_id, state_history)
 
             current_state_time = order_data['updated_at']
             if formatted_history:
@@ -344,7 +356,7 @@ class OrderDetailWithProducts(Resource):
                 'order_date':        order_data['order_date'].isoformat() if order_data['order_date'] else None,
                 'status':            frontend_status,
                 'current_state_time': current_state_time.isoformat(),
-                'assigned_to':       f"User {order_data['requested_by']}",
+                'assigned_to':       _who(order_data['requested_by']),
                 'products':          formatted_products,
                 'boxes':             formatted_boxes,
                 'state_history':     formatted_history,
@@ -490,13 +502,8 @@ class OrderStatusUpdate(Resource):
                 product_count = PotentialOrderProduct.count_by_order(numeric_id)
 
                 state_history_data = OrderStateHistory.get_history_for_order(numeric_id)
-                formatted_history = []
-                for history in state_history_data:
-                    formatted_history.append({
-                        'state_name': history['state_name'],
-                        'timestamp':  history['changed_at'].isoformat(),
-                        'user':       f"User {history['changed_by']}"
-                    })
+                formatted_history = order_repo.format_state_history(
+                    numeric_id, state_history_data)
 
                 frontend_status_map = {
                     'Open': 'open', 'Picking': 'picking', 'Packed': 'packed',
@@ -512,7 +519,7 @@ class OrderStatusUpdate(Resource):
                     'order_date':        potential_order.order_date.isoformat(),
                     'status':            frontend_status,
                     'current_state_time': current_time.isoformat(),
-                    'assigned_to':       f"User {potential_order.requested_by}",
+                    'assigned_to':       _who(potential_order.requested_by),
                     'products':          product_count,
                     'box_count':         final_order.box_count if final_order else None,
                     'state_history':     formatted_history,
@@ -644,13 +651,8 @@ class OrderPackedUpdate(Resource):
                 formatted_boxes = []
 
                 state_history_data = OrderStateHistory.get_history_for_order(numeric_id)
-                formatted_history = []
-                for history in state_history_data:
-                    formatted_history.append({
-                        'state_name': history['state_name'],
-                        'timestamp':  history['changed_at'].isoformat(),
-                        'user':       f"User {history['changed_by']}"
-                    })
+                formatted_history = order_repo.format_state_history(
+                    numeric_id, state_history_data)
 
                 updated_order = {
                     'order_request_id':  f"PO{potential_order.potential_order_id}",
@@ -659,7 +661,7 @@ class OrderPackedUpdate(Resource):
                     'order_date':        potential_order.order_date.isoformat(),
                     'status':            'packed',
                     'current_state_time': current_time.isoformat(),
-                    'assigned_to':       f"User {potential_order.requested_by}",
+                    'assigned_to':       _who(potential_order.requested_by),
                     'products':          formatted_products,
                     'boxes':             formatted_boxes,
                     'state_history':     formatted_history,

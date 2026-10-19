@@ -36,8 +36,25 @@ from api.permissions import (
     resolve_company_scope, company_filter_sql, CompanyAccessDenied,
 )
 from api.core.logging import get_logger
+from api.repositories import order_repo
 
 logger = get_logger(__name__)
+
+
+def _who(user_id) -> str:
+    """Name the person behind a user id, for the rows the join could not.
+
+    Returns 'Unknown' rather than 'User 17'. An id rendered as a name is worse
+    than admitting we do not know: it looks like information, so the reader
+    stops looking for the answer.
+    """
+    if not user_id:
+        return 'Unknown'
+    try:
+        from api.repositories import order_repo
+        return order_repo.get_user_name(user_id) or 'Unknown'
+    except Exception:
+        return 'Unknown'
 
 # ── Models ───────────────────────────────────────────────────────────────────
 
@@ -358,13 +375,8 @@ class OrdersList(Resource):
                     product_count     = product_counts.get(order_data['potential_order_id'], 0)
                     state_history_data = state_histories.get(order_data['potential_order_id'], [])
 
-                    formatted_history = []
-                    for history in state_history_data:
-                        formatted_history.append({
-                            'state_name': history['state_name'],
-                            'timestamp':  history['changed_at'].isoformat() if history['changed_at'] else None,
-                            'user':       f"User {history['changed_by']}"
-                        })
+                    formatted_history = order_repo.format_state_history(
+                        order_data['potential_order_id'], state_history_data)
 
                     current_state_time = (
                         state_history_data[-1]['changed_at'] if state_history_data
@@ -385,7 +397,8 @@ class OrdersList(Resource):
                         'order_date':        order_date_str,
                         'status':            frontend_status,
                         'current_state_time': current_state_time_str,
-                        'assigned_to':       order_data.get('assigned_username') or f"User {order_data['requested_by']}",
+                        'assigned_to':       (order_data.get('assigned_username')
+                                         or _who(order_data['requested_by'])),
                         'products':          product_count,
                         'state_history':     formatted_history,
                         'invoice_submitted': bool(order_data.get('invoice_submitted', False)),
@@ -692,13 +705,8 @@ class OrderDetail(Resource):
             product_count = PotentialOrderProduct.count_by_order(numeric_id)
 
             state_history_data = OrderStateHistory.get_history_for_order(numeric_id)
-            formatted_history = []
-            for history in state_history_data:
-                formatted_history.append({
-                    'state_name': history['state_name'],
-                    'timestamp':  history['changed_at'].isoformat(),
-                    'user':       f"User {history['changed_by']}"
-                })
+            formatted_history = order_repo.format_state_history(
+                numeric_id, state_history_data)
 
             current_state_time = potential_order.updated_at
             if state_history_data:
@@ -810,7 +818,8 @@ class RecentOrders(Resource):
                     'status':            status,
                     'order_date':        order_data['order_date'].isoformat(),
                     'current_state_time': current_state_time.isoformat(),
-                    'assigned_to':       order_data.get('assigned_username') or f"User {order_data['requested_by']}",
+                    'assigned_to':       (order_data.get('assigned_username')
+                                         or _who(order_data['requested_by'])),
                 })
 
             return {'success': True, 'recent_orders': orders}, 200

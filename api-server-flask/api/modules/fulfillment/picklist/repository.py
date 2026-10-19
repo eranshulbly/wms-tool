@@ -100,6 +100,26 @@ def find_live_by_order_no(order_no: str):
     ) or []
 
 
+def people_for_order(potential_order_id: int):
+    """Who picked and who packed, as entered on the handheld.
+
+    These are the names a warehouse manager TYPED at the Picking and Packed
+    scans. They are the answer to "who did this", which is a different question
+    from "which account moved it" — the handheld usually belongs to a
+    supervisor, so the account says the supervisor's name for work somebody
+    else did.
+
+    Returns {} when the order has no pick list.
+    """
+    rows = mysql_manager.execute_query(
+        """SELECT picker_code, packer_code FROM order_picklist
+            WHERE potential_order_id = %s
+            ORDER BY created_at LIMIT 1""",
+        (potential_order_id,),
+    )
+    return rows[0] if rows else {}
+
+
 def find_any_for_order(potential_order_id: int):
     """Any pick list already held for this order, with enough detail to say so.
 
