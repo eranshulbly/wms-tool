@@ -64,17 +64,35 @@ def _part_number(cursor_free_company_id, prefix, line):
     ONE product row; inventing a different code here would create a duplicate product for
     the same item, splitting its stock.
 
-    An existing product for the same company and printed name wins outright, so a product
-    already created by ingestion is reused even if its code was disambiguated.
+    A line that prints a batch takes its product from that batch: the batch number must
+    match a received batch exactly and the product's name must be at least half like the
+    printed one (see product_upload_business.pick_batch). Sales invoices print names that
+    differ from the catalogue's ('CIPRODAC-500 TABLET' vs 'CIPRODAC-500 TAABLET', a double
+    space); requiring the name to match exactly refused stock that was on the shelf.
+
+    A line without a batch keeps the old rule: an existing product for the same company
+    and printed name wins outright, so a product already created by ingestion is reused
+    even if its code was disambiguated.
     """
     from api.modules.inventory.ingestion.service import _slug
+    from api.modules.platform.catalog.product_upload_business import (
+        _norm_batch, find_batches_by_number, pick_batch,
+    )
     name = (line['raw_product_name'] or '').strip()
+    batch = _norm_batch(line.get('raw_batch'))
 
-    rows = mysql_manager.execute_query(
-        "SELECT product_string FROM product WHERE company_id = %s AND name = %s LIMIT 1",
-        (cursor_free_company_id, name)) if cursor_free_company_id else None
-    if rows and rows[0]['product_string']:
-        return rows[0]['product_string']
+    if cursor_free_company_id and batch:
+        found, _why = pick_batch(
+            find_batches_by_number(cursor_free_company_id, [batch]).get(batch),
+            name=name, expiry=line.get('expiry_date'))
+        if found:
+            return found['product_string']
+    elif cursor_free_company_id:
+        rows = mysql_manager.execute_query(
+            "SELECT product_string FROM product WHERE company_id = %s AND name = %s LIMIT 1",
+            (cursor_free_company_id, name))
+        if rows and rows[0]['product_string']:
+            return rows[0]['product_string']
 
     pack = line.get('raw_pack') or ''
     return (f"{prefix}-{_slug(name)}" + (f"-{_slug(pack, 12)}" if pack else ''))[:90]

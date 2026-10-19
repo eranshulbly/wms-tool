@@ -47,7 +47,9 @@ class OrderUploadService(BaseUploadService):
         if 'Batch #' not in df.columns or 'Part #' not in df.columns:
             return None
 
-        from api.modules.platform.catalog.product_upload_business import _batch_key
+        from api.modules.platform.catalog.product_upload_business import (
+            _norm_batch, find_batches_by_number, pick_batch,
+        )
         from api.repositories import order_repo, product_repo
 
         company_id = context.get('company_id')
@@ -64,26 +66,33 @@ class OrderUploadService(BaseUploadService):
 
         products = product_repo.find_bulk_by_part_numbers(
             list({str(r.get('Part #') or '').strip() for r in rows}))
+        batches = find_batches_by_number(company_id, [r.get('Batch #') for r in rows])
 
-        wanted, missing = {}, []
+        # Stock is found by batch number, guarded by the product name (see pick_batch). A
+        # PDF's Part # is itself derived from that match, so a Part # the catalogue lacks
+        # means the batch did not match; the name-based pick then says why.
+        missing = []
         for r in rows:
             part = str(r.get('Part #') or '').strip()
             batch = str(r.get('Batch #') or '').strip()
-            label = f"{str(r.get('Part Description') or part).strip()} (batch {batch})"
+            name = str(r.get('Part Description') or '').strip()
+            label = f"{name or part} (batch {batch})"
             product = products.get(part)
-            if not product:
-                missing.append(f"{label} — product not in the catalogue")
-                continue
-            # Same expiry handling as the line-item pass, so both compute the same key.
+            # Same expiry handling as the line-item pass, so both pick the same batch.
             expiry = r.get('Expiry') if str(r.get('Expiry', '') or '').strip() else None
-            wanted[_batch_key(product['product_id'], batch, expiry)] = label
-
-        if wanted:
-            placeholders = ','.join(['%s'] * len(wanted))
-            found = {x['batch_hash'] for x in (mysql_manager.execute_query(
-                f"SELECT batch_hash FROM sku_batch WHERE batch_hash IN ({placeholders})",
-                tuple(wanted)) or [])}
-            missing += [label for key, label in wanted.items() if key not in found]
+            candidates = batches.get(_norm_batch(batch))
+            if product:
+                found, why = pick_batch(candidates, product_id=product['product_id'],
+                                        expiry=expiry)
+            else:
+                found, why = pick_batch(candidates, name=name, expiry=expiry)
+                if found:
+                    # Matched by batch but under a code the file does not use — refuse
+                    # rather than let the line-item pass create a product for that code.
+                    found, why = None, (f"matches {found['product_string']}, but the line "
+                                        f"names {part or 'no product code'}")
+            if not found:
+                missing.append(f"{label} — batch {why}")
 
         if not missing:
             return None

@@ -18,6 +18,7 @@ Total DB round-trips: ~5 regardless of row count.
 """
 
 from datetime import datetime
+from difflib import SequenceMatcher
 
 from api.repositories import order_repo, product_repo
 from api.shared.db_manager import mysql_manager
@@ -44,33 +45,97 @@ def _money(value):
         return None
 
 
-def _batch_key(product_id, batch_number, expiry_date):
-    """Identity of a batch, matching how inventory ingestion hashes it."""
-    from api.modules.inventory.ingestion.service import batch_hash
-    return batch_hash(product_id, batch_number, expiry_date)
+def _norm_batch(batch_number):
+    return str(batch_number or '').strip().upper()
 
 
-def _resolve_batch_ids(order_products, products_map):
-    """{batch_hash: sku_batch.id} for every batch named across the upload.
+def _norm_name(name):
+    return str(name or '').upper().replace(' ', '').replace('.', '')
 
-    One query regardless of row count. Batches are created by inventory ingestion at
-    receipt, so this only ever reads them — an outbound document must not invent a batch,
-    because that would assert stock arrived when it never did.
+
+def find_batches_by_number(company_id, batch_numbers):
+    """{BATCH NUMBER: [received batch rows]} for this company, in one query.
+
+    Outbound documents find their stock by the printed batch number alone. Matching on
+    the product name or on expiry refused real stock whenever the sales invoice spelled
+    the product differently from the catalogue ('TABLET' vs 'TAABLET', a double space) or
+    printed the expiry differently. Batches are created by inventory ingestion at receipt,
+    so this only ever reads them — an outbound document must not invent a batch.
     """
-    hashes = set()
-    for lines in order_products.values():
-        for part_no, _desc, _qty, batch_number, expiry_date, _mrp, _rate in lines:
-            product = products_map.get(part_no)
-            if product and batch_number:
-                hashes.add(_batch_key(product['product_id'], batch_number, expiry_date))
-    if not hashes:
+    wanted = sorted({_norm_batch(b) for b in batch_numbers if _norm_batch(b)})
+    if not wanted:
         return {}
-    from api.shared.db_manager import mysql_manager
-    placeholders = ','.join(['%s'] * len(hashes))
+    placeholders = ','.join(['%s'] * len(wanted))
     rows = mysql_manager.execute_query(
-        f"SELECT id, batch_hash FROM sku_batch WHERE batch_hash IN ({placeholders})",
-        tuple(hashes))
-    return {r['batch_hash']: r['id'] for r in (rows or [])}
+        f"""SELECT b.id, b.sku_id AS product_id, p.product_string, p.name,
+                   JSON_UNQUOTE(JSON_EXTRACT(b.batch_params, '$.expiry')) AS expiry,
+                   UPPER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(b.batch_params, '$.batch_number'))))
+                       AS batch_number,
+                   COALESCE((SELECT SUM(s.quantity) FROM fc_entity_stock s
+                              WHERE s.batch_id = b.id AND s.company_id = b.company_id), 0)
+                       AS stock
+              FROM sku_batch b
+              JOIN product p ON p.product_id = b.sku_id
+             WHERE b.company_id = %s
+               AND UPPER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(b.batch_params, '$.batch_number'))))
+                   IN ({placeholders})""",
+        (company_id, *wanted)) or []
+    found = {}
+    for r in rows:
+        found.setdefault(r['batch_number'], []).append(r)
+    return found
+
+
+NAME_MATCH_THRESHOLD = 0.5
+
+
+def name_similarity(a, b):
+    """0..1 likeness of two product names, ignoring case, spaces and full stops."""
+    a, b = _norm_name(a), _norm_name(b)
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def pick_batch(candidates, product_id=None, name=None, expiry=None):
+    """(batch row, None) for the one batch a line means, or (None, reason).
+
+    The batch number must match exactly AND the received product's name must be at least
+    half like the printed one. The batch number is what identifies the stock; the name
+    check is a guard, so a mistyped batch number cannot silently sell another product's
+    stock — while spelling differences between the invoice and the catalogue ('TABLET'
+    vs 'TAABLET', a double space, pack text) no longer refuse real stock.
+
+    A line that names its product outright (a spreadsheet's Part #) is held to it. When
+    one number was received under several products, the closest name wins; a tie is
+    refused rather than guessed. Several rows of ONE product under one number (a credit
+    note's copy with another expiry) resolve to the printed expiry, then the row holding
+    stock, then the newest.
+    """
+    if not candidates:
+        return None, 'not received'
+    if product_id is not None:
+        candidates = [c for c in candidates if c['product_id'] == product_id]
+        if not candidates:
+            return None, 'not received for this product'
+    elif name:
+        scores = {c['product_id']: name_similarity(name, c['name']) for c in candidates}
+        best = max(scores.values())
+        if best < NAME_MATCH_THRESHOLD:
+            received = ', '.join(sorted({c['name'] for c in candidates}))
+            return None, f'received as {received}, which does not match this line\'s product'
+        winners = {pid for pid, s in scores.items() if s == best}
+        if len(winners) > 1:
+            products = ', '.join(sorted({c['product_string'] for c in candidates}))
+            return None, f'received under several products ({products}) equally like this line'
+        candidates = [c for c in candidates if c['product_id'] in winners]
+    elif len({c['product_id'] for c in candidates}) > 1:
+        products = ', '.join(sorted({c['product_string'] for c in candidates}))
+        return None, f'received under several products ({products})'
+    exp = str(expiry)[:10] if expiry is not None and str(expiry).strip() else None
+    ranked = sorted(candidates, key=lambda c: (exp is not None and c['expiry'] == exp,
+                                               float(c['stock'] or 0) > 0, c['id']))
+    return ranked[-1], None
 
 
 def process_product_upload_dataframe(df, company_id, _user_id, _upload_batch_id=None):
@@ -207,11 +272,13 @@ def process_product_upload_dataframe(df, company_id, _user_id, _upload_batch_id=
                  extra={'order_count': len(affected_order_ids)})
 
     # 3c. Build and INSERT new potential_order_product rows
-    # Resolve every (product, batch, expiry) to its sku_batch id in ONE query, keeping
-    # this phase's round-trip count flat. The batch is created by inventory ingestion when
-    # the stock is received; a line whose batch is absent is selling stock that was never
-    # taken in, so it is reported rather than silently losing its traceability.
-    batch_ids = _resolve_batch_ids(order_products, products_map)
+    # Resolve every batch number named in the upload in ONE query, keeping this phase's
+    # round-trip count flat. The batch is created by inventory ingestion when the stock is
+    # received; a line whose batch is absent is selling stock that was never taken in, so
+    # it is reported rather than silently losing its traceability.
+    batches = find_batches_by_number(
+        company_id,
+        [ln[3] for lines in order_products.values() for ln in lines if ln[3]])
 
     pop_rows = []
     for pot_id, lines in order_products.items():
@@ -226,13 +293,14 @@ def process_product_upload_dataframe(df, company_id, _user_id, _upload_batch_id=
                 continue
             batch_id = None
             if batch_number:
-                batch_id = batch_ids.get(
-                    _batch_key(product['product_id'], batch_number, expiry_date))
+                batch, why = pick_batch(batches.get(_norm_batch(batch_number)),
+                                        product_id=product['product_id'], expiry=expiry_date)
+                batch_id = batch['id'] if batch else None
                 if batch_id is None:
                     error_rows.append({
                         'order_id': '', 'name': part_no,
                         'reason': (f"Batch {batch_number} of {part_no} is not in inventory "
-                                   f"— receive it before selling it"),
+                                   f"({why}) — receive it before selling it"),
                     })
 
             # Price, when the file carries it. Feeds that do not price their lines
