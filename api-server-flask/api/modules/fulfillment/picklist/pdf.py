@@ -153,6 +153,10 @@ def _styles():
         'name': make(11, bold=True, align=TA_CENTER, leading=13),
         'label': make(8.5, bold=True, align=TA_LEFT),
         'value': make(8.5, align=TA_LEFT),
+        # The order number and the dealer name, which are what someone matches a sheet
+        # by — picked off a trolley, read at arm's length, against a stack of sheets that
+        # differ only in those two fields. Everything else on the header is context.
+        'value_strong': make(11, bold=True, align=TA_LEFT, leading=13),
         'cell': make(8, align=TA_LEFT, leading=9.4),
         'cell_centre': make(8, align=TA_CENTER, leading=9.4),
         'cell_head': make(8, bold=True, align=TA_CENTER, leading=9.4),
@@ -305,19 +309,28 @@ def _order_block(meta: dict):
 
     rows = [
         [_P('Code', st['label']), _P(order.get('code', ''), st['value']),
-         _P('Order No', st['label']), _P(order.get('order_no', ''), st['value']),
+         _P('Order No', st['label']), _P(order.get('order_no', ''), st['value_strong']),
          _P('Order Date', st['label']), _P(order.get('order_date', ''), st['value'])],
-        [_P('Name', st['label']), _P(order.get('dealer_name', ''), st['value']),
+        [_P('Name', st['label']), _P(order.get('dealer_name', ''), st['value_strong']),
          '', '', '', ''],
         [_P('City', st['label']), _P(order.get('city', ''), st['value']),
          '', '', '', ''],
     ]
-    table = Table(rows, colWidths=[16 * mm, 56 * mm, 20 * mm, 52 * mm, 22 * mm, 28 * mm])
+    # The order-number column is wider than it was, because a 25-character number like
+    # 30305-02-MPDSTN-1026-3370 needs about 53mm at 11pt and would otherwise wrap onto a
+    # second line — which costs more legibility than the larger type buys. The width comes
+    # off Code and Order Date, both of which are short and were over-provisioned.
+    table = Table(rows, colWidths=[16 * mm, 48 * mm, 20 * mm, 62 * mm, 22 * mm, 26 * mm])
     table.setStyle(TableStyle([
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ('LEFTPADDING', (0, 0), (-1, -1), 0),
         ('TOPPADDING', (0, 0), (-1, -1), 1),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+        # Name and City run across the rest of their row. Their columns are now narrower,
+        # and a dealer name is the other thing a sheet is identified by — wrapping it to
+        # keep a column boundary nothing else uses would be the wrong trade.
+        ('SPAN', (1, 1), (5, 1)),
+        ('SPAN', (1, 2), (5, 2)),
     ]))
     return table
 
