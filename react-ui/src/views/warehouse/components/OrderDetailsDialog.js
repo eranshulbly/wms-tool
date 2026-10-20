@@ -180,7 +180,12 @@ const OrderDetailsDialog = ({ open, order, onClose, onStatusUpdate, classes }) =
               ['Order ID', order.order_request_id],
               ['Original Order ID', order.original_order_id],
               ['Dealer', order.dealer_name],
-              ['Total Products', order.products],
+              // `products` is a COUNT in the order list and an ARRAY of product objects
+              // once the details have loaded. Rendered raw, the array crashed the dialog
+              // to a blank page with React error #31 — objects are not valid as a child —
+              // the moment the details arrived, which is why the list behind it looked fine.
+              ['Total Products',
+                Array.isArray(order.products) ? order.products.length : (order.products ?? 0)],
               ['Current Status', <StatusChip key="s" status={order.status} classes={classes} />],
               ['Time in Current State', getTimeInState(order.current_state_time)]
             ].map(([label, value]) => (
