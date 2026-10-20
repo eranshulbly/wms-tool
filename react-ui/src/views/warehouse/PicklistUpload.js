@@ -27,7 +27,8 @@ import {
   Snackbar,
   Alert,
   Divider,
-  TextField
+  TextField,
+  Autocomplete
 } from '@material-ui/core';
 import { IconUpload, IconDownload, IconPrinter, IconQrcode, IconRefresh } from '@tabler/icons';
 
@@ -40,7 +41,7 @@ import {
   downloadPicklists,
   setPicklistsPrinted
 } from '../../services/picklistService';
-import { readBlobError } from '../../services/orderService';
+import { readBlobError, getOrderDealers } from '../../services/orderService';
 
 // Matches MAX_DOWNLOAD in the pick-list router: the API draws every page in the one
 // gunicorn process it has, so an unbounded selection would hold it for a long time.
@@ -126,6 +127,10 @@ const PicklistUpload = () => {
   // order was actually for.
   const canNameDealer = Boolean(user?.permissions?.picklist_dealer_entry);
   const [dealerName, setDealerName] = useState('');
+  // Dealers already on file, so the same customer is picked rather than retyped. A name
+  // typed here creates a dealer on the server, which is what puts it in this list for
+  // next time — so the list grows into the set of retail customers by being used.
+  const [dealerOptions, setDealerOptions] = useState([]);
 
   const [uploading, setUploading] = useState(false);
   const [uploadLog, setUploadLog] = useState([]);
@@ -181,6 +186,21 @@ const PicklistUpload = () => {
   useEffect(() => {
     setPage(0);
   }, [state, printedFilter, ownerFilter, picklists.length]);
+
+  // Loaded only for the role that can use it, and re-read after each upload so a dealer
+  // just created by typing its name is offered the next time without a page reload.
+  const loadDealers = useCallback(() => {
+    if (!canNameDealer) return;
+    getOrderDealers(selectedCompany)
+      .then((data) => setDealerOptions(data?.success ? data.dealers || [] : []))
+      // A picker that fails to load must not block the upload: the field still accepts a
+      // typed name, which is exactly what it did before there was a list.
+      .catch(() => setDealerOptions([]));
+  }, [canNameDealer, selectedCompany]);
+
+  useEffect(() => {
+    loadDealers();
+  }, [loadDealers]);
 
   // ── Upload ────────────────────────────────────────────────────────────────
   // Sequential, not Promise.all: the API takes one PDF per request, and firing forty
@@ -245,6 +265,10 @@ const PicklistUpload = () => {
       imported === files.length ? 'success' : 'warning'
     );
     load();
+    // A name typed rather than picked has just created a dealer. Re-reading here is what
+    // makes it selectable for the next upload instead of being typed again — and retyped
+    // slightly differently, which is how one customer becomes three dealers.
+    loadDealers();
   };
 
   // ── Selection ─────────────────────────────────────────────────────────────
@@ -392,19 +416,52 @@ const PicklistUpload = () => {
               box to people for whom it would do nothing. */}
           {canNameDealer && (
             <Box mt={2}>
-              <TextField
-                label="Dealer name (optional)"
-                placeholder="Who is this order actually for?"
-                value={dealerName}
-                onChange={(e) => setDealerName(e.target.value)}
-                variant="outlined"
-                size="small"
-                fullWidth
-                helperText={
-                  'Used instead of the name printed on the sheet, which on internal '
-                  + 'orders is the distributor rather than the customer. Applies to '
-                  + 'every file in this upload. Leave blank to keep what the sheet says.'
-                }
+              {/* Pick an existing dealer, or type a new one — freeSolo, because the
+                  first order for a customer has nothing to pick. Typing creates the
+                  dealer server-side, which is what puts it in this list next time. */}
+              <Autocomplete
+                freeSolo
+                options={dealerOptions}
+                getOptionLabel={(o) => (typeof o === 'string' ? o : o.name || '')}
+                filterOptions={(opts, { inputValue }) => {
+                  // Matched on town and code too: two dealers often share a trading name
+                  // and the town is what tells them apart.
+                  const q = inputValue.trim().toLowerCase();
+                  if (!q) return opts.slice(0, 50);
+                  return opts
+                    .filter((o) =>
+                      `${o.name} ${o.town} ${o.dealer_code}`.toLowerCase().includes(q))
+                    .slice(0, 50);
+                }}
+                renderOption={(props, o) => (
+                  <li {...props} key={o.dealer_id}>
+                    {o.name}
+                    {(o.town || o.dealer_code) && (
+                      <Typography variant="caption" color="textSecondary" sx={{ ml: 1 }}>
+                        {[o.town, o.dealer_code].filter(Boolean).join(' · ')}
+                      </Typography>
+                    )}
+                  </li>
+                )}
+                inputValue={dealerName}
+                onInputChange={(_e, v) => setDealerName(v)}
+                onChange={(_e, v) => setDealerName(typeof v === 'string' ? v : v?.name || '')}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    label="Dealer"
+                    placeholder="Who is this order actually for?"
+                    variant="outlined"
+                    size="small"
+                    fullWidth
+                    helperText={
+                      'Pick the customer, or type a new name to add them. Used instead of '
+                      + 'the name printed on the sheet, which on internal orders is this '
+                      + 'distributor rather than the customer — those sheets are refused '
+                      + 'until a dealer is chosen. Applies to every file in this upload.'
+                    }
+                  />
+                )}
               />
             </Box>
           )}

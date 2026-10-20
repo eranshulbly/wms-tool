@@ -30,6 +30,35 @@ class PicklistIngestError(Exception):
 
 # ── Upload ───────────────────────────────────────────────────────────────────
 
+def _normalise_party(name):
+    """A party name reduced to what identifies it, for comparison only.
+
+    Case, punctuation and spacing differ between the header block and the Name field on
+    the same sheet ("OM MARKETING" against "Om Marketing,"), so comparing them raw misses
+    the match the whole check depends on.
+    """
+    return ''.join(ch for ch in str(name or '').lower() if ch.isalnum())
+
+
+def _names_the_distributor(meta) -> bool:
+    """True when the sheet's Name field is the distributor printed on the sheet itself.
+
+    Both values come off the same page: `header.distributor_name` is the centred block
+    above 'Pick List', `order.dealer_name` is the Name field. When they are the same
+    party, the sheet is an internal one that never names a customer.
+
+    Returns False when either is missing — an unreadable header must not start refusing
+    ordinary customer sheets.
+    """
+    distributor = _normalise_party((meta.get('header') or {}).get('distributor_name'))
+    named = _normalise_party((meta.get('order') or {}).get('dealer_name'))
+    if not distributor or not named:
+        return False
+    # One is often the other with a suffix ("OM MARKETING" / "OM MARKETING PVT LTD"),
+    # so containment either way counts as the same party.
+    return distributor == named or named.startswith(distributor) or distributor.startswith(named)
+
+
 def ingest_picklist(file_stream, filename, warehouse_id, company_id,
                     user_id, upload_batch_id=None, dealer_name_override=None) -> dict:
     """Import one pick-list PDF. One file, one transaction.
@@ -55,6 +84,22 @@ def ingest_picklist(file_stream, filename, warehouse_id, company_id,
         meta['order']['dealer_name_on_sheet'] = meta['order'].get('dealer_name') or ''
         meta['order']['dealer_name'] = override
         meta['order']['dealer_name_entered_by'] = user_id
+    elif _names_the_distributor(meta):
+        # The sheet names US, so there is no customer on it to import.
+        #
+        # Accepting it anyway is what put 352 orders under a dealer called OM MARKETING,
+        # with the actual customer recorded nowhere and unrecoverable from anything but
+        # the paper. Refusing costs one upload; accepting costs an order filed against a
+        # dealer that is not a dealer, and nobody notices until someone asks who bought it.
+        #
+        # Decided by comparing the Name field with the distributor block the sheet itself
+        # prints at the top, rather than by matching 'OM MARKETING': the rule is "this
+        # sheet names its own issuer", which stays true for any distributor and any
+        # rename, and needs no configuration to keep in step.
+        raise PicklistIngestError(
+            "this sheet is made out to %s, which is the distributor issuing it rather "
+            "than a customer. Choose the dealer this order is actually for and upload "
+            "again." % (meta['order'].get('dealer_name') or 'the distributor'))
 
     order_no = (meta['order'].get('order_no') or '').strip()
     picklist_code = (meta['order'].get('code') or '').strip()
