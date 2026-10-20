@@ -96,10 +96,7 @@ def ingest_picklist(file_stream, filename, warehouse_id, company_id,
         # prints at the top, rather than by matching 'OM MARKETING': the rule is "this
         # sheet names its own issuer", which stays true for any distributor and any
         # rename, and needs no configuration to keep in step.
-        raise PicklistIngestError(
-            "this sheet is made out to %s, which is the distributor issuing it rather "
-            "than a customer. Choose the dealer this order is actually for and upload "
-            "again." % (meta['order'].get('dealer_name') or 'the distributor'))
+        raise PicklistIngestError("Enter a valid dealer name.")
 
     order_no = (meta['order'].get('order_no') or '').strip()
     picklist_code = (meta['order'].get('code') or '').strip()
