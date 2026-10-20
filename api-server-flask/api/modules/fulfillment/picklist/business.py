@@ -40,16 +40,36 @@ def _normalise_party(name):
     return ''.join(ch for ch in str(name or '').lower() if ch.isalnum())
 
 
+# Order-number segments that mark an internal distribution sheet rather than a customer
+# order. Measured against every pick list on file: of 353 MPDSTN orders, 353 carried the
+# distributor as their dealer; of 3,816 PSAO orders, none did.
+_INTERNAL_ORDER_SEGMENTS = ('-MPDSTN-',)
+
+
 def _names_the_distributor(meta) -> bool:
-    """True when the sheet's Name field is the distributor printed on the sheet itself.
+    """True when this sheet names its own issuer rather than a customer.
 
-    Both values come off the same page: `header.distributor_name` is the centred block
-    above 'Pick List', `order.dealer_name` is the Name field. When they are the same
-    party, the sheet is an internal one that never names a customer.
+    Two independent tests, because either source alone has a blind spot.
 
-    Returns False when either is missing — an unreadable header must not start refusing
-    ordinary customer sheets.
+    The order number is the stronger one. An internal sheet carries a distribution
+    segment (…-MPDSTN-…), it is always present — extraction refuses a sheet without an
+    order number at all — and on 4,169 real pick lists it has never once been wrong in
+    either direction.
+
+    The header comparison catches the rest: `header.distributor_name` is the centred
+    block above 'Pick List' and `order.dealer_name` is the Name field, both off the same
+    page, so a sheet whose Name is its own issuer is internal whatever its number says.
+    That test alone is NOT enough — the header fails to parse on 17% of these sheets, and
+    one such sheet is exactly how 30305-02-MPDSTN-1026-3369 got filed under OM MARKETING
+    after this check was already live.
+
+    Neither test guesses: when the order number is ordinary and the header is unreadable,
+    this returns False and the sheet imports as before.
     """
+    order_no = ((meta.get('order') or {}).get('order_no') or '').upper()
+    if any(seg in order_no for seg in _INTERNAL_ORDER_SEGMENTS):
+        return True
+
     distributor = _normalise_party((meta.get('header') or {}).get('distributor_name'))
     named = _normalise_party((meta.get('order') or {}).get('dealer_name'))
     if not distributor or not named:
