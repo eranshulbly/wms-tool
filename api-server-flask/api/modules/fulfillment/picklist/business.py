@@ -578,15 +578,41 @@ def resolve_scan(payload: str):
         return picklist, order
 
     picklist = picklist_repo.find_by_token(parsed['token'])
+    superseded = False
     if not picklist:
-        raise ScanRejected('unknown_token', 'This QR code is not recognised.')
+        # The token is not on file, and the usual reason is not a forgery: the sheet was
+        # REISSUED. Deleting a pick list and uploading the sheet again mints a new token,
+        # while the sheet already on the trolley still carries the old one. Refusing it
+        # strands a picker holding a real sheet for a live order, and the only way out is
+        # to find and reprint it — so the scan falls back to the order number the sheet
+        # itself names.
+        #
+        # This grants nothing new. resolve_typed already accepts a whole order number as
+        # an exact identifier, so moving an order without a valid token is a capability
+        # the system has always had; a scan that reaches this point has in fact proved
+        # more, because the payload came off a printed sheet.
+        matches = picklist_repo.find_live_by_order_no(parsed['order_no'])
+        if len(matches) > 1:
+            # Never resolved by taking the newest: moving the wrong dealer's order is not
+            # something the person who did it would notice.
+            raise ScanRejected(
+                'ambiguous_code',
+                'Order %s has %d live pick lists. Use the current sheet.'
+                % (parsed['order_no'], len(matches)))
+        if not matches:
+            raise ScanRejected('unknown_token', 'This QR code is not recognised.')
+        picklist = matches[0]
+        superseded = True
 
     if picklist['original_order_id'].upper() != parsed['order_no']:
         raise ScanRejected(
             'mismatch',
             'This QR code does not match the order it names.',
             picklist_id=picklist['picklist_id'])
-    if (picklist['picklist_code'] or '').upper() != parsed['picklist_code']:
+    # The pick-list code is checked only when the token resolved. On a reissued sheet the
+    # code legitimately differs from the one now on file — that difference IS the reissue,
+    # and refusing on it would undo the fallback above.
+    if not superseded and (picklist['picklist_code'] or '').upper() != parsed['picklist_code']:
         raise ScanRejected(
             'mismatch',
             'This QR code does not match the pick list it names.',

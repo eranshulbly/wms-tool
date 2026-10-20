@@ -399,17 +399,6 @@ const PicklistUpload = () => {
     <Grid container spacing={gridSpacing}>
       <Grid item xs={12}>
         <MainCard title="Upload Pick Lists">
-          <Typography variant="body2" color="textSecondary" gutterBottom>
-            Upload pick-list PDFs printed by the DMS. Each one is matched to the order it
-            names, and the order is created as Open if it does not exist yet. An order
-            that already exists keeps its current status. Part lines are imported and a
-            QR code is minted for the sheet.
-          </Typography>
-          <Typography variant="body2" color="textSecondary" gutterBottom>
-            Scanning that QR later is what moves the order along. An order created from a
-            pick list carries only what the sheet prints — order number, date, dealer and
-            city; B2B PO#, order type, VIN and shipping address stay empty.
-          </Typography>
 
           {/* Only drawn for a role that holds picklist_dealer_entry. The server
               decides whether the value is honoured; this just avoids showing a
@@ -454,12 +443,7 @@ const PicklistUpload = () => {
                     variant="outlined"
                     size="small"
                     fullWidth
-                    helperText={
-                      'Pick the customer, or type a new name to add them. Used instead of '
-                      + 'the name printed on the sheet, which on internal orders is this '
-                      + 'distributor rather than the customer — those sheets are refused '
-                      + 'until a dealer is chosen. Applies to every file in this upload.'
-                    }
+                    helperText="Applies to every file in this upload."
                   />
                 )}
               />
@@ -487,7 +471,7 @@ const PicklistUpload = () => {
               </Button>
             </label>
             <Typography variant="caption" color="textSecondary" style={{ marginLeft: 12 }}>
-              PDF only. You can select several at once — they are imported one at a time.
+              PDF only. Several at once is fine.
             </Typography>
           </Box>
 
