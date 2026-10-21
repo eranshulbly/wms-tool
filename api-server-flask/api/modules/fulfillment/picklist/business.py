@@ -158,10 +158,24 @@ def ingest_picklist(file_stream, filename, warehouse_id, company_id,
     #
     # The database's uq_picklist_order_code is still the backstop for the exact
     # same code arriving twice at once; this is the check that covers the rest.
+    # A pick list already on this order is REPLACED when it has never been printed, and
+    # refused once it has.
+    #
+    # The refusal exists because re-uploading rewrites the order's lines underneath a
+    # sheet somebody may be holding. That reasoning does not reach an unprinted one: no
+    # paper left the building, the QR has never been off the screen, and the sheet being
+    # re-uploaded is the same document. Refusing it anyway made every correction a manual
+    # deletion by someone with database access before the operator could try again.
+    #
+    # Replacement is in place, so the order keeps exactly one pick list and one QR —
+    # which is what the refusal was really protecting, not the upload itself.
+    replace_picklist_id = None
     if potential_order is not None:
         clash = picklist_repo.find_any_for_order(potential_order.potential_order_id)
-        if clash:
+        if clash and clash.get('printed_at'):
             raise PicklistIngestError(_duplicate_message(order_no, clash))
+        if clash:
+            replace_picklist_id = clash['picklist_id']
 
     with mysql_manager.get_cursor(commit=False) as cursor:
         try:
@@ -195,13 +209,20 @@ def ingest_picklist(file_stream, filename, warehouse_id, company_id,
                 'created_by': user_id,
             }
 
-            # Always an insert now. The duplicate check above is what decides
-            # whether we get here at all, and there is no in-place update path
-            # left: a pick list is written once and then only ever read.
-            row['qr_token'] = qrcode_payload.new_token()
-            picklist_id = picklist_repo.insert(cursor, row)
-            qr_token = row['qr_token']
-            replaced = False
+            # Insert, unless an unprinted pick list for this order is being replaced.
+            if replace_picklist_id is not None:
+                picklist_repo.update_in_place(cursor, replace_picklist_id, row)
+                picklist_id = replace_picklist_id
+                # The existing token is kept rather than reminted — update_in_place does
+                # not touch it, by design — so anything already carrying it still
+                # resolves. Nothing was printed, so nothing is holding it either way.
+                qr_token = clash['qr_token']
+                replaced = True
+            else:
+                row['qr_token'] = qrcode_payload.new_token()
+                picklist_id = picklist_repo.insert(cursor, row)
+                qr_token = row['qr_token']
+                replaced = False
 
             cursor.connection.commit()
         except Exception:

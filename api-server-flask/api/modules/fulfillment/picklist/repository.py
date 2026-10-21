@@ -128,8 +128,8 @@ def find_any_for_order(potential_order_id: int):
     live QR codes for one order, and both of them scan.
     """
     rows = mysql_manager.execute_query(
-        """SELECT pl.picklist_id, pl.picklist_code, pl.created_at, pl.printed_at,
-                  pl.print_count, u.name AS uploaded_by_name
+        """SELECT pl.picklist_id, pl.picklist_code, pl.qr_token, pl.created_at,
+                  pl.printed_at, pl.print_count, u.name AS uploaded_by_name
              FROM order_picklist pl
              LEFT JOIN users u ON u.id = pl.created_by
             WHERE pl.potential_order_id = %s
