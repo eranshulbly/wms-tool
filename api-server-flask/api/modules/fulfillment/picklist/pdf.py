@@ -164,6 +164,33 @@ def _styles():
     }
 
 
+def _fitted(text, width_mm, style, sizes=(11, 10, 9, 8.5)):
+    """`style` resized so `text` fits on ONE line inside `width_mm`.
+
+    The order number and the dealer name are printed larger than everything else so a
+    picker can match a sheet at arm's length off a trolley. Larger type also wraps sooner,
+    and a header that grows by a line pushes the part table down the page — which is how a
+    row ended up drawn across the page boundary after these two fields were enlarged.
+
+    Shrinking an over-long value by a point or two keeps the header a FIXED height, so how
+    many rows fit on page one no longer depends on how long this particular dealer's name
+    happens to be. It stays bold and still larger than the labels around it; the ladder
+    stops at 8.5, the size of the rest of the header, so it can never end up smaller than
+    the text it is meant to stand out from.
+    """
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    usable = width_mm * mm - 4          # the cell's own padding, give or take
+    for size in sizes:
+        if stringWidth(str(text or ''), style.fontName, size) <= usable:
+            break
+    chosen = style.clone('fit%s' % size)
+    chosen.fontSize = size
+    chosen.leading = size + 2
+    return chosen
+
+
 def _P(text, style):
     from reportlab.platypus import Paragraph
     from xml.sax.saxutils import escape
@@ -307,11 +334,16 @@ def _order_block(meta: dict):
     st = _styles()
     order = meta.get('order') or {}
 
+    # Sized to the column each one sits in: 62mm for the order number, and 178mm for the
+    # name, which spans the rest of its row. Both shrink rather than wrap, so this block
+    # is always three lines tall whatever they contain.
+    order_no = order.get('order_no', '')
+    dealer = order.get('dealer_name', '')
     rows = [
         [_P('Code', st['label']), _P(order.get('code', ''), st['value']),
-         _P('Order No', st['label']), _P(order.get('order_no', ''), st['value_strong']),
+         _P('Order No', st['label']), _P(order_no, _fitted(order_no, 62, st['value_strong'])),
          _P('Order Date', st['label']), _P(order.get('order_date', ''), st['value'])],
-        [_P('Name', st['label']), _P(order.get('dealer_name', ''), st['value_strong']),
+        [_P('Name', st['label']), _P(dealer, _fitted(dealer, 178, st['value_strong'])),
          '', '', '', ''],
         [_P('City', st['label']), _P(order.get('city', ''), st['value']),
          '', '', '', ''],
@@ -421,6 +453,18 @@ def _lines_table(meta: dict):
         ('TOPPADDING', (0, 0), (-1, -1), 3.5),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 3.5),
     ]))
+
+    # A part line is never cut in half by a page break.
+    #
+    # Both of these are reportlab's defaults, and relying on that is what let a row get
+    # drawn across the boundary: splitInRow is newer than splitByRow, so on a build where
+    # it defaults differently — or is changed — a row whose cell text wraps can be split
+    # through the middle, leaving half a part number at the foot of the page and the rest
+    # at the top of the next. Stated outright, the behaviour no longer depends on which
+    # reportlab is installed.
+    table.splitByRow = 1
+    if hasattr(table, 'splitInRow'):
+        table.splitInRow = 0
     return table
 
 
