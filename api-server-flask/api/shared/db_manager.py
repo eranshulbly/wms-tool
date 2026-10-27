@@ -771,6 +771,7 @@ def create_all_tables():
     import api.modules.sales.schema                    # noqa: F401
     import api.modules.platform.user_auth.schema       # noqa: F401
     import api.modules.logistics.supply_sheet.schema   # noqa: F401
+    import api.modules.procurement.po_builder.schema   # noqa: F401
     from api.shared import schema_registry
 
     # RENAMES RUN BEFORE THE DDL, NOT WITH THE OTHER MIGRATIONS.

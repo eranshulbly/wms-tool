@@ -17,7 +17,8 @@ import {
     IconChartBar,
     IconSettings,
     IconArrowRight,
-    IconCashBanknote
+    IconCashBanknote,
+    IconShoppingCart
 } from '@tabler/icons';
 
 import { scopeForRole } from '../../utils/roleScope';
@@ -110,6 +111,17 @@ const Launcher = () => {
             path: '/outstanding-check',
             // Same access as the backend (fulfillment/invoice/router.py::OutstandingCheck):
             // admin only, no manager-bypass concept on this branch.
+            show: isAdmin
+        },
+        {
+            key: 'po-builder',
+            title: 'PO Builder',
+            description: 'Draft supplier POs from searches or customer lists and track every scheme slab live.',
+            icon: IconShoppingCart,
+            color: theme.palette.primary.dark,
+            tint: theme.palette.primary.light,
+            path: '/po-builder/build',
+            // Same access as the backend (procurement/po_builder/router.py): admin only.
             show: isAdmin
         }
     ];

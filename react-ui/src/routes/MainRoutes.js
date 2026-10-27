@@ -43,6 +43,10 @@ const InventoryIngestion = Loadable(lazy(() => import('../views/inventory/Invent
 // outstanding check (top-level, admin only) — reads a Tally export, stores nothing
 const OutstandingCheck = Loadable(lazy(() => import('../views/outstanding/OutstandingCheck')));
 
+// PO Builder (top-level, admin only) — draft supplier POs with live scheme slabs
+const BuildPo = Loadable(lazy(() => import('../views/po-builder/BuildPo')));
+const PoBuilderMasters = Loadable(lazy(() => import('../views/po-builder/PoBuilderMasters')));
+
 //-----------------------|| MAIN ROUTING ||-----------------------//
 
 const MainRoutes = () => {
@@ -72,6 +76,7 @@ const MainRoutes = () => {
                 // Supplier document ingestion (top-level, admin only)
                 '/inventory-ingestion',
                 '/outstanding-check',
+                '/po-builder',
             ]}
         >
             <MainLayout>
@@ -167,6 +172,30 @@ const MainRoutes = () => {
                             <AuthGuard>
                                 <AdminGuard>
                                     <OutstandingCheck />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+
+                    {/* PO Builder — supplier POs with live scheme slabs, admin only.
+                        Each master-data page is its own sidebar item (menu-items/poBuilder.js). */}
+                    <Redirect exact from="/po-builder" to="/po-builder/build" />
+                    <Route
+                        path="/po-builder/build"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard>
+                                    <BuildPo />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+                    <Route
+                        path="/po-builder/:section(sku-master|schemes|sku-mapping|settings)"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard>
+                                    <PoBuilderMasters />
                                 </AdminGuard>
                             </AuthGuard>
                         )}

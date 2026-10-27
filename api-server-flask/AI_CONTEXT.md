@@ -57,6 +57,13 @@ api/
       supply_sheet/  supply_sheet_counter + PDF generation
     inventory/       warehouse (live) + bin/batch topology (fc_*, rack_*, transferin_*,
                      entity_movement_*, sku mapping); its own single-module context
+    procurement/                buying from the supplier
+      po_builder/    dms_sku_master*, dms_scheme* (versioned SKU master + quarterly scheme map
+                     uploads) and pob_* (POs, imports, settings) tables;
+                     draft supplier POs with live scheme-slab evaluation, bulk import with
+                     SKU matching (unrecognised codes listed on the PO), Order Book xlsx export.
+                     pricing.py and matching.py are pure (unit-tested in test_po_builder.py);
+                     pricing.py is mirrored in react-ui views/po-builder/pricing.js
 ```
 Clusters are plain packages (`api/modules/<cluster>/<module>/`). All imports are absolute
 (`api.modules.<cluster>.<module>...`); no cross-module relative imports. Route paths and the
