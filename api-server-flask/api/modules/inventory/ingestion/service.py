@@ -499,7 +499,11 @@ def _ingest_document(doc, company_id, warehouse_id, user='system', movement_effe
             else:
                 state = _apply_note(cur, doc, line, company_id, planogram_id, sku_id,
                                     batch_id)
-                if state == 'pending':
+                if state == 'skipped':
+                    # _note_line already warned "no price difference on the line" —
+                    # nothing to count or add a second warning for.
+                    pass
+                elif state == 'pending':
                     pending += 1
                     doc['warnings'].append(
                         f"{line['raw_product_name']} batch {line['raw_batch']}: no receipt "
@@ -629,7 +633,8 @@ def _upsert_price_from_receipt(cur, company_id, planogram_id, sku_id, batch_id, 
 def _apply_note(cur, doc, line, company_id, planogram_id, sku_id, batch_id):
     """Record a credit note's per-unit price difference against the batch it adjusts.
 
-    Returns 'applied' when the batch has a receipt to reduce, 'pending' when it does not.
+    Returns 'applied' when the batch has a receipt to reduce, 'pending' when it does not,
+    or 'skipped' when the line carries no price difference at all.
 
     A price-difference note can arrive before the invoice it corrects. The rate is stored
     either way — losing it would leave the adjustment unrecoverable from a file that has
@@ -640,7 +645,16 @@ def _apply_note(cur, doc, line, company_id, planogram_id, sku_id, batch_id):
     SET, not accumulated. A re-uploaded note is therefore a no-op, which matters because
     there is no invoice table to check against. The trade-off is that a second, genuinely
     different note against the same batch replaces the first rather than adding to it.
+
+    A line with neither a diff total/qty nor a printed diff/unit has nothing to record —
+    _note_line already warns "no price difference on the line" for exactly this case and
+    hands back rate=None rather than guessing. Writing 0 here would be wrong, not merely
+    uninformative: SET-not-accumulated means it would silently erase a real cn_rate a
+    different note already set on this same batch. So this is a no-op, not a 0.
     """
+    if line.get('rate') is None:
+        return 'skipped'
+
     cur.execute(
         """SELECT landing_price FROM fc_sku_price_details
             WHERE company_id = %s AND entity_id = %s AND batch_id = %s LIMIT 1""",
