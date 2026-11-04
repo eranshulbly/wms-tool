@@ -65,16 +65,75 @@ def _part_number(cursor_free_company_id, prefix, line):
     the same item, splitting its stock.
 
     An existing product for the same company and printed name wins outright, so a product
-    already created by ingestion is reused even if its code was disambiguated.
+    already created by ingestion is reused even if its code was disambiguated. When the
+    exact name doesn't hit, three progressively looser (but still guarded) lookups run
+    before falling back to generating a new code — the same chain inventory ingestion's
+    own _lookup_product already runs for exactly this reason: a name that drifts from the
+    catalogue's spelling must still land on the one product that's already there, or this
+    upload mints a second, stockless product for an item the warehouse actually has.
     """
-    from api.modules.inventory.ingestion.service import _slug
+    from api.modules.inventory.ingestion.service import _slug, _name_tokens, _NAME_FUZZY_CUTOFF
+    import difflib
     name = (line['raw_product_name'] or '').strip()
+    company_id = cursor_free_company_id
 
-    rows = mysql_manager.execute_query(
-        "SELECT product_string FROM product WHERE company_id = %s AND name = %s LIMIT 1",
-        (cursor_free_company_id, name)) if cursor_free_company_id else None
-    if rows and rows[0]['product_string']:
-        return rows[0]['product_string']
+    if company_id and name:
+        rows = mysql_manager.execute_query(
+            "SELECT product_string FROM product WHERE company_id = %s AND name = %s LIMIT 1",
+            (company_id, name))
+        if rows and rows[0]['product_string']:
+            return rows[0]['product_string']
+
+        # Whitespace/punctuation-insensitive match — the master's names carry double
+        # spaces and full stops ('CAMPICILLIN 250  CAP') that a supplier document prints
+        # singly; this is the same normalization _lookup_product applies for invoices.
+        normalized = name.upper().replace(' ', '').replace('.', '')
+        rows = mysql_manager.execute_query(
+            "SELECT product_string FROM product"
+            " WHERE company_id = %s AND product_string IS NOT NULL"
+            "   AND REPLACE(REPLACE(UPPER(name), ' ', ''), '.', '') = %s LIMIT 1",
+            (company_id, normalized))
+        if rows and rows[0]['product_string']:
+            return rows[0]['product_string']
+
+        all_rows = mysql_manager.execute_query(
+            "SELECT product_string, name FROM product"
+            " WHERE company_id = %s AND name IS NOT NULL AND product_string IS NOT NULL",
+            (company_id,)) or []
+
+        # High-confidence fuzzy match on wording drift (typos, minor rewording) — the
+        # same numeric-token-guarded cutoff Inventory Ingestion uses, so this upload
+        # resolves a line to the same product ingestion would, not a second one.
+        text, numbers = _name_tokens(name)
+        if text:
+            candidates = {}
+            for r in all_rows:
+                c_text, c_numbers = _name_tokens(r['name'])
+                if c_text and c_numbers == numbers:
+                    candidates[c_text] = r['product_string']
+            close = difflib.get_close_matches(
+                text, list(candidates), n=1, cutoff=_NAME_FUZZY_CUTOFF)
+            if close:
+                return candidates[close[0]]
+
+        # The printed name sometimes carries the pack appended that the catalogue files
+        # separately ('CALCIGEN XT TAB 10*15T' on the document for a product stored as
+        # 'CALCIGEN XT TAB') — not wording drift, so the fuzzy match above correctly
+        # refuses it: the extra digits fail its numeric-token guard on purpose. A
+        # catalogue name that is a whole-word prefix of the printed name, with the
+        # remainder starting with a digit or '(' (a pack/size, never another word of the
+        # product's own name), is still a safe resolution — but only when it is the ONE
+        # such candidate; an ambiguous prefix is left to fall through to product
+        # creation rather than guessed.
+        upper_name = name.upper()
+        prefix_matches = set()
+        for r in all_rows:
+            cname = r['name'].upper()
+            rest = upper_name[len(cname):].strip() if upper_name.startswith(cname) else None
+            if upper_name.startswith(cname + ' ') and rest and rest[0] in '0123456789(':
+                prefix_matches.add(r['product_string'])
+        if len(prefix_matches) == 1:
+            return next(iter(prefix_matches))
 
     pack = line.get('raw_pack') or ''
     return (f"{prefix}-{_slug(name)}" + (f"-{_slug(pack, 12)}" if pack else ''))[:90]
