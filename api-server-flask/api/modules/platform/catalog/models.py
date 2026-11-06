@@ -47,9 +47,11 @@ class Company(MySQLModel):
 
     @classmethod
     def get_all(cls):
-        """Get all companies"""
+        """Get all companies this instance serves (Ebco-only build: api/shared/instance.py)"""
+        from api.shared.instance import instance_company_ids
         results = mysql_manager.execute_query("SELECT * FROM company")
-        return [cls(**row) for row in results]
+        allowed = instance_company_ids()
+        return [cls(**row) for row in results if row['company_id'] in allowed]
 
 
 class Dealer(MySQLModel):

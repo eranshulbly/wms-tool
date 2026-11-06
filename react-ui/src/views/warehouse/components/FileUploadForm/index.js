@@ -390,7 +390,8 @@ const FileUploadForm = ({
                       </Grid>
                     )}
 
-                    {requiresCompany && (
+                    {/* Ebco-only build: the one company is selected by WarehouseContext; no picker. */}
+                    {requiresCompany && companies.length > 1 && (
                       <Grid item xs={12}>
                         <FormControl fullWidth>
                           <InputLabel id={`${inputId}-company-label`}>Company</InputLabel>

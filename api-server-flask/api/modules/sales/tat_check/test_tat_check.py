@@ -1,0 +1,88 @@
+# -*- encoding: utf-8 -*-
+"""Tests for the TAT rules and the parsers — no database."""
+
+import io
+from datetime import date
+
+import pytest
+
+from api.modules.sales.tat_check import tat as T
+from api.modules.sales.tat_check import parser as P
+
+
+def _d(doc, sku, qty):
+    return {'billing_doc': doc, 'sku_code': sku, 'qty': qty}
+
+
+def _g(doc, sku, qty):
+    return {'billing_doc': doc, 'sku_code': sku, 'qty_uploaded': qty}
+
+
+def test_dispatch_without_approved_grn_is_in_transit():
+    out = T.in_transit([_d('126025169', 'A', 10)], [])
+    assert [(o['billing_doc'], o['qty']) for o in out] == [('126025169', 10)]
+
+
+def test_approved_grn_receives_the_dispatch_line():
+    assert T.in_transit([_d('126023937', 'A', 10)], [_g('126023937', 'A', 10)]) == []
+
+
+def test_grn_for_another_invoice_does_not_receive_it():
+    out = T.in_transit([_d('1', 'A', 10)], [_g('2', 'A', 10)])
+    assert [o['qty'] for o in out] == [10]
+
+
+def test_invoice_split_across_grns_is_netted():
+    # One invoice, two DMS orders, only one GRN approved so far.
+    out = T.in_transit([_d('1', 'A', 30)], [_g('1', 'A', 20)])
+    assert [o['qty'] for o in out] == [10]
+
+
+def _t(qty, eta):
+    return {'qty': qty, 'eta': eta}
+
+
+def test_status_is_the_nearest_bucket_with_stock():
+    eta = date(2026, 11, 5)
+    assert T.summarize(5, [_t(10, eta)], 40)['status'] == 'In stock'
+    assert T.summarize(0, [_t(10, eta)], 40)['status'] == 'In transit'
+    assert T.summarize(0, [], 40)['status'] == 'In PO'
+    assert T.summarize(0, [], 0)['status'] == 'Not available'
+    assert [b['qty'] for b in T.summarize(0, [_t(60, eta)], 40)['buckets']] == [0, 60, 40]
+
+
+def test_expected_arrival_is_dispatch_date_plus_transit_days():
+    out = T.in_transit([{**_d('1', 'A', 10), 'billing_date': date(2026, 10, 31)}], [])
+    assert out[0]['eta'] == date(2026, 11, 5)
+
+
+def test_transit_eta_spans_earliest_to_latest_line():
+    s = T.summarize(0, [_t(5, date(2026, 11, 8)), _t(5, date(2026, 11, 5))], 0)
+    transit = s['buckets'][1]
+    assert (transit['eta'], transit['eta_last'], s['eta']) == (date(2026, 11, 5), date(2026, 11, 8), date(2026, 11, 5))
+
+
+def test_billing_doc_strips_the_dms_order_suffix():
+    assert P.billing_doc_of('126023937_16466') == '126023937'
+    assert P.billing_doc_of('126024034') == '126024034'
+
+
+def test_inventory_keeps_only_units():
+    csv = ('"Sku_Code","Sku_Name","Units","Saleable_Stock"\n'
+           '"BC4-ZY","Bed Clamp","200","8"\n').encode()
+    tables, _ = P.parse(P.FEED_INVENTORY, io.BytesIO(csv), 'inv.csv')
+    assert tables['inventory'] == [{'sku_code': 'BC4-ZY', 'sku_name': 'Bed Clamp', 'stock_qty': 200.0}]
+
+
+def test_grn_file_in_inventory_slot_is_refused():
+    csv = (','.join(P.GRN_COLS) + '\n' + ','.join(['x'] * len(P.GRN_COLS)) + '\n').encode()
+    with pytest.raises(P.ParseError):
+        P.parse(P.FEED_INVENTORY, io.BytesIO(csv), 'grn.csv')
+
+
+def test_grn_unapproved_date_is_none():
+    row = ['126025169_17244', 'MH2710016029_17244', 'A', 'Name', '4', '0', '2026-10-31', '0000-00-00']
+    csv = (','.join(P.GRN_COLS) + '\n' + ','.join(row) + '\n').encode()
+    tables, _ = P.parse(P.FEED_GRN, io.BytesIO(csv), 'grn.csv')
+    g = tables['grn'][0]
+    assert g['billing_doc'] == '126025169' and g['approved_date'] is None

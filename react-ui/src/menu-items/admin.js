@@ -1,4 +1,4 @@
-import { IconSettings, IconCalendarStats, IconUpload } from '@tabler/icons';
+import { IconSettings, IconUpload, IconFileSpreadsheet, IconDiscount2 } from '@tabler/icons';
 
 const adminMenu = {
     id: 'admin',
@@ -16,21 +16,57 @@ const adminMenu = {
             icon: IconSettings,
             breadcrumbs: false,
         },
+        // The PO Builder masters (views/po-builder/PoBuilderMasters.js).
         {
-            id: 'monthly-data-upload',
-            title: 'Order Uploads',
+            id: 'sku-master-upload',
+            title: 'SKU Master Upload',
             type: 'item',
             // Same nginx caveat as above — path avoids the '/admin/*' prefix.
-            url: '/monthly-data-upload',
-            icon: IconCalendarStats,
+            url: '/sku-master-upload',
+            icon: IconFileSpreadsheet,
             breadcrumbs: false,
         },
         {
-            id: 'inventory-ingestion',
-            title: 'Inventory Ingestion',
+            id: 'scheme-upload',
+            title: 'Scheme Upload',
+            type: 'item',
+            url: '/scheme-upload',
+            icon: IconDiscount2,
+            breadcrumbs: false,
+        },
+        // The three files TAT Check reads (views/dms-uploads/DmsFeedUpload.js).
+        {
+            id: 'dms-inventory-upload',
+            title: 'DMS Inventory Upload',
             type: 'item',
             // Same nginx caveat as above — path avoids the '/admin/*' prefix.
-            url: '/inventory-ingestion',
+            url: '/dms-inventory-upload',
+            icon: IconUpload,
+            breadcrumbs: false,
+        },
+        {
+            id: 'dispatch-pending-upload',
+            title: 'Dispatch and Pending Upload',
+            type: 'item',
+            url: '/dispatch-pending-upload',
+            icon: IconUpload,
+            breadcrumbs: false,
+        },
+        {
+            id: 'grn-upload',
+            title: 'GRN Upload',
+            type: 'item',
+            url: '/grn-upload',
+            icon: IconUpload,
+            breadcrumbs: false,
+        },
+        // Beat Outstanding's outlet -> beat map (views/dms-uploads/DmsFeedUpload.js). Its
+        // daily Beat Plan and Outstanding Report are uploaded on the Beat Outstanding page.
+        {
+            id: 'outlet-master-upload',
+            title: 'Outlet Master Upload',
+            type: 'item',
+            url: '/outlet-master-upload',
             icon: IconUpload,
             breadcrumbs: false,
         },

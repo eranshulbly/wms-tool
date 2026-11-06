@@ -203,6 +203,8 @@ const SubmittedOrders = () => {
         <Card>
           <CardContent>
             <Grid container spacing={gridSpacing} alignItems="center">
+              {/* Ebco-only build: one company, so no company filter. */}
+              {companies.length > 1 && (
               <Grid item xs={12} sm={6} md={3}>
                 <FormControl fullWidth size="small">
                   <InputLabel>Company</InputLabel>
@@ -220,6 +222,7 @@ const SubmittedOrders = () => {
                   </Select>
                 </FormControl>
               </Grid>
+              )}
               <Grid item xs={12} sm={6} md={3}>
                 <FormControl fullWidth size="small">
                   <InputLabel>Warehouse</InputLabel>

@@ -37,6 +37,12 @@ const TargetTracker = () => {
     getCompanies().then((d) => d.success && setCompanies(d.companies)).catch(() => setCompanies([]));
   }, []);
 
+  // Ebco-only build: with one company, step 1 answers itself (also after "Start over").
+  useEffect(() => {
+    if (companies.length === 1 && !state.companyId) onCompany(companies[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companies, state.companyId]);
+
   useEffect(() => {
     if (!state.companyId) return;
     getMonths(state.companyId)

@@ -66,6 +66,8 @@ const FilterControls = ({
               </FormControl>
             </Grid>
 
+            {/* Ebco-only build: one company, so no company filter. */}
+            {companies.length > 1 && (
             <Grid item xs={12} md={4} lg={3}>
               <FormControl variant="outlined" className={classes?.formControl} fullWidth>
                 <InputLabel id="company-select-label">Company</InputLabel>
@@ -85,6 +87,7 @@ const FilterControls = ({
                 </Select>
               </FormControl>
             </Grid>
+            )}
 
             <Grid item xs={12} md={4} lg={3}>
               <FormControl variant="outlined" className={classes?.formControl} fullWidth>

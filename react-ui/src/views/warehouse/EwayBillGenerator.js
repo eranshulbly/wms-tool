@@ -509,7 +509,12 @@ const CompanySchemaConfig = ({ showSnack }) => {
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    axios.get(config.API_SERVER + 'companies').then(r => { if (r.data.success) setCompanies(r.data.companies); }).catch(() => {});
+    axios.get(config.API_SERVER + 'companies').then(r => {
+      if (!r.data.success) return;
+      setCompanies(r.data.companies);
+      // Ebco-only build: the one company is selected (and its mapping loaded); no picker.
+      if (r.data.companies.length === 1) handleCompanyChange(r.data.companies[0].id);
+    }).catch(() => {});
   }, []);
 
   const handleCompanyChange = async (id) => {
@@ -551,6 +556,7 @@ const CompanySchemaConfig = ({ showSnack }) => {
           Each company's CSV may use different column names. Configure them here so the system correctly reads invoices during upload.
         </Typography>
       </Grid>
+      {companies.length > 1 && (
       <Grid item xs={12} sm={4}>
         <FormControl fullWidth variant="outlined">
           <InputLabel>Select Company</InputLabel>
@@ -559,6 +565,7 @@ const CompanySchemaConfig = ({ showSnack }) => {
           </Select>
         </FormControl>
       </Grid>
+      )}
       {selected && (
         <Grid item xs={12}>
           <Paper variant="outlined" style={{ padding: 20 }}>
@@ -768,7 +775,12 @@ const GenerateBulkJson = ({ showSnack }) => {
   const [previewInfo, setPreviewInfo] = useState({ name: '', estimatedRows: 0 });
 
   useEffect(() => {
-    axios.get(config.API_SERVER + 'companies').then(r => { if (r.data.success) setCompanies(r.data.companies); }).catch(() => {});
+    axios.get(config.API_SERVER + 'companies').then(r => {
+      if (!r.data.success) return;
+      setCompanies(r.data.companies);
+      // Ebco-only build: the one company is selected; no picker.
+      if (r.data.companies.length === 1) setCompany(r.data.companies[0].id);
+    }).catch(() => {});
   }, []);
 
   // ── Count CSV rows client-side ───────────────────────────────────────────
@@ -865,6 +877,7 @@ const GenerateBulkJson = ({ showSnack }) => {
       {/* ── Controls (hidden once rows are loaded) ── */}
       {rows.length === 0 && (
         <>
+          {companies.length > 1 && (
           <Grid item xs={12} sm={4}>
             <FormControl fullWidth variant="outlined">
               <InputLabel>Company *</InputLabel>
@@ -873,8 +886,9 @@ const GenerateBulkJson = ({ showSnack }) => {
               </Select>
             </FormControl>
           </Grid>
+          )}
 
-          <Grid item xs={12} sm={8} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Grid item xs={12} sm={companies.length > 1 ? 8 : 12} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <input id="eway-csv-input" type="file" accept=".csv"
               onChange={e => setFile(e.target.files[0] || null)} />
             <Button variant="contained" color="primary"

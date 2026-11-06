@@ -365,6 +365,8 @@ const DownloadDmsInput = () => {
         <Card>
           <CardContent>
             <Grid container spacing={gridSpacing} alignItems="center">
+              {/* Ebco-only build: one company, so no company filter. */}
+              {companies.length > 1 && (
               <Grid item xs={12} sm={6} md={3}>
                 <FormControl fullWidth size="small">
                   <InputLabel>Company</InputLabel>
@@ -378,6 +380,7 @@ const DownloadDmsInput = () => {
                   </Select>
                 </FormControl>
               </Grid>
+              )}
               <Grid item xs={12} sm={6} md={3}>
                 <FormControl fullWidth size="small">
                   <InputLabel>Warehouse</InputLabel>
@@ -659,6 +662,8 @@ const DownloadDmsInput = () => {
             DMS download and appears in the list above.
           </Typography>
           <Grid container spacing={2}>
+            {/* Ebco-only build: the one company is pre-filled (openNew); no picker. */}
+            {companies.length > 1 && (
             <Grid item xs={12} sm={6}>
               <FormControl fullWidth size="small" required>
                 <InputLabel>Company</InputLabel>
@@ -679,7 +684,8 @@ const DownloadDmsInput = () => {
                 </Select>
               </FormControl>
             </Grid>
-            <Grid item xs={12} sm={6}>
+            )}
+            <Grid item xs={12} sm={companies.length > 1 ? 6 : 12}>
               <FormControl fullWidth size="small" required disabled={!newOrder.companyId || dealersLoading}>
                 <InputLabel>Dealer</InputLabel>
                 <Select

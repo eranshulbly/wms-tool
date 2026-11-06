@@ -144,6 +144,8 @@ export default function DealerCreate({ onCreated }) {
               helperText="Optional, but must be unique if given." />
           </Grid>
 
+          {/* Ebco-only build: with one company it is pre-selected and the picker hidden. */}
+          {companies.length > 1 && (
           <Grid item xs={12} md={6}>
             <TextField select fullWidth required label="Company" value={form.company_id} onChange={set('company_id')}>
               {companies.map((c) => (
@@ -151,7 +153,8 @@ export default function DealerCreate({ onCreated }) {
               ))}
             </TextField>
           </Grid>
-          <Grid item xs={12} md={6}>
+          )}
+          <Grid item xs={12} md={companies.length > 1 ? 6 : 12}>
             <TextField select fullWidth label="Sales executive" value={form.sales_executive_id}
               onChange={set('sales_executive_id')}
               helperText="Who owns this dealer. Can be assigned later.">

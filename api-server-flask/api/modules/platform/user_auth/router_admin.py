@@ -34,6 +34,7 @@ from api.permissions import (
     resolve_company_scope, company_filter_sql, CompanyAccessDenied,
 )
 from api.db_manager import mysql_manager, partition_filter
+from api.shared.instance import instance_filter_sql
 from api.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -850,17 +851,20 @@ class AdminDealerList(Resource):
             FROM dealer d
             LEFT JOIN company c ON c.company_id = d.company_id
         """
+        # Ebco-only build: other companies' dealers stay out of reach (api/shared/instance.py).
+        inst_sql, inst_params = instance_filter_sql('d.company_id')
         try:
             if search:
                 rows = mysql_manager.execute_query(
-                    base + """
-                    WHERE LOWER(d.name) LIKE %s OR LOWER(d.dealer_code) LIKE %s
+                    base + f"""
+                    WHERE (LOWER(d.name) LIKE %s OR LOWER(d.dealer_code) LIKE %s) AND {inst_sql}
                     ORDER BY d.name
                     """,
-                    (f'%{search.lower()}%', f'%{search.lower()}%')
+                    (f'%{search.lower()}%', f'%{search.lower()}%', *inst_params)
                 )
             else:
-                rows = mysql_manager.execute_query(base + " ORDER BY d.name")
+                rows = mysql_manager.execute_query(
+                    base + f" WHERE {inst_sql} ORDER BY d.name", inst_params)
             dealers = [
                 {
                     'dealer_id':    r['dealer_id'],
@@ -1027,6 +1031,8 @@ class AdminUsers(Resource):
     @active_required
     @_admin_required
     def get(self, current_user):
+        # Ebco-only build: only this instance's grants are shown (api/shared/instance.py).
+        inst_sql, inst_params = instance_filter_sql('uwc.company_id', keep_null=False)
         try:
             rows = mysql_manager.execute_query(
                 """SELECT u.id, u.name, u.email, u.status, u.role, u.date_joined,
@@ -1034,16 +1040,22 @@ class AdminUsers(Resource):
                              FROM user_roles ur JOIN roles r2 ON r2.role_id = ur.role_id
                             WHERE ur.user_id = u.id) AS roles,
                           (SELECT COUNT(*) FROM user_warehouse_company uwc
-                            WHERE uwc.user_id = u.id) AS grants,
+                            WHERE uwc.user_id = u.id) AS all_grants,
+                          (SELECT COUNT(*) FROM user_warehouse_company uwc
+                            WHERE uwc.user_id = u.id AND {inst}) AS grants,
                           (SELECT GROUP_CONCAT(DISTINCT co.name ORDER BY co.name SEPARATOR ', ')
                              FROM user_warehouse_company uwc
                              JOIN company co ON co.company_id = uwc.company_id
-                            WHERE uwc.user_id = u.id) AS companies,
+                            WHERE uwc.user_id = u.id AND {inst}) AS companies,
                           (SELECT GROUP_CONCAT(DISTINCT uwc.company_id)
-                             FROM user_warehouse_company uwc WHERE uwc.user_id = u.id) AS company_ids,
+                             FROM user_warehouse_company uwc WHERE uwc.user_id = u.id AND {inst}) AS company_ids,
                           (SELECT GROUP_CONCAT(DISTINCT uwc.warehouse_id)
-                             FROM user_warehouse_company uwc WHERE uwc.user_id = u.id) AS warehouse_ids
-                   FROM users u ORDER BY u.date_joined DESC""") or []
+                             FROM user_warehouse_company uwc WHERE uwc.user_id = u.id AND {inst}) AS warehouse_ids
+                   FROM users u ORDER BY u.date_joined DESC""".format(inst=inst_sql),
+                inst_params * 4) or []
+            # A user whose every grant is to another company belongs to that company's
+            # deployment, not this one; a user with no grants at all (an admin) stays.
+            rows = [r for r in rows if r['grants'] or not r['all_grants']]
             # `all_companies` says the ROLE already reaches every company, so per-company
             # grants are optional for it. resolve_company_scope() keys off all_warehouses,
             # so that flag — not the company:all permission — is what actually decides.

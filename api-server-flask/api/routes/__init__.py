@@ -39,6 +39,8 @@ def register_all_routes():
     from ..modules.sales.uploads import router as _monthly_uploads  # noqa: F401
     from ..modules.sales.target_tracker import router as _target_tracker_router  # noqa: F401
     from ..modules.procurement.po_builder import router as _po_builder_router  # noqa: F401
+    from ..modules.sales.tat_check import router as _tat_check_router  # noqa: F401
+    from ..modules.sales.beat_outstanding import router as _beat_outstanding_router  # noqa: F401
 
     # Mobile API (/api/v1/*) — ported from wms-v2-backend, see docs/V2_API_PORT.md
     from ..modules.platform.user_auth import router_v1 as _v1_auth_router        # noqa: F401

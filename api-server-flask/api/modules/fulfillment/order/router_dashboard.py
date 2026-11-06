@@ -216,7 +216,10 @@ class CompanyList(Resource):
                        ORDER BY c.name""",
                     (warehouse_id,)
                 )
-                company_list = [{'id': r['company_id'], 'name': r['name']} for r in rows]
+                from api.shared.instance import instance_company_ids
+                allowed = instance_company_ids()
+                company_list = [{'id': r['company_id'], 'name': r['name']} for r in rows
+                                if r['company_id'] in allowed]
             else:
                 companies = Company.get_all()
                 company_list = [{'id': c.company_id, 'name': c.name} for c in companies]
@@ -1168,6 +1171,11 @@ class OrderDealerOptions(Resource):
             # A dealer with no company is offered for any company: unassigned dealers are
             # still real, and create validates the pairing the same lenient way.
             where.append("(d.company_id = %s OR d.company_id IS NULL)")
+        # Ebco-only build: other companies' dealers stay out of reach (api/shared/instance.py).
+        from api.shared.instance import instance_filter_sql
+        inst_sql, inst_params = instance_filter_sql('d.company_id')
+        where.append(inst_sql)
+        params.extend(inst_params)
         rows = mysql_manager.execute_query(
             f"""SELECT d.dealer_id, d.name, d.dealer_code, d.town
                 FROM dealer d WHERE {' AND '.join(where)} ORDER BY d.name""",

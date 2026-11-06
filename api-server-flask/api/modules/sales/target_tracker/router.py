@@ -62,6 +62,9 @@ class TTCompanies(Resource):
                              FROM product p JOIN categories c ON c.category_id = p.category_id
                             WHERE p.company_id = co.company_id AND p.is_active = 1) AS line
                      FROM company co ORDER BY co.name""") or []
+            from api.shared.instance import instance_company_ids
+            allowed = instance_company_ids()
+            rows = [r for r in rows if r['company_id'] in allowed]
             return {'success': True, 'companies': [{
                 'id': r['company_id'], 'name': r['name'], 'dealers': r['dealers'],
                 'line': r['line'] or 'No products loaded yet',

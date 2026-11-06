@@ -184,10 +184,10 @@ const PoEditor = ({ poId, onNewPo }) => {
     [id, run]
   );
 
-  const exportOrderBook = async () => {
+  const exportFile = async (kind) => {
     setBusy(true);
     try {
-      await poBuilderService.exportOrderBook(id);
+      await (kind === 'dms' ? poBuilderService.exportDmsOrder(id) : poBuilderService.exportOrderBook(id));
     } catch (e) {
       setToast({ severity: 'error', msg: await blobErrorMessage(e, 'Export failed') });
     } finally {
@@ -287,8 +287,12 @@ const PoEditor = ({ poId, onNewPo }) => {
               Bulk add
             </Button>
           )}
-          <Button variant="outlined" startIcon={<IconDownload size={16} />} onClick={exportOrderBook} disabled={busy || !view.lines.length}>
+          <Button variant="outlined" startIcon={<IconDownload size={16} />} onClick={() => exportFile('book')} disabled={busy || !view.lines.length}>
             Order Book (.xlsx)
+          </Button>
+          {/* The DMS's order upload template — the PO placed in the DMS as a primary order */}
+          <Button variant="outlined" startIcon={<IconDownload size={16} />} onClick={() => exportFile('dms')} disabled={busy || !view.lines.length}>
+            DMS Order (.csv)
           </Button>
           {isDraft ? (
             <Button

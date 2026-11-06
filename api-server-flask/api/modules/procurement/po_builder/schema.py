@@ -11,6 +11,9 @@ Master data (admin uploads, versioned — an upload never edits an older version
   dms_scheme_slab          slabs per group: min threshold -> discount %
   dms_scheme_sku           SKU -> group, exactly as the scheme file says
   pob_settings             per-company discounts
+  pob_dms_order_settings   the DMS ids the DMS order upload file is raised under (user,
+                           outlet, warehouse) — its own table so existing databases pick it
+                           up through CREATE TABLE IF NOT EXISTS
 
 Purchase orders:
   pob_po                   header; ties the PO to the SKU master it was drafted against
@@ -42,6 +45,19 @@ CREATE TABLE IF NOT EXISTS pob_settings (
     PRIMARY KEY (company_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """, order=90)
+
+
+register_table("pob_dms_order_settings", """
+CREATE TABLE IF NOT EXISTS pob_dms_order_settings (
+    company_id            INT NOT NULL,
+    dms_user_id           VARCHAR(32) NOT NULL DEFAULT '',
+    dms_outlet_id         VARCHAR(32) NOT NULL DEFAULT '',
+    dms_warehouse_id      VARCHAR(32) NOT NULL DEFAULT '',
+    updated_by            VARCHAR(255) NOT NULL DEFAULT 'system',
+    updated_on            DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (company_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+""", order=91)
 
 
 register_table("dms_sku_master", """

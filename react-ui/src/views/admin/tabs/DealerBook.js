@@ -245,6 +245,8 @@ export default function DealerBook() {
               ))}
             </TextField>
           </Grid>
+          {/* Ebco-only build: one company, so no company filter. */}
+          {(data?.companies || []).length > 1 && (
           <Grid item xs={6} md={2}>
             <TextField
               select fullWidth size="small" label="Company"
@@ -257,6 +259,7 @@ export default function DealerBook() {
               ))}
             </TextField>
           </Grid>
+          )}
           <Grid item xs={6} md={2}>
             <TextField
               select fullWidth size="small" label="Status"

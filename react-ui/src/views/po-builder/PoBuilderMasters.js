@@ -36,7 +36,8 @@ import { money, num, pct } from './pricing';
 // PO Builder master data: SKU master versions, quarterly schemes, the SKU → scheme
 // group mapping (read-only), and the settings.
 
-// One page per sidebar item (menu-items/poBuilder.js); the route's :section picks it.
+// One page per sidebar item. SKU Master and Schemes are in the Admin menu (menu-items/admin.js)
+// and pass `section`; the rest are in menu-items/poBuilder.js and take it from the route.
 const PAGES = {
   'sku-master': {
     title: 'SKU Master',
@@ -60,8 +61,9 @@ const PAGES = {
   }
 };
 
-const PoBuilderMasters = () => {
-  const { section } = useParams();
+const PoBuilderMasters = ({ section: fixedSection }) => {
+  const params = useParams();
+  const section = fixedSection || params.section;
   const [toast, setToast] = useState(null);
   const notify = (severity, msg) => setToast({ severity, msg });
   const page = PAGES[section] || PAGES['sku-master'];
@@ -351,6 +353,13 @@ const SkuMasterTab = ({ notify }) => {
 
 const emptyScheme = { name: '' };
 
+// Default scheme name: scheme_ddmmyyyy, the upload date. Editable before saving.
+const defaultSchemeName = () => {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `scheme_${pad(d.getDate())}${pad(d.getMonth() + 1)}${d.getFullYear()}`;
+};
+
 const SchemesTab = ({ notify }) => {
   const [schemes, setSchemes] = useState(null);
   const [file, setFile] = useState(null);
@@ -410,10 +419,12 @@ const SchemesTab = ({ notify }) => {
           onFile={(f) => {
             setFile(f);
             setPreview(null);
+            // Fill the name unless one was typed by hand.
+            if (f && (!fields.name.trim() || /^scheme_\d{8}$/.test(fields.name))) setFields({ ...fields, name: defaultSchemeName() });
           }}
           hint="Excel or CSV"
         />
-        <TextField fullWidth size="small" margin="dense" label="Name" placeholder="e.g. Q3 FY27" value={fields.name} onChange={(e) => setFields({ ...fields, name: e.target.value })} />
+        <TextField fullWidth size="small" margin="dense" label="Name" placeholder="scheme_ddmmyyyy" value={fields.name} onChange={(e) => setFields({ ...fields, name: e.target.value })} />
         <Typography variant="caption" color="textSecondary" display="block">
           Once saved, this scheme replaces the current one for every draft PO. Finalised POs keep the scheme they were finalised with.
         </Typography>
@@ -423,7 +434,7 @@ const SchemesTab = ({ notify }) => {
           </Button>
           <Button
             variant="contained"
-            disabled={!file || busy || !preview || preview.errors.length > 0 || !fields.name.trim()}
+            disabled={!file || busy || !preview || preview.errors.length > 0}
             onClick={() => send(true)}
           >
             Save scheme
@@ -688,6 +699,19 @@ const SettingsTab = ({ notify }) => {
           control={<Switch checked={s.show_case_helper} onChange={(e) => setS({ ...s, show_case_helper: e.target.checked })} />}
           label="Show SPU / case equivalents on POs by default"
         />
+      </Grid>
+      <Grid item xs={12} md={6}>
+        <Typography variant="h5" gutterBottom>
+          DMS order upload
+        </Typography>
+        <Box display="flex" flexWrap="wrap" style={{ gap: 12 }}>
+          <TextField label="DMS user id" size="small" value={s.dms_user_id} onChange={(e) => setS({ ...s, dms_user_id: e.target.value })} />
+          <TextField label="DMS outlet id" size="small" value={s.dms_outlet_id} onChange={(e) => setS({ ...s, dms_outlet_id: e.target.value })} />
+          <TextField label="DMS warehouse id" size="small" value={s.dms_warehouse_id} onChange={(e) => setS({ ...s, dms_warehouse_id: e.target.value })} />
+        </Box>
+        <Typography variant="body2" color="textSecondary" style={{ marginTop: 8 }}>
+          The PO&apos;s DMS Order (.csv) is raised under these — the user_id, *outlet_id and *warehouse_id columns of the DMS order upload file. Each SKU goes by its DMS Sku_Id, quantities in units, dated the PO date, with Auto Scheme Apply on.
+        </Typography>
       </Grid>
       <Grid item xs={12}>
         <Button variant="contained" onClick={save} disabled={busy}>

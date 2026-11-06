@@ -5,7 +5,7 @@ pricing.py / matching.py for the rules (both pure, and tested on their own).
 
 import json
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from api.shared.db_manager import mysql_manager
 from api.modules.procurement.po_builder import pricing
@@ -69,6 +69,10 @@ def ebco_company_id():
 
 
 _SETTING_FIELDS = ('dtr_discount_pct', 'std_discount_pct', 'show_case_helper')
+# The DMS ids the DMS order upload is raised under — kept apart from the pricing settings
+# (pob_dms_order_settings), and never frozen into a PO: they say who places the order in
+# the DMS, not what it costs.
+_DMS_ORDER_FIELDS = ('dms_user_id', 'dms_outlet_id', 'dms_warehouse_id')
 
 
 def get_settings(company_id):
@@ -77,10 +81,12 @@ def get_settings(company_id):
         mysql_manager.execute_query(
             'INSERT IGNORE INTO pob_settings (company_id) VALUES (%s)', (company_id,), fetch=False)
         row = _one('SELECT * FROM pob_settings WHERE company_id = %s', (company_id,))
+    dms = _one('SELECT * FROM pob_dms_order_settings WHERE company_id = %s', (company_id,)) or {}
     return {
         'dtr_discount_pct': float(row['dtr_discount_pct']),
         'std_discount_pct': float(row['std_discount_pct']),
         'show_case_helper': bool(row['show_case_helper']),
+        **{k: dms.get(k) or '' for k in _DMS_ORDER_FIELDS},
         'updated_by': row['updated_by'],
         'updated_on': _iso(row['updated_on']),
     }
@@ -109,6 +115,21 @@ def update_settings(company_id, body, username):
         params += [username, company_id]
         mysql_manager.execute_query(
             f'UPDATE pob_settings SET {", ".join(sets)} WHERE company_id = %s', params, fetch=False)
+    dms = {}
+    for k in _DMS_ORDER_FIELDS:
+        if k in body:
+            v = str(body[k] if body[k] is not None else '').strip()
+            if v and not v.isdigit():
+                raise PoBuilderError('DMS user, outlet and warehouse ids must be numbers.')
+            dms[k] = v
+    if dms:
+        cols = list(dms)
+        mysql_manager.execute_query(
+            f'INSERT INTO pob_dms_order_settings (company_id, {", ".join(cols)}, updated_by) '
+            f'VALUES (%s, {", ".join(["%s"] * len(cols))}, %s) '
+            f'ON DUPLICATE KEY UPDATE {", ".join(f"{c} = VALUES({c})" for c in cols)}, '
+            f'updated_by = VALUES(updated_by)',
+            (company_id, *[dms[c] for c in cols], username), fetch=False)
     return get_settings(company_id)
 
 
@@ -295,7 +316,8 @@ def scheme_upload(company_id, data, filename, form, username, commit):
     if parsed['errors']:
         raise PoBuilderError('Fix the errors in the file first — nothing was saved.')
     if not name:
-        raise PoBuilderError('Give the scheme a name, e.g. "Q3 FY27".')
+        # scheme_ddmmyyyy, the upload date in IST.
+        name = 'scheme_' + (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime('%d%m%Y')
     with mysql_manager.get_cursor() as c:
         c.execute('INSERT INTO dms_scheme (company_id, name, filename, group_count, sku_count, uploaded_by) '
                   'VALUES (%s,%s,%s,%s,%s,%s)',

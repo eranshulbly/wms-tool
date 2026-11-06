@@ -99,11 +99,16 @@ const UserManagement = () => {
 
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
 
+  // Ebco-only build: with one company there is nothing to choose — every grant is to it,
+  // and the Companies pickers are hidden.
+  const singleCompany = companies.length === 1;
+  const companyIdsFor = (chosen) => (singleCompany ? [companies[0].id] : expand(chosen, companies));
+
   const create = () => {
     setSaving(true);
     const body = { ...form };
     body.warehouse_ids = expand(form.warehouse_ids, warehouses);
-    body.company_ids = expand(form.company_ids, companies);
+    body.company_ids = companyIdsFor(form.company_ids);
     api
       .post('admin/users', body)
       .then((r) => {
@@ -309,11 +314,12 @@ const UserManagement = () => {
                 </Alert>
               ) : scopeNeeded ? (
                 <Alert severity="info">
-                  A <strong>{form.role}</strong> needs at least one company, or their scope is
-                  empty and the order app shows them nothing.
+                  A <strong>{form.role}</strong> needs at least one {singleCompany ? 'warehouse' : 'company'}, or
+                  their scope is empty and the order app shows them nothing.
                 </Alert>
               ) : null}
             </Grid>
+            {!singleCompany && (
             <Grid item xs={12} sm={6}>
               <TextField
                 fullWidth
@@ -329,7 +335,8 @@ const UserManagement = () => {
                 {companies.map((c) => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}
               </TextField>
             </Grid>
-            <Grid item xs={12} sm={6}>
+            )}
+            <Grid item xs={12} sm={singleCompany ? 12 : 6}>
               <TextField
                 fullWidth
                 select
@@ -370,10 +377,12 @@ const UserManagement = () => {
           <Grid container spacing={2} sx={{ mt: 0.5 }}>
             <Grid item xs={12}>
               <Alert severity="info">
-                Saving replaces this person&apos;s grants entirely. A grant is a warehouse +
-                company pair, so both lists must have a selection for anything to be stored.
+                {singleCompany
+                  ? 'Saving replaces this person\'s grants entirely. Pick at least one warehouse for anything to be stored.'
+                  : 'Saving replaces this person\'s grants entirely. A grant is a warehouse + company pair, so both lists must have a selection for anything to be stored.'}
               </Alert>
             </Grid>
+            {!singleCompany && (
             <Grid item xs={12} sm={6}>
               <TextField
                 fullWidth
@@ -388,7 +397,8 @@ const UserManagement = () => {
                 {companies.map((c) => <MenuItem key={c.id} value={c.id}>{c.name}</MenuItem>)}
               </TextField>
             </Grid>
-            <Grid item xs={12} sm={6}>
+            )}
+            <Grid item xs={12} sm={singleCompany ? 12 : 6}>
               <TextField
                 fullWidth
                 select
@@ -413,7 +423,7 @@ const UserManagement = () => {
                 scopeUser.id,
                 {
                   warehouse_ids: expand(scopeDraft.warehouse_ids, warehouses),
-                  company_ids: expand(scopeDraft.company_ids, companies)
+                  company_ids: companyIdsFor(scopeDraft.company_ids)
                 },
                 `Scope updated for "${scopeUser.name}".`
               );

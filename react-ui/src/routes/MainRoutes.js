@@ -34,18 +34,12 @@ const InventoryReport = Loadable(lazy(() => import('../views/analytics/Inventory
 // admin routing
 const AdminControls = Loadable(lazy(() => import('../views/admin/AdminControls')));
 
-// monthly data upload (top-level, admin only)
-const MonthlyDataUpload = Loadable(lazy(() => import('../views/monthly/MonthlyDataUpload')));
-
-// supplier document ingestion (top-level, admin only)
-const InventoryIngestion = Loadable(lazy(() => import('../views/inventory/InventoryIngestion')));
-
-// outstanding check (top-level, admin only) — reads a Tally export, stores nothing
-const OutstandingCheck = Loadable(lazy(() => import('../views/outstanding/OutstandingCheck')));
-
 // PO Builder (top-level, admin only) — draft supplier POs with live scheme slabs
 const BuildPo = Loadable(lazy(() => import('../views/po-builder/BuildPo')));
 const PoBuilderMasters = Loadable(lazy(() => import('../views/po-builder/PoBuilderMasters')));
+const TatCheck = Loadable(lazy(() => import('../views/tat-check/TatCheck')));
+const DmsFeedUpload = Loadable(lazy(() => import('../views/dms-uploads/DmsFeedUpload')));
+const BeatOutstanding = Loadable(lazy(() => import('../views/beat-outstanding/BeatOutstanding')));
 
 //-----------------------|| MAIN ROUTING ||-----------------------//
 
@@ -71,12 +65,15 @@ const MainRoutes = () => {
                 '/analytics/inventory-report',
                 // Admin routes
                 '/admin-controls',
-                // Monthly data upload (top-level, admin only)
-                '/monthly-data-upload',
-                // Supplier document ingestion (top-level, admin only)
-                '/inventory-ingestion',
-                '/outstanding-check',
+                '/sku-master-upload',
+                '/scheme-upload',
+                '/dms-inventory-upload',
+                '/dispatch-pending-upload',
+                '/grn-upload',
+                '/outlet-master-upload',
+                '/beat-outstanding',
                 '/po-builder',
+                '/tat-check',
             ]}
         >
             <MainLayout>
@@ -140,42 +137,85 @@ const MainRoutes = () => {
                         )}
                     />
 
-                    {/* Monthly Data Upload — top-level, admin only */}
+                    {/* DMS Inventory Upload — read by TAT Check, admin only */}
                     <Route
-                        path="/monthly-data-upload"
+                        path="/dms-inventory-upload"
                         render={() => (
                             <AuthGuard>
                                 <AdminGuard>
-                                    <MonthlyDataUpload />
+                                    <DmsFeedUpload key="inventory" feed="inventory" />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+                    {/* Dispatch and Pending Upload — read by TAT Check, admin only */}
+                    <Route
+                        path="/dispatch-pending-upload"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard>
+                                    <DmsFeedUpload key="dispatch_pending" feed="dispatch_pending" />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+                    {/* GRN Upload — read by TAT Check, admin only */}
+                    <Route
+                        path="/grn-upload"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard>
+                                    <DmsFeedUpload key="grn" feed="grn" />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+                    {/* Outlet Master Upload — read by Beat Outstanding, admin only */}
+                    <Route
+                        path="/outlet-master-upload"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard>
+                                    <DmsFeedUpload key="outlets" feed="outlets" />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+                    {/* Beat Outstanding — each executive's dealers' outstanding for the day, admin only */}
+                    <Route
+                        path="/beat-outstanding"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard>
+                                    <BeatOutstanding />
                                 </AdminGuard>
                             </AuthGuard>
                         )}
                     />
 
-                    {/* Inventory Ingestion — supplier GRN / credit notes, admin only */}
+                    {/* PO Builder masters that live in the Admin menu (menu-items/admin.js). */}
                     <Route
-                        path="/inventory-ingestion"
+                        path="/sku-master-upload"
                         render={() => (
                             <AuthGuard>
                                 <AdminGuard>
-                                    <InventoryIngestion />
+                                    <PoBuilderMasters key="sku-master" section="sku-master" />
                                 </AdminGuard>
                             </AuthGuard>
                         )}
                     />
-
-                    {/* Outstanding Check — dealer outstanding from an uploaded Tally
-                        export, admin only */}
                     <Route
-                        path="/outstanding-check"
+                        path="/scheme-upload"
                         render={() => (
                             <AuthGuard>
                                 <AdminGuard>
-                                    <OutstandingCheck />
+                                    <PoBuilderMasters key="schemes" section="schemes" />
                                 </AdminGuard>
                             </AuthGuard>
                         )}
                     />
+                    <Redirect exact from="/po-builder/sku-master" to="/sku-master-upload" />
+                    <Redirect exact from="/po-builder/schemes" to="/scheme-upload" />
 
                     {/* PO Builder — supplier POs with live scheme slabs, admin only.
                         Each master-data page is its own sidebar item (menu-items/poBuilder.js). */}
@@ -191,7 +231,7 @@ const MainRoutes = () => {
                         )}
                     />
                     <Route
-                        path="/po-builder/:section(sku-master|schemes|sku-mapping|settings)"
+                        path="/po-builder/:section(sku-mapping|settings)"
                         render={() => (
                             <AuthGuard>
                                 <AdminGuard>
@@ -200,6 +240,10 @@ const MainRoutes = () => {
                             </AuthGuard>
                         )}
                     />
+
+                    {/* TAT Check — stock / in transit / in PO for a SKU. Any logged-in user
+                        can check; the files it reads are uploaded from the Admin menu. */}
+                    <Route path="/tat-check" render={() => <AuthGuard><TatCheck /></AuthGuard>} />
                 </Switch>
             </MainLayout>
         </Route>

@@ -181,6 +181,9 @@ class AccessManagementView(SecureView):
 
         warehouses = mysql_manager.execute_query("SELECT warehouse_id, name FROM warehouse ORDER BY name")
         companies = mysql_manager.execute_query("SELECT company_id, name FROM company ORDER BY name")
+        from api.shared.instance import instance_company_ids
+        allowed = instance_company_ids()
+        companies = [c for c in (companies or []) if c['company_id'] in allowed]
         current_access = mysql_manager.execute_query(
             """SELECT uwc.id, uwc.warehouse_id, uwc.company_id,
                       w.name as warehouse_name, c.name as company_name

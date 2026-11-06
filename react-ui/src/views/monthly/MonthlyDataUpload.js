@@ -661,6 +661,8 @@ const MonthlyDataUpload = () => {
 
       {/* Company — applies to every feed. Sent with the file; the sheet itself never
           carries a company column. */}
+      {/* Ebco-only build: the one company is selected by WarehouseContext; no picker. */}
+      {companies.length > 1 && (
       <Box className={classes.periodBar} mb={2}>
         <IconBuildingStore size={22} />
         <Box>
@@ -682,6 +684,7 @@ const MonthlyDataUpload = () => {
         </FormControl>
         <Box flexGrow={1} />
       </Box>
+      )}
 
       {!selectedCompany && (
         <Box mb={2}>

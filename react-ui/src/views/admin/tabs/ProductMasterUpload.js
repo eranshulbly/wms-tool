@@ -166,7 +166,12 @@ const ProductMasterUpload = () => {
   useEffect(() => {
     api
       .get('companies')
-      .then((res) => setCompanies(res.data?.companies || []))
+      .then((res) => {
+        const cos = res.data?.companies || [];
+        setCompanies(cos);
+        // Ebco-only build: the one company is picked for the admin and the picker hidden.
+        if (cos.length === 1) setCompanyId(cos[0].id);
+      })
       .catch(() => setToast({ severity: 'error', msg: 'Could not load companies' }));
   }, []);
 
@@ -206,6 +211,7 @@ const ProductMasterUpload = () => {
 
       <Paper variant="outlined" className={classes.section} style={{ padding: 16 }}>
         <Grid container spacing={2} alignItems="center">
+          {companies.length > 1 && (
           <Grid item xs={12} sm={5}>
             <TextField
               select
@@ -226,7 +232,8 @@ const ProductMasterUpload = () => {
               ))}
             </TextField>
           </Grid>
-          <Grid item xs={12} sm={7}>
+          )}
+          <Grid item xs={12} sm={companies.length > 1 ? 7 : 12}>
             {companyId ? (
               <Box display="flex" alignItems="center" style={{ gap: 8 }}>
                 <IconFileSpreadsheet size={18} />

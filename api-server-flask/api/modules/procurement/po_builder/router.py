@@ -27,6 +27,7 @@ Purchase orders:
   POST /api/po-builder/pos/<id>/imports/<imp>/discard
   POST /api/po-builder/pos/<id>/finalise         POST .../reopen
   GET  /api/po-builder/pos/<id>/export          the Order Book workbook
+  GET  /api/po-builder/pos/<id>/export-dms      the DMS order upload (.csv)
 """
 
 import io
@@ -304,3 +305,15 @@ class PobExport(Resource):
         data = exports.order_book_xlsx(view)
         return send_file(io.BytesIO(data), as_attachment=True, download_name=f'{stem}_Order_Book.xlsx',
                          mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
+@rest_api.route(f'{BASE}/pos/<int:po_id>/export-dms')
+class PobExportDms(Resource):
+    @_guard
+    def get(self, current_user, po_id):
+        view = svc.po_view(po_id, _scope())
+        po = view['po']
+        stem = po['po_no'] + ('' if po['status'] == 'finalised' else '_DRAFT')
+        data = exports.dms_order_csv(view, svc.get_settings(po['company_id']))
+        return send_file(io.BytesIO(data.encode('utf-8')), as_attachment=True,
+                         download_name=f'{stem}_DMS_Order.csv', mimetype='text/csv')

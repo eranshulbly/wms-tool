@@ -170,6 +170,8 @@ const InventoryReport = () => {
 
       <Paper variant="outlined" className={classes.section} style={{ padding: 12 }}>
         <Grid container spacing={2} alignItems="center">
+          {/* Ebco-only build: the one company is selected by WarehouseContext; no picker. */}
+          {companies.length > 1 && (
           <Grid item xs={12} sm={4}>
             <TextField
               select
@@ -186,7 +188,8 @@ const InventoryReport = () => {
               ))}
             </TextField>
           </Grid>
-          <Grid item xs={12} sm={8}>
+          )}
+          <Grid item xs={12} sm={companies.length > 1 ? 8 : 12}>
             <Box display="flex" alignItems="center">
               <Typography variant="body2" className={classes.muted}>
                 {loading

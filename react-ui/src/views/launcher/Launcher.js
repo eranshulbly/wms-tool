@@ -17,8 +17,9 @@ import {
     IconChartBar,
     IconSettings,
     IconArrowRight,
-    IconCashBanknote,
-    IconShoppingCart
+    IconShoppingCart,
+    IconClock,
+    IconRoute
 } from '@tabler/icons';
 
 import { scopeForRole } from '../../utils/roleScope';
@@ -102,18 +103,6 @@ const Launcher = () => {
             show: isAdmin
         },
         {
-            key: 'outstanding-check',
-            title: 'Outstanding Check',
-            description: 'Upload a Tally outstanding statement to see what each dealer owes, and for how long.',
-            icon: IconCashBanknote,
-            color: theme.palette.info.dark,
-            tint: theme.palette.info.light,
-            path: '/outstanding-check',
-            // Same access as the backend (fulfillment/invoice/router.py::OutstandingCheck):
-            // admin only, no manager-bypass concept on this branch.
-            show: isAdmin
-        },
-        {
             key: 'po-builder',
             title: 'PO Builder',
             description: 'Draft supplier POs from searches or customer lists and track every scheme slab live.',
@@ -122,6 +111,29 @@ const Launcher = () => {
             tint: theme.palette.primary.light,
             path: '/po-builder/build',
             // Same access as the backend (procurement/po_builder/router.py): admin only.
+            show: isAdmin
+        },
+        {
+            key: 'tat-check',
+            title: 'TAT Check',
+            description: 'Paste a SKU to see qty in stock, in transit and on PO, and the TAT for each.',
+            icon: IconClock,
+            color: theme.palette.secondary.dark,
+            tint: theme.palette.secondary.light,
+            path: '/tat-check',
+            // Same access as the backend (sales/tat_check/router.py): any logged-in user can
+            // check; the uploads on the page are admin only.
+            show: true
+        },
+        {
+            key: 'beat-outstanding',
+            title: 'Beat Outstanding',
+            description: "Each executive's dealers' outstanding for the beats they cover today, as Excel.",
+            icon: IconRoute,
+            color: theme.palette.warning.dark,
+            tint: theme.palette.warning.light,
+            path: '/beat-outstanding',
+            // Same access as the backend (sales/beat_outstanding/router.py): admin only.
             show: isAdmin
         }
     ];

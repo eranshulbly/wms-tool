@@ -127,3 +127,36 @@ class ListParsingTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DmsOrderCsvTest(unittest.TestCase):
+    """The PO as the DMS order upload file (exports.dms_order_csv)."""
+
+    DMS = {'dms_user_id': '171', 'dms_outlet_id': '4962', 'dms_warehouse_id': '1'}
+
+    def _view(self, lines):
+        return {'po': {'po_date': '2026-10-16'}, 'lines': lines}
+
+    def _line(self, code, qty, dms_id):
+        return {'sku_code': code, 'category': 'C', 'qty': qty, 'dms_sku_id': dms_id}
+
+    def test_rows_match_the_dms_template(self):
+        import csv, io
+        from api.modules.procurement.po_builder.exports import DMS_ORDER_HEADERS, dms_order_csv
+        out = dms_order_csv(self._view([self._line('A', 10.0, '1157'), self._line('B', 0, '1160')]), self.DMS)
+        rows = list(csv.reader(io.StringIO(out)))
+        self.assertEqual(rows[0], DMS_ORDER_HEADERS)
+        self.assertEqual(len(rows), 2)  # a zero-qty line is not ordered
+        self.assertEqual(rows[1][:12], ['16-10-2026', '171', '4962', '1', '1157', '0', '10', '1',
+                                        '', '', '', '1'])
+        self.assertEqual(set(rows[1][12:]), {''})
+
+    def test_sku_without_dms_id_is_refused(self):
+        from api.modules.procurement.po_builder.exports import ExportError, dms_order_csv
+        with self.assertRaises(ExportError):
+            dms_order_csv(self._view([self._line('A', 5, '')]), self.DMS)
+
+    def test_ids_must_be_set(self):
+        from api.modules.procurement.po_builder.exports import ExportError, dms_order_csv
+        with self.assertRaises(ExportError):
+            dms_order_csv(self._view([self._line('A', 5, '1')]), {**self.DMS, 'dms_outlet_id': ''})

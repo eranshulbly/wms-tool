@@ -1,6 +1,7 @@
-// PO Builder menu group — supplier POs and the master data behind them.
+// PO Builder menu group — supplier POs and the master data behind them. The SKU master and
+// scheme uploads are in the Admin group (menu-items/admin.js).
 
-import { IconShoppingCart, IconFileSpreadsheet, IconDiscount2, IconArrowsRightLeft, IconSettings } from '@tabler/icons';
+import { IconShoppingCart, IconArrowsRightLeft, IconSettings } from '@tabler/icons';
 
 // ==============================|| PO BUILDER MENU ITEMS ||============================== //
 
@@ -15,22 +16,6 @@ const poBuilder = {
             type: 'item',
             url: '/po-builder/build',
             icon: IconShoppingCart,
-            breadcrumbs: false
-        },
-        {
-            id: 'po-builder-sku-master',
-            title: 'SKU Master',
-            type: 'item',
-            url: '/po-builder/sku-master',
-            icon: IconFileSpreadsheet,
-            breadcrumbs: false
-        },
-        {
-            id: 'po-builder-schemes',
-            title: 'Schemes',
-            type: 'item',
-            url: '/po-builder/schemes',
-            icon: IconDiscount2,
             breadcrumbs: false
         },
         {

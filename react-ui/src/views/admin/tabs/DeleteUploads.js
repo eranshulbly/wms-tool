@@ -446,6 +446,8 @@ const DeleteUploads = () => {
                             </FormControl>
                         </Grid>
 
+                        {/* Ebco-only build: one company, so no company filter. */}
+                        {companies.length > 1 && (
                         <Grid item xs={12} sm={6} md={2}>
                             <FormControl variant="outlined" size="small" fullWidth>
                                 <InputLabel>Company</InputLabel>
@@ -463,6 +465,7 @@ const DeleteUploads = () => {
                                 </Select>
                             </FormControl>
                         </Grid>
+                        )}
 
                         <Grid item xs={12} sm={6} md={2}>
                             <TextField

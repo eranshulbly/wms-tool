@@ -29,6 +29,7 @@ from api.core.auth import token_required, active_required
 from api.db_manager import mysql_manager
 from api.core.logging import get_logger
 from api.shared import media
+from api.shared.instance import instance_company_ids, instance_filter_sql
 
 logger = get_logger(__name__)
 
@@ -85,6 +86,10 @@ class DealerLocationList(Resource):
         if status and status != 'all':
             conds.append("s.status = %s")
             params.append(status)
+        # Ebco-only build: other companies' dealers stay out of reach (api/shared/instance.py).
+        inst_sql, inst_params = instance_filter_sql('d.company_id')
+        conds.append(inst_sql)
+        params.extend(inst_params)
         where = ("WHERE " + " AND ".join(conds)) if conds else ""
         rows = mysql_manager.execute_query(
             f"""SELECT s.*, d.name AS dealer_name, d.dealer_code, d.town,
@@ -238,6 +243,10 @@ class AdminPendingDealers(Resource):
         if status != 'all':
             conds.append("d.status = %s")
             params.append(status)
+        # Ebco-only build: other companies' dealers stay out of reach (api/shared/instance.py).
+        inst_sql, inst_params = instance_filter_sql('d.company_id')
+        conds.append(inst_sql)
+        params.extend(inst_params)
         where = ("WHERE " + " AND ".join(conds)) if conds else ""
         rows = mysql_manager.execute_query(
             f"""SELECT d.*, co.name AS company_name, u.name AS exec_name,
@@ -439,6 +448,10 @@ class AdminDealerManage(Resource):
         if status and status != 'all':
             conds.append("d.status = %s")
             params.append(status)
+        # Ebco-only build: other companies' dealers stay out of reach (api/shared/instance.py).
+        inst_sql, inst_params = instance_filter_sql('d.company_id')
+        conds.append(inst_sql)
+        params.extend(inst_params)
         where = ("WHERE " + " AND ".join(conds)) if conds else ""
 
         try:
@@ -505,10 +518,20 @@ class AdminDealerManage(Resource):
 
         cats = mysql_manager.execute_query(
             "SELECT category_id, name FROM categories WHERE is_active = 1 ORDER BY name") or []
+        # Executives whose every grant is to another company are that company's, not this
+        # instance's; one with no grants yet stays, so they can still be assigned.
+        g_sql, g_params = instance_filter_sql('uwc.company_id', keep_null=False)
         execs = mysql_manager.execute_query(
-            "SELECT id, name FROM users WHERE role = 'sales_executive' ORDER BY name") or []
+            f"""SELECT u.id, u.name FROM users u
+                WHERE u.role = 'sales_executive'
+                  AND (NOT EXISTS (SELECT 1 FROM user_warehouse_company uwc WHERE uwc.user_id = u.id)
+                       OR EXISTS (SELECT 1 FROM user_warehouse_company uwc
+                                   WHERE uwc.user_id = u.id AND {g_sql}))
+                ORDER BY u.name""", g_params) or []
         companies = mysql_manager.execute_query(
             "SELECT company_id, name FROM company ORDER BY name") or []
+        allowed = instance_company_ids()
+        companies = [c for c in companies if c['company_id'] in allowed]
 
         out = []
         for r in rows:

@@ -22,7 +22,7 @@ const BuildPo = () => {
   if (error) {
     return (
       <Alert severity="info">
-        {error} Upload it under <Link to="/po-builder/sku-master">SKU Master</Link> (and the scheme under <Link to="/po-builder/schemes">Schemes</Link>), then come back here.
+        {error} Upload it under Admin → <Link to="/sku-master-upload">SKU Master Upload</Link> (and the scheme under <Link to="/scheme-upload">Scheme Upload</Link>), then come back here.
       </Alert>
     );
   }

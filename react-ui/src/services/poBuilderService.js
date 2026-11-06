@@ -72,6 +72,7 @@ const poBuilderService = {
   finalise: (id) => data(api.post(`po-builder/pos/${id}/finalise`)),
   reopen: (id) => data(api.post(`po-builder/pos/${id}/reopen`)),
   exportOrderBook: (id) => download(`po-builder/pos/${id}/export`, {}, 'Order_Book.xlsx'),
+  exportDmsOrder: (id) => download(`po-builder/pos/${id}/export-dms`, {}, 'DMS_Order.csv'),
 
   // bulk import
   createImport: (id, { file, text, sourceTag, sheet }) =>

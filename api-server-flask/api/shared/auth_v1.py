@@ -19,6 +19,7 @@ import jwt
 from flask import request
 
 from api.shared.db_manager import mysql_manager
+from api.shared.instance import narrow_to_instance
 from api.shared.logging import get_logger
 
 logger = get_logger(__name__)
@@ -67,7 +68,8 @@ def _resolve_current_user():
         'warehouse_ids': None if has_all else warehouse_ids,
         'has_all_warehouses': has_all,
         # None => unscoped (sees every company). [] => scoped but granted nothing.
-        'company_ids': None if has_all_co else company_ids,
+        # Ebco-only build: always a list, narrowed to this instance's companies.
+        'company_ids': narrow_to_instance(None if has_all_co else company_ids),
         'has_all_companies': has_all_co,
     }, None
 

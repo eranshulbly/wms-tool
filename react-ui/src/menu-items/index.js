@@ -17,15 +17,9 @@ const menuItems = {
 // Which section a given route belongs to. Keys are section group ids above.
 export const SECTION_FOR_PATH = [
     { match: (p) => p.startsWith('/admin'), section: 'admin' },
-    // Monthly Data Upload lives under the Admin section (shown in the Admin sidebar group).
-    { match: (p) => p.startsWith('/monthly-data-upload'), section: 'admin' },
-    // Inventory Ingestion likewise. Without an entry here sectionForPath returns null and
-    // MenuList finds no group to render, so the whole sidebar comes up empty — the page
-    // still works, but the user loses all navigation.
-    { match: (p) => p.startsWith('/inventory-ingestion'), section: 'admin' },
-    // Outstanding Check is NOT in the Admin menu group (it has its own Launcher tile
-    // instead), so no entry here maps it to 'admin' — sectionForPath returns null for
-    // it and the sidebar shows just the Home link, same as a page with no group at all.
+    { match: (p) => ['/dms-inventory-upload', '/dispatch-pending-upload', '/grn-upload',
+                    '/sku-master-upload', '/scheme-upload', '/outlet-master-upload'].includes(p),
+      section: 'admin' },
     { match: (p) => p.startsWith('/po-builder'), section: 'po-builder' },
     { match: (p) => p.startsWith('/analytics'), section: 'analytics' },
     { match: (p) => p === '/warehouse/eway-bill', section: 'eway' },

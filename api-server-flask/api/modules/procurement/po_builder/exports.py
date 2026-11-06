@@ -4,9 +4,13 @@
   order_book_xlsx   the "Final PO" sheet of [Internal] Order Book — same columns, the two
                     discounts in F1 / G1 and live formulas, so it can still be edited in
                     Excel — plus a Scheme Summary sheet
+  dms_order_csv     the DMS's secondary/primary order upload file — one row per SKU, so
+                    the PO can be placed in the DMS as a primary order
 """
 
+import csv
 import io
+from datetime import datetime
 
 import xlsxwriter
 
@@ -109,3 +113,61 @@ def _summary_sheet(wb, view, bold, money, whole):
         ws.write(r, 1, label, bold)
         ws.write_number(r, 3, v, money)
         r += 1
+
+
+# The DMS order upload template, column for column (upload-secondary-and-primary-order-final.csv).
+# Starred columns are mandatory in the DMS; everything not filled below is left blank, as in
+# the template the DMS hands out.
+DMS_ORDER_HEADERS = [
+    '*fordate(dd-mm-yyyy)', 'user_id', '*outlet_id', '*warehouse_id', '*skunit_id',
+    'Quantity(case)', 'Quantity(units)', '*Auto Scheme Apply', 'unitprice', 'po_number',
+    'po_deliveryTime(dd-mm-yyyy)', '*primaryorder', 'additional_warehouse_tax_amount',
+    'additional_warehouse_tax_percentage', 'cashback_redeem_type', 'cashback_redeemed',
+    'cashback_value', 'createdby_userid', 'credit_limit_type_id', 'credit_limit_value_id',
+    'currency_conversion_rate_id', 'delivery_status', 'deliveryshift_id', 'is_bnpl',
+    'maxcashback_value', 'order_classification', 'order_source', 'parent_order_id',
+    'retailer_source', 'retailer_user_id', 'service_tax', 'service_tax_percent', 'shipment_date',
+    'shippingfromoutlet_id', 'vbdistype', 'vdiscount', 'vehicle_id', 'SKU name', 'Delivery Date',
+]
+
+
+def dms_order_csv(view, dms):
+    """The PO as a DMS primary order: dated the PO date, quantities in units (cases 0),
+    the DMS applying its own schemes. `dms` holds the user / outlet / warehouse ids from
+    PO Builder settings.
+
+    Raises ExportError when an id is not set, or when a line's SKU has no DMS Sku_Id in
+    the master — the DMS keys the order on that id, so the line could not be placed.
+    """
+    missing = [label for key, label in (('dms_user_id', 'DMS user id'),
+                                        ('dms_outlet_id', 'DMS outlet id'),
+                                        ('dms_warehouse_id', 'DMS warehouse id')) if not dms.get(key)]
+    if missing:
+        raise ExportError(f"Set the {', '.join(missing)} in PO Builder → Settings first.")
+    lines = [l for l in _sorted_lines(view['lines']) if l['qty'] > 0]
+    if not lines:
+        raise ExportError('The PO has no quantities to order.')
+    no_id = [l['sku_code'] for l in lines if not l.get('dms_sku_id')]
+    if no_id:
+        shown = ', '.join(no_id[:10]) + (f' and {len(no_id) - 10} more' if len(no_id) > 10 else '')
+        raise ExportError(f'{len(no_id)} SKU(s) have no DMS Sku_Id in the SKU master: {shown}.')
+
+    for_date = datetime.strptime(view['po']['po_date'][:10], '%Y-%m-%d').strftime('%d-%m-%Y')
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator='\n')
+    w.writerow(DMS_ORDER_HEADERS)
+    for l in lines:
+        qty = l['qty']
+        row = {
+            '*fordate(dd-mm-yyyy)': for_date,
+            'user_id': dms['dms_user_id'],
+            '*outlet_id': dms['dms_outlet_id'],
+            '*warehouse_id': dms['dms_warehouse_id'],
+            '*skunit_id': l['dms_sku_id'],
+            'Quantity(case)': 0,
+            'Quantity(units)': int(qty) if float(qty).is_integer() else qty,
+            '*Auto Scheme Apply': 1,
+            '*primaryorder': 1,
+        }
+        w.writerow([row.get(h, '') for h in DMS_ORDER_HEADERS])
+    return buf.getvalue()

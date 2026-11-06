@@ -109,14 +109,20 @@ def resolve_company_scope(current_user, requested_company_id=None):
       the parameter dropped the WHERE clause and exposed every tenant.
 
     Returning None (unrestricted) only ever happens for all_warehouses roles.
+
+    Ebco-only build: never None — unrestricted means "every company of this instance".
     """
+    # Ebco-only build: every scope is narrowed to this instance's companies, so even an
+    # unrestricted admin never reads another company's rows (see api/shared/instance.py).
+    from api.shared.instance import narrow_to_instance
+
     role = getattr(current_user, 'role', None) or ''
     is_unrestricted = has_all_warehouse_access(role)
 
     if is_unrestricted:
-        return [int(requested_company_id)] if requested_company_id else None
-
-    allowed = get_user_company_ids(getattr(current_user, 'id', None))
+        allowed = narrow_to_instance(None)
+    else:
+        allowed = narrow_to_instance(get_user_company_ids(getattr(current_user, 'id', None)))
     if requested_company_id:
         if int(requested_company_id) not in allowed:
             raise CompanyAccessDenied(

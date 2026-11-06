@@ -212,12 +212,14 @@ const InventoryIngestion = () => {
       {/* ── Upload ─────────────────────────────────────────────────────── */}
       <Paper variant="outlined" className={classes.section} style={{ padding: 16 }}>
         <Typography variant="subtitle2" style={{ fontWeight: 600 }}>
-          Company &amp; warehouse
+          {companies.length > 1 ? 'Company & warehouse' : 'Warehouse'}
         </Typography>
 
         {/* alignItems flex-start, and both fields carry helper text, so they line up on
             the same baseline instead of stepping. */}
         <Grid container spacing={2} alignItems="flex-start" style={{ marginTop: 8 }}>
+          {/* Ebco-only build: the one company is selected by WarehouseContext; no picker. */}
+          {companies.length > 1 && (
           <Grid item xs={12} sm={6}>
             <TextField
               select
@@ -235,6 +237,7 @@ const InventoryIngestion = () => {
               ))}
             </TextField>
           </Grid>
+          )}
           <Grid item xs={12} sm={6}>
             <TextField
               select

@@ -78,7 +78,8 @@ const FilterTrail = ({
   useEffect(() => setDraftMonths(state.months), [state.months, pending]);
 
   const trail = [];
-  if (state.companyId) {
+  // Ebco-only build: one company is not a choice, so it gets no crumb.
+  if (state.companyId && companies.length > 1) {
     const co = companies.find((c) => c.id === state.companyId);
     trail.push(
       <Crumb key="company" k="company" label="Company" value={co ? co.name : ''} onEdit={() => setPending('company')} />

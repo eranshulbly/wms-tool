@@ -386,6 +386,8 @@ const DealerTownUpload = () => {
 
         {/* Company — asked before the file, because it decides which dealers the
             rows match and which company any new dealer is created under. */}
+        {/* Ebco-only build: with one company it is pre-selected and the picker hidden. */}
+        {companies.length > 1 && (
         <Box mb={2} mt={2} style={{ maxWidth: 360 }}>
           <TextField
             select
@@ -403,6 +405,7 @@ const DealerTownUpload = () => {
             ))}
           </TextField>
         </Box>
+        )}
 
         {/* Drop zone */}
         <Box
