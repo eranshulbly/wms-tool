@@ -8,10 +8,11 @@ import {
     Paper,
 } from '@material-ui/core';
 import { makeStyles } from '@material-ui/styles';
-import { IconTrash, IconMapPin, IconPackage, IconCurrentLocation, IconUsers } from '@tabler/icons';
+import { IconTrash, IconMapPin, IconPackage, IconCurrentLocation, IconUsers, IconX } from '@tabler/icons';
 
 import DeleteUploads from './tabs/DeleteUploads';
 import DeleteOrders from './tabs/DeleteOrders';
+import CancelPicklist from './tabs/CancelPicklist';
 import DealerTownUpload from './tabs/DealerTownUpload';
 import ProductMasterUpload from './tabs/ProductMasterUpload';
 import DealerAdmin from './tabs/DealerAdmin';
@@ -40,6 +41,14 @@ const TABS = [
         label:     'Delete Orders',
         icon:      <IconTrash size={16} />,
         component: DeleteOrders,
+    },
+    {
+        // Admin-only by virtue of living here: this whole page is gated to admins, and the
+        // endpoints behind it refuse anyone else independently.
+        id:        'cancel-picklist',
+        label:     'Cancel Picklist',
+        icon:      <IconX size={16} />,
+        component: CancelPicklist,
     },
     {
         id:        'dealer-town',

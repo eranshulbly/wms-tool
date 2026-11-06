@@ -98,6 +98,32 @@ const adminService = {
         const res = await axios.get(`${API}/admin/orders/deletion-log`);
         return res.data;
     },
+
+    /**
+     * Issued picklists, newest first.
+     *
+     * @param {object} [filters]
+     * @param {string} [filters.status] - 'issued' | 'cancelled' | 'all'
+     * @param {string} [filters.search] - order number / dealer name
+     */
+    getPicklists: async (filters = {}) => {
+        const params = {};
+        if (filters.status && filters.status !== 'all') params.status = filters.status;
+        if (filters.search) params.search = filters.search;
+        const res = await axios.get(`${API}/admin/picklists`, { params });
+        return res.data;
+    },
+
+    /**
+     * Void an issued picklist; its order goes back to Open.
+     *
+     * @param {number} issueId
+     * @param {string} reason - required; kept with the cancelled picklist
+     */
+    cancelPicklist: async (issueId, reason) => {
+        const res = await axios.post(`${API}/admin/picklists/${issueId}/cancel`, { reason });
+        return res.data;
+    },
 };
 
 export default adminService;

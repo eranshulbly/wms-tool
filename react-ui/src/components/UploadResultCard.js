@@ -54,7 +54,10 @@ const UploadResultCard = ({ result, onReset, successLabel, errorFilename, extraS
 
     const { success, processed_count, error_count, error_report } = result;
     const hasErrors     = error_count > 0;
-    const hasErrorReport = error_count > 1 && !!error_report;
+    // Any failed row has a report. This read `> 1`, so a file with exactly one error — a
+    // single-order challan refused as a duplicate is exactly that — hid the download for the
+    // one report that explained it.
+    const hasErrorReport = error_count > 0 && !!error_report;
 
     let Icon, iconClass, title;
     if (!success) {
