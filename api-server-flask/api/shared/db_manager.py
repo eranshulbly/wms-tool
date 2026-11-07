@@ -881,6 +881,7 @@ def create_all_tables():
     _migrate_busy_sales_saledate_index()
     _migrate_dms_quantity_column()
     _migrate_temp_inventory_uploaded_index()
+    _migrate_picklist_order_rev()
     # Packing: the entity_id retype, the weight columns and short_pack_reason. The
     # schema registry only ever issues CREATE TABLE IF NOT EXISTS, so DDL changes to
     # tables that already exist never reach an established database — this carries
@@ -1934,6 +1935,42 @@ def _migrate_temp_inventory_uploaded_index():
         logger.info("%s: added idx_temp_inv_uploaded", table)
     except Exception:
         logger.exception("%s: migration failed for idx_temp_inv_uploaded", table)
+
+
+def _migrate_picklist_order_rev():
+    """Add order_picklist.order_no_rev and idx_picklist_order_rev — idempotent.
+
+    The upload page searches pick lists by the last digits of the order number. That is
+    an "ends with" match, which no index can serve as LIKE '%51698'; on the reversed
+    number it becomes LIKE '89615%', a plain prefix range. VIRTUAL rather than STORED, so
+    adding it does not rebuild the table, and the value can never disagree with the
+    order number it is computed from.
+    """
+    table = 'order_picklist'
+    try:
+        if not mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.TABLES
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s""", (table,)):
+            return  # table not created yet; the registry DDL carries both
+        if not mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.COLUMNS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                     AND COLUMN_NAME = 'order_no_rev'""", (table,)):
+            mysql_manager.execute_query(
+                f"ALTER TABLE {table} ADD COLUMN order_no_rev VARCHAR(100) "
+                f"GENERATED ALWAYS AS (REVERSE(original_order_id)) VIRTUAL "
+                f"AFTER original_order_id", fetch=False)
+            logger.info("%s: added column order_no_rev", table)
+        if not mysql_manager.execute_query(
+                """SELECT 1 FROM information_schema.STATISTICS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                     AND INDEX_NAME = 'idx_picklist_order_rev'""", (table,)):
+            mysql_manager.execute_query(
+                f"ALTER TABLE {table} ADD INDEX idx_picklist_order_rev (order_no_rev)",
+                fetch=False)
+            logger.info("%s: added idx_picklist_order_rev", table)
+    except Exception:
+        logger.exception("%s: migration failed for order_no_rev", table)
 
 
 def _migrate_dms_quantity_column():

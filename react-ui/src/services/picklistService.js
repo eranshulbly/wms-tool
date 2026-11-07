@@ -32,17 +32,20 @@ export const uploadPicklist = (file, warehouseId, companyId, dealerName) => {
  * Pick lists with their order's live status.
  * @param {'open'|'closed'|'all'} state
  * @param {'printed'|'unprinted'|'all'} printed
+ * @param {string} search  end of the order number (last digits); overrides state/printed
  */
 export const getPicklists = (
   state = 'open',
   warehouseId,
   companyId,
   printed = 'all',
-  owner = 'mine'
+  owner = 'mine',
+  search = ''
 ) => {
   // `owner` is a request for a wider view, not a grant of one — the server
   // ignores it for anyone but an admin and scopes from the token regardless.
   const params = { state, printed, owner };
+  if (search) params.q = search;
   if (warehouseId && warehouseId !== 'all') params.warehouse_id = warehouseId;
   if (companyId && companyId !== 'all') params.company_id = companyId;
   return api.get('picklists', { params }).then((res) => res.data);
@@ -64,6 +67,16 @@ export const downloadPicklists = (picklistIds, companyId, markPrinted = false) =
       { picklist_ids: picklistIds, company_id: companyId, mark_printed: markPrinted },
       { responseType: 'blob' }
     )
+    .then((res) => res.data);
+
+/**
+ * Cancel the orders behind the selected pick lists. Any user may do this. A cancelled
+ * order's sheet can then be uploaded again, which overrides it and reopens the order.
+ * Resolves with { cancelled, already_cancelled, refused, not_found }.
+ */
+export const cancelPicklists = (picklistIds, companyId) =>
+  api
+    .post('picklists/cancel', { picklist_ids: picklistIds, company_id: companyId })
     .then((res) => res.data);
 
 /** Set or clear the printed mark by hand — the fix for a jam or a cancelled dialog. */

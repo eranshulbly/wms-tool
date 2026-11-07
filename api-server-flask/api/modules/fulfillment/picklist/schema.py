@@ -27,6 +27,13 @@ CREATE TABLE IF NOT EXISTS order_picklist (
     picklist_id        INT AUTO_INCREMENT PRIMARY KEY,
     potential_order_id INT NOT NULL,
     original_order_id  VARCHAR(100) NOT NULL,
+    -- The order number backwards, for "ends with" search on the upload page. People
+    -- type the last digits off a sheet, and a leading-wildcard LIKE cannot use an index
+    -- while a prefix LIKE on the reversed value can. (No percent signs in this DDL: it
+    -- goes through pymysql's formatter.) VIRTUAL: computed, never stored, so it
+    -- cannot drift from original_order_id. Existing databases get it from
+    -- db_manager._migrate_picklist_order_rev.
+    order_no_rev       VARCHAR(100) GENERATED ALWAYS AS (REVERSE(original_order_id)) VIRTUAL,
     picklist_code      VARCHAR(100) NOT NULL DEFAULT '',
     picklist_date      DATETIME NULL,
     -- 16 Crockford-base32 chars = 80 bits from secrets. Never derived from the order
@@ -72,11 +79,12 @@ CREATE TABLE IF NOT EXISTS order_picklist (
     created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uq_picklist_token (qr_token),
-    -- Re-uploading the same document updates the row in place and KEEPS the token, so
-    -- sheets already printed and hanging on a picking trolley keep resolving.
+    -- One pick list per order: a second upload is refused unless the order was
+    -- cancelled, and then it overrides this same row. This stays as the backstop.
     UNIQUE KEY uq_picklist_order_code (potential_order_id, picklist_code),
     INDEX idx_picklist_order (potential_order_id),
     INDEX idx_picklist_orig (original_order_id),
+    INDEX idx_picklist_order_rev (order_no_rev),
     INDEX idx_picklist_company (company_id),
     INDEX idx_picklist_batch (upload_batch_id),
     -- "What is this picker holding right now" and "what did they pick last week"
@@ -101,7 +109,8 @@ CREATE TABLE IF NOT EXISTS order_picklist_scan (
     device_id   VARCHAR(64) NULL,
     from_status VARCHAR(50) NULL,
     to_status   VARCHAR(50) NULL,
-    -- ok | unknown_token | mismatch | illegal_transition | duplicate | bad_payload | no_access
+    -- ok | unknown_token | mismatch | illegal_transition | duplicate | bad_payload
+    -- | no_access | cancelled_web (the Cancel button on the upload page)
     result      VARCHAR(32) NOT NULL,
     reason      VARCHAR(500) NULL,
     scanned_at  DATETIME DEFAULT CURRENT_TIMESTAMP,

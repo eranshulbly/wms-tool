@@ -345,3 +345,63 @@ def _transition(order, target, user_id, box_count):
             final_order.save()
 
     return target_value
+
+
+# ── Cancel from the upload page ──────────────────────────────────────────────
+
+def cancel_picklists(picklist_ids, user, company_ids) -> tuple:
+    """Cancel the orders behind these pick lists, from the web.
+
+    Open to every logged-in user, on purpose: cancelling is how a wrong upload is
+    cleared for a corrected one, and the person who notices is whoever is at the
+    screen. It is the same move a Cancel scan makes — same _transition, same history
+    row, same audit table — and the same limit: only from Open, Picking or Packed.
+    Once an order is Invoiced the paperwork is out and cancelling would be a credit
+    note, so those are reported back rather than cancelled.
+
+    Company-scoped, but not owner-scoped: any user may cancel any sheet their
+    companies can see, not only the ones they uploaded.
+
+    Returns (response_dict, http_status).
+    """
+    from api.modules.fulfillment.order.constants import OrderStatus
+
+    user_id = user['user_id'] if isinstance(user, dict) else user.id
+    rows = picklist_repo.fetch_for_render(picklist_ids, company_ids, owner_id=None)
+    found = {r['picklist_id'] for r in rows}
+
+    cancelled, already, refused = [], [], []
+    for r in rows:
+        status = r['order_status']
+        if status == OrderStatus.CANCELLED.value:
+            already.append(r['original_order_id'])
+            continue
+        if not OrderStateMachine.can_scan_transition(status, OrderStatus.CANCELLED):
+            refused.append('%s (%s)' % (r['original_order_id'], status))
+            continue
+        order = order_repo.find_by_id(r['potential_order_id']) if r.get(
+            'potential_order_id') else None
+        if order is None:
+            refused.append('%s (order not found)' % r['original_order_id'])
+            continue
+        try:
+            _transition(order, OrderStatus.CANCELLED, user_id, None)
+        except Exception as e:
+            logger.exception("Pick-list cancel failed",
+                             extra={'picklist_id': r['picklist_id']})
+            refused.append('%s (%s)' % (r['original_order_id'], e))
+            continue
+        picklist_repo.record_scan(
+            r['picklist_id'], 'WEB-CANCEL', user_id, 'web', status,
+            OrderStatus.CANCELLED.value, 'cancelled_web',
+            'Cancelled from the pick-list upload page')
+        cancelled.append(r['original_order_id'])
+
+    missing = [i for i in picklist_ids if i not in found]
+    return {
+        'success': bool(cancelled) or (not refused and not missing),
+        'cancelled': cancelled,
+        'already_cancelled': already,
+        'refused': refused,
+        'not_found': missing,
+    }, 200

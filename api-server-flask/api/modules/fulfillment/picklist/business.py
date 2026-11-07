@@ -158,24 +158,20 @@ def ingest_picklist(file_stream, filename, warehouse_id, company_id,
     #
     # The database's uq_picklist_order_code is still the backstop for the exact
     # same code arriving twice at once; this is the check that covers the rest.
-    # A pick list already on this order is REPLACED when it has never been printed, and
-    # refused once it has.
     #
-    # The refusal exists because re-uploading rewrites the order's lines underneath a
-    # sheet somebody may be holding. That reasoning does not reach an unprinted one: no
-    # paper left the building, the QR has never been off the screen, and the sheet being
-    # re-uploaded is the same document. Refusing it anyway made every correction a manual
-    # deletion by someone with database access before the operator could try again.
-    #
-    # Replacement is in place, so the order keeps exactly one pick list and one QR —
-    # which is what the refusal was really protecting, not the upload itself.
-    replace_picklist_id = None
+    # THE ONE WAY THROUGH: the order was CANCELLED. Cancelling — the Cancel button on
+    # the upload page, or a Cancel scan — is the deliberate act that says the sheet on
+    # file is dead, so a new upload for that order overrides it: the order reopens as
+    # Open with the new sheet's lines, and the pick list gets a new QR. Without it,
+    # every correction needed someone with database access.
+    cancelled_sheet = None
     if potential_order is not None:
         clash = picklist_repo.find_any_for_order(potential_order.potential_order_id)
-        if clash and clash.get('printed_at'):
-            raise PicklistIngestError(_duplicate_message(order_no, clash))
         if clash:
-            replace_picklist_id = clash['picklist_id']
+            if potential_order.status != OrderStatus.CANCELLED.value:
+                raise PicklistIngestError(
+                    _duplicate_message(order_no, clash, potential_order.status))
+            cancelled_sheet = clash
 
     with mysql_manager.get_cursor(commit=False) as cursor:
         try:
@@ -184,6 +180,9 @@ def ingest_picklist(file_stream, filename, warehouse_id, company_id,
                 potential_order = _create_order_from_picklist(
                     cursor, meta, order_no, warehouse_id, company_id,
                     user_id, upload_batch_id, current_time)
+            elif cancelled_sheet is not None:
+                _reopen_cancelled_order(cursor, potential_order, meta, user_id,
+                                        current_time)
 
             products_created = _sync_products(cursor, lines, company_id, current_time)
             # Re-read on the SAME cursor: the products just created are uncommitted,
@@ -209,19 +208,16 @@ def ingest_picklist(file_stream, filename, warehouse_id, company_id,
                 'created_by': user_id,
             }
 
-            # Insert, unless an unprinted pick list for this order is being replaced.
-            if replace_picklist_id is not None:
-                picklist_repo.update_in_place(cursor, replace_picklist_id, row)
-                picklist_id = replace_picklist_id
-                # The existing token is kept rather than reminted — update_in_place does
-                # not touch it, by design — so anything already carrying it still
-                # resolves. Nothing was printed, so nothing is holding it either way.
-                qr_token = clash['qr_token']
+            # Always a fresh token: on an override the old one belongs to the sheet
+            # that was cancelled.
+            row['qr_token'] = qrcode_payload.new_token()
+            qr_token = row['qr_token']
+            if cancelled_sheet is not None:
+                picklist_repo.override_cancelled_on(cursor, cancelled_sheet['picklist_id'], row)
+                picklist_id = cancelled_sheet['picklist_id']
                 replaced = True
             else:
-                row['qr_token'] = qrcode_payload.new_token()
                 picklist_id = picklist_repo.insert(cursor, row)
-                qr_token = row['qr_token']
                 replaced = False
 
             cursor.connection.commit()
@@ -259,12 +255,11 @@ def ingest_picklist(file_stream, filename, warehouse_id, company_id,
     }
 
 
-def _duplicate_message(order_no: str, clash: dict) -> str:
+def _duplicate_message(order_no: str, clash: dict, order_status: str) -> str:
     """Why this upload was refused, in terms the uploader can act on.
 
-    Names the sheet that is already on file and whether it has been printed,
-    because those are different situations: an unprinted one is a mistake to
-    undo, a printed one is paper somebody may already be holding.
+    Names the sheet already on file, who uploaded it and where its order is, and says
+    what to do about it — cancel the existing pick list, then upload again.
     """
     when = clash.get('created_at')
     who = clash.get('uploaded_by_name') or 'someone'
@@ -273,19 +268,51 @@ def _duplicate_message(order_no: str, clash: dict) -> str:
     detail = 'uploaded %s by %s' % (
         when.strftime('%d %b %Y at %H:%M') if when else 'earlier', who)
 
+    printed = ''
     if clash.get('printed_at'):
-        state = ('It has already been PRINTED%s, so a paper copy may be on the '
-                 'floor.' % (' %d times' % clash['print_count']
-                             if (clash.get('print_count') or 0) > 1 else ''))
-    else:
-        state = 'It has not been printed yet.'
+        printed = ' It has been printed%s.' % (
+            ' %d times' % clash['print_count']
+            if (clash.get('print_count') or 0) > 1 else '')
 
     return (
-        'Duplicate pick list — order %s already has one (code %s, %s). %s '
-        'Re-uploading would rewrite that order\'s lines underneath a sheet '
-        'that may already be printed, so it is refused. Remove the existing '
-        'pick list first if this one is meant to replace it.'
-        % (order_no, code, detail, state))
+        'Duplicate pick list — order %s already has one (code %s, %s; order is %s).%s '
+        'To replace it, find it in Pick Lists, cancel it, then upload this sheet again.'
+        % (order_no, code, detail, order_status, printed))
+
+
+def _reopen_cancelled_order(cursor, order, meta, user_id, current_time):
+    """Bring a cancelled order back to Open for the sheet that overrides it.
+
+    The order keeps its id, number and history — the Open row added here sits after
+    the Cancelled one, so the trail reads uploaded, cancelled, uploaded again. The
+    dealer follows the new sheet when it names one, since a wrong dealer is a common
+    reason to cancel and re-upload. Lines are replaced by the caller, as on any upload.
+    """
+    dealer_name = ((meta.get('order') or {}).get('dealer_name') or '').strip()
+    dealer_id = None
+    if dealer_name:
+        try:
+            dealer_id = dealer_business.get_or_create_dealer(dealer_name)
+        except Exception as e:
+            logger.warning("Could not resolve dealer for pick list",
+                           extra={'dealer_name': dealer_name, 'error': str(e)})
+
+    cursor.execute(
+        "UPDATE potential_order SET status = %s, box_count = 1, updated_at = %s, "
+        "dealer_id = COALESCE(%s, dealer_id), "
+        "purchaser_name = COALESCE(%s, purchaser_name) "
+        "WHERE potential_order_id = %s",
+        (OrderStatus.OPEN.value, current_time, dealer_id, dealer_name or None,
+         order.potential_order_id),
+    )
+    state = order_repo.get_or_create_state(
+        OrderStatus.OPEN.value, 'Order is open and ready for processing')
+    order_repo.create_state_history_on(
+        cursor, order.potential_order_id, state.state_id, user_id, current_time)
+
+    order.status = OrderStatus.OPEN.value
+    logger.info("Cancelled order reopened by pick-list upload",
+                extra={'potential_order_id': order.potential_order_id})
 
 
 def _match_order(order_no: str):

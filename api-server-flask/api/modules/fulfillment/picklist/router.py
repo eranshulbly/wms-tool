@@ -4,6 +4,7 @@
   GET  /api/picklists            — list pick lists, open by default
   POST /api/picklists/download   — rebuild selected pick lists as one PDF
   POST /api/picklists/printed    — set or clear the printed mark by hand
+  POST /api/picklists/cancel     — cancel the orders behind selected pick lists
   POST /api/picklists/scan       — move an order from a scanned QR payload
 """
 
@@ -60,6 +61,11 @@ download_model = rest_api.model('PicklistDownload', {
 printed_model = rest_api.model('PicklistPrinted', {
     'picklist_ids': fields.List(fields.Integer, required=True),
     'printed': fields.Boolean(required=True, description='True to mark, false to clear'),
+})
+
+cancel_model = rest_api.model('PicklistCancel', {
+    'picklist_ids': fields.List(fields.Integer, required=True),
+    'company_id': fields.Integer(description='Optional; may only narrow your scope'),
 })
 
 
@@ -164,6 +170,19 @@ class PicklistList(Resource):
         warehouse_id = request.args.get('warehouse_id', type=int)
         company_id = request.args.get('company_id', type=int)
 
+        # Search by the end of the order number — the last digits off the sheet.
+        #
+        # A search overrides the Open/Closed and printed toggles: someone looking up
+        # one sheet wants that sheet, and "no results" because it happens to be
+        # printed already reads as "it was never uploaded". The owner and company
+        # scopes still apply — a search is a lookup, not a way round them.
+        search = ''.join((request.args.get('q') or '').split()).upper()
+        if search:
+            if len(search) < 3 or len(search) > 100:
+                return {'success': False,
+                        'msg': 'Enter at least 3 characters of the order number.'}, 400
+            state, printed = 'all', None
+
         try:
             company_ids = _company_scope(current_user, company_id)
         except CompanyAccessDenied as e:
@@ -172,7 +191,7 @@ class PicklistList(Resource):
         try:
             rows = picklist_repo.list_picklists(
                 company_ids, warehouse_id=warehouse_id, state=state,
-                printed=printed, owner_id=owner_id)
+                printed=printed, owner_id=owner_id, order_ends_with=search or None)
         except Exception as e:
             logger.exception("Pick-list listing failed")
             return {'success': False, 'msg': 'Could not load pick lists: %s' % e}, 400
@@ -180,6 +199,7 @@ class PicklistList(Resource):
         return {
             'success': True,
             'state': state,
+            'search': search,
             'picklists': [
                 {
                     'picklist_id': r['picklist_id'],
@@ -360,6 +380,36 @@ class PicklistPrinted(Resource):
             n = picklist_repo.unmark_printed(allowed)
 
         return {'success': True, 'updated': n, 'printed': printed}, 200
+
+
+@rest_api.route('/api/picklists/cancel')
+class PicklistCancel(Resource):
+    """Cancel the orders behind the selected pick lists.
+
+    Any logged-in user may do this — see service.cancel_picklists. Cancelling is what
+    lets the same order number be uploaded again: the upload refuses a duplicate
+    unless its order is Cancelled, and then overrides it.
+    """
+
+    @rest_api.expect(cancel_model)
+    @token_required
+    @active_required
+    def post(self, current_user):
+        body = request.get_json(silent=True) or {}
+        ids = body.get('picklist_ids') or []
+        if not isinstance(ids, list) or not ids:
+            return {'success': False, 'msg': 'Select at least one pick list.'}, 400
+        try:
+            ids = [int(i) for i in ids]
+        except (TypeError, ValueError):
+            return {'success': False, 'msg': 'picklist_ids must be integers.'}, 400
+
+        try:
+            company_ids = _company_scope(current_user, body.get('company_id'))
+        except CompanyAccessDenied as e:
+            return {'success': False, 'msg': str(e)}, 403
+
+        return picklist_service.cancel_picklists(ids, current_user, company_ids)
 
 
 @rest_api.route('/api/picklists/scan')

@@ -28,9 +28,18 @@ import {
   Alert,
   Divider,
   TextField,
+  InputAdornment,
   Autocomplete
 } from '@material-ui/core';
-import { IconUpload, IconDownload, IconPrinter, IconQrcode, IconRefresh } from '@tabler/icons';
+import {
+  IconUpload,
+  IconDownload,
+  IconPrinter,
+  IconQrcode,
+  IconRefresh,
+  IconSearch,
+  IconBan
+} from '@tabler/icons';
 
 import MainCard from '../../ui-component/cards/MainCard';
 import { gridSpacing } from '../../store/constant';
@@ -39,7 +48,8 @@ import {
   uploadPicklist,
   getPicklists,
   downloadPicklists,
-  setPicklistsPrinted
+  setPicklistsPrinted,
+  cancelPicklists
 } from '../../services/picklistService';
 import { readBlobError, getOrderDealers } from '../../services/orderService';
 
@@ -149,12 +159,19 @@ const PicklistUpload = () => {
   // for them this asks the server for a wider view rather than granting one —
   // the scope is decided from the token, not from this value.
   const [ownerFilter, setOwnerFilter] = useState(isAdmin ? 'all' : 'mine');
+  // Search by the last digits of the order number. `searchInput` is what is typed;
+  // `search` is what was last sent, applied after a pause so each keystroke is not a
+  // request. Under 3 characters nothing is sent — the server would refuse it, and two
+  // digits match half the book anyway.
+  const [searchInput, setSearchInput] = useState('');
+  const [search, setSearch] = useState('');
   const [picklists, setPicklists] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState([]);
   const [downloading, setDownloading] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [marking, setMarking] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const [snack, setSnack] = useState(null);
@@ -163,7 +180,7 @@ const PicklistUpload = () => {
 
   const load = useCallback(() => {
     setLoading(true);
-    getPicklists(state, selectedWarehouse, selectedCompany, printedFilter, ownerFilter)
+    getPicklists(state, selectedWarehouse, selectedCompany, printedFilter, ownerFilter, search)
       .then((data) => {
         if (data.success) {
           setPicklists(data.picklists || []);
@@ -177,15 +194,22 @@ const PicklistUpload = () => {
       })
       .catch(() => notify('Could not load pick lists', 'error'))
       .finally(() => setLoading(false));
-  }, [state, selectedWarehouse, selectedCompany, printedFilter, ownerFilter]);
+  }, [state, selectedWarehouse, selectedCompany, printedFilter, ownerFilter, search]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   useEffect(() => {
+    const text = searchInput.replace(/\s+/g, '').toUpperCase();
+    if (text && text.length < 3) return undefined;
+    const timer = setTimeout(() => setSearch(text), 400);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  useEffect(() => {
     setPage(0);
-  }, [state, printedFilter, ownerFilter, picklists.length]);
+  }, [state, printedFilter, ownerFilter, search, picklists.length]);
 
   // Loaded only for the role that can use it, and re-read after each upload so a dealer
   // just created by typing its name is offered the next time without a page reload.
@@ -241,14 +265,17 @@ const PicklistUpload = () => {
                 status: result.success ? 'done' : 'failed',
                 msg: result.success
                   ? `${result.original_order_id} — ${result.line_count} line(s)` +
-                    (result.order_created ? ' · order created' : ' · matched existing order') +
+                    (result.replaced
+                      ? ' · replaced the cancelled pick list, order reopened'
+                      : result.order_created
+                        ? ' · order created'
+                        : ' · matched existing order') +
                     (result.dealer_name_overridden
                       ? ` · dealer set to ${result.dealer_name}`
                       : '') +
                     (result.products_created
                       ? ` · ${result.products_created} new part(s)`
                       : '') +
-                    (result.replaced ? ' · replaced earlier upload' : '') +
                     (result.unresolved_parts?.length
                       ? ` · ${result.unresolved_parts.length} part(s) unresolved`
                       : '')
@@ -395,6 +422,42 @@ const PicklistUpload = () => {
       .finally(() => setMarking(false));
   };
 
+  // Cancel the orders behind the selected sheets. Confirmed first: it takes the order
+  // off the floor, and the only way back is uploading the sheet again.
+  const handleCancel = () => {
+    if (!selected.length) return;
+    const names = picklists
+      .filter((p) => selected.includes(p.picklist_id))
+      .map((p) => p.original_order_id);
+    const shown =
+      names.slice(0, 5).join('\n') + (names.length > 5 ? `\n…and ${names.length - 5} more` : '');
+    const message =
+      `Cancel ${names.length} pick list(s)?\n\n${shown}\n\n` +
+      'The order is cancelled and its QR stops working. Upload the sheet again to replace it.';
+    // eslint-disable-next-line no-alert
+    const ok = window.confirm(message);
+    if (!ok) return;
+    setCancelling(true);
+    cancelPicklists(selected, selectedCompany)
+      .then((data) => {
+        const parts = [];
+        if (data.cancelled?.length) parts.push(`${data.cancelled.length} cancelled`);
+        if (data.already_cancelled?.length) {
+          parts.push(`${data.already_cancelled.length} already cancelled`);
+        }
+        if (data.refused?.length) {
+          parts.push(`not cancelled (invoiced or later): ${data.refused.join(', ')}`);
+        }
+        notify(
+          parts.join(' · ') || data.msg || 'Nothing to cancel',
+          data.refused?.length ? 'warning' : 'success'
+        );
+        load();
+      })
+      .catch((err) => notify(err?.response?.data?.msg || 'Could not cancel', 'error'))
+      .finally(() => setCancelling(false));
+  };
+
   return (
     <Grid container spacing={gridSpacing}>
       <Grid item xs={12}>
@@ -507,9 +570,13 @@ const PicklistUpload = () => {
           title="Pick Lists"
           secondary={
             <Stack direction="row" spacing={1} alignItems="center">
+              {/* A search ignores these two — the server looks across every state and
+                  print status, so the sheet is found wherever it is. Disabled rather
+                  than hidden, so it is clear why the result includes closed sheets. */}
               <ToggleButtonGroup
                 size="small"
                 exclusive
+                disabled={Boolean(search)}
                 value={state}
                 onChange={(e, v) => v && setState(v)}
               >
@@ -525,6 +592,7 @@ const PicklistUpload = () => {
               <ToggleButtonGroup
                 size="small"
                 exclusive
+                disabled={Boolean(search)}
                 value={printedFilter}
                 onChange={(e, v) => v && setPrintedFilter(v)}
               >
@@ -556,6 +624,17 @@ const PicklistUpload = () => {
                 onClick={() => handleSetPrinted(printedFilter !== 'printed')}
               >
                 {printedFilter === 'printed' ? 'Mark not printed' : 'Mark printed'}
+              </Button>
+              {/* Every user, not only admins: cancelling is how a wrong upload is cleared
+                  so the corrected sheet for the same order can be uploaded. */}
+              <Button
+                size="small"
+                color="error"
+                disabled={!selected.length || cancelling || printing || downloading}
+                onClick={handleCancel}
+                startIcon={cancelling ? <CircularProgress size={14} /> : <IconBan size={16} />}
+              >
+                Cancel
               </Button>
               <Button
                 size="small"
@@ -591,6 +670,43 @@ const PicklistUpload = () => {
             </Stack>
           }
         >
+          {/* Its own row rather than in the header: the header already carries three
+              toggle groups and four buttons, and one more control wraps it. */}
+          <Stack direction="row" spacing={2} alignItems="center" sx={{ mb: 2 }}>
+            <TextField
+              size="small"
+              placeholder="Search by last digits of order no. (e.g. 51698)"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              error={Boolean(searchInput.trim()) && searchInput.replace(/\s+/g, '').length < 3}
+              helperText={
+                searchInput.trim() && searchInput.replace(/\s+/g, '').length < 3
+                  ? 'Type at least 3 characters'
+                  : undefined
+              }
+              sx={{ width: 380 }}
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <IconSearch size={16} />
+                  </InputAdornment>
+                )
+              }}
+            />
+            {search && (
+              <>
+                <Typography variant="body2" color="textSecondary">
+                  {loading
+                    ? 'Searching…'
+                    : `${picklists.length} match${picklists.length === 1 ? '' : 'es'} for “…${search}”, across every state`}
+                </Typography>
+                <Button size="small" onClick={() => setSearchInput('')}>
+                  Clear
+                </Button>
+              </>
+            )}
+          </Stack>
+
           <Typography variant="caption" color="textSecondary">
             A pick list is open only while its order is Open. Once a picker scans the QR
             and the order moves to Picking, the sheet closes and cannot be printed or

@@ -182,6 +182,32 @@ def update_in_place(cursor, picklist_id: int, row: dict) -> None:
     )
 
 
+def override_cancelled_on(cursor, picklist_id: int, row: dict) -> None:
+    """Overwrite a CANCELLED pick list with a newly uploaded sheet.
+
+    Unlike update_in_place this mints a NEW token (row['qr_token']) and forgets the
+    print, picker and packer: the sheet was cancelled, so whatever paper and people
+    went with it belong to the version that was called off. created_at and created_by
+    move to this upload, so it shows as new and lands in the uploader's own pile.
+    """
+    cursor.execute(
+        """UPDATE order_picklist
+              SET original_order_id = %s, picklist_code = %s, picklist_date = %s,
+                  qr_token = %s, line_count = %s, meta = %s,
+                  warehouse_id = %s, company_id = %s, upload_batch_id = %s,
+                  created_by = %s, created_at = %s,
+                  printed_at = NULL, printed_by = NULL, print_count = 0,
+                  picker_code = NULL, picker_raw = NULL, picker_assigned_at = NULL,
+                  packer_code = NULL, packer_raw = NULL, packer_assigned_at = NULL
+            WHERE picklist_id = %s""",
+        (row['original_order_id'], row['picklist_code'], row['picklist_date'],
+         row['qr_token'], row['line_count'],
+         json.dumps(row['meta'], ensure_ascii=False), row['warehouse_id'],
+         row['company_id'], row['upload_batch_id'], row['created_by'],
+         datetime.utcnow(), picklist_id),
+    )
+
+
 def mark_printed(picklist_ids, user_id) -> int:
     """Stamp a batch as printed, bumping the reprint counter.
 
@@ -240,19 +266,32 @@ def clear_printed_on(cursor, picklist_id) -> None:
     )
 
 
+def _like_escape(text: str) -> str:
+    return text.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+
+
 def list_picklists(company_ids, warehouse_id=None, state='open', printed=None,
-                   owner_id=None, limit=500, offset=0):
+                   owner_id=None, limit=500, offset=0, order_ends_with=None):
     """Pick lists joined to their order's live status.
 
     `meta` is deliberately absent from the SELECT. Eight lines is ~2KB but a
     200-line pick list is ~40KB, and a 500-row page would drag megabytes of JSON
     across the wire to render a table that shows none of it. The download reads it.
+
+    `order_ends_with` matches order numbers ENDING in the given text — what someone
+    types is the last digits off the sheet. It is matched on the reversed column
+    (order_no_rev LIKE '<reversed>%'), a prefix range on idx_picklist_order_rev,
+    because the obvious LIKE '%51698' reads every row.
     """
     pf_sql, pf_params = partition_filter('potential_order', alias='po')
     cf_sql, cf_params = company_filter_sql(company_ids, alias='po')
 
     where = [pf_sql, cf_sql]
     params = list(pf_params) + list(cf_params)
+
+    if order_ends_with:
+        where.append('pl.order_no_rev LIKE %s')
+        params.append(_like_escape(order_ends_with[::-1]) + '%')
 
     if state == 'open':
         where.append('po.status IN (%s)' % ', '.join(['%s'] * len(OPEN_STATUSES)))
@@ -338,7 +377,8 @@ def fetch_for_render(picklist_ids: list, company_ids, owner_id=None):
 
     rows = mysql_manager.execute_query(
         """SELECT pl.picklist_id, pl.original_order_id, pl.picklist_code,
-                  pl.qr_token, pl.meta, po.status AS order_status
+                  pl.qr_token, pl.meta, po.status AS order_status,
+                  pl.potential_order_id
              FROM order_picklist pl
              JOIN potential_order po
                ON po.potential_order_id = pl.potential_order_id
