@@ -34,32 +34,8 @@ const adminMenu = {
             icon: IconDiscount2,
             breadcrumbs: false,
         },
-        // The three files TAT Check reads (views/dms-uploads/DmsFeedUpload.js).
-        {
-            id: 'dms-inventory-upload',
-            title: 'DMS Inventory Upload',
-            type: 'item',
-            // Same nginx caveat as above — path avoids the '/admin/*' prefix.
-            url: '/dms-inventory-upload',
-            icon: IconUpload,
-            breadcrumbs: false,
-        },
-        {
-            id: 'dispatch-pending-upload',
-            title: 'Dispatch and Pending Upload',
-            type: 'item',
-            url: '/dispatch-pending-upload',
-            icon: IconUpload,
-            breadcrumbs: false,
-        },
-        {
-            id: 'grn-upload',
-            title: 'GRN Upload',
-            type: 'item',
-            url: '/grn-upload',
-            icon: IconUpload,
-            breadcrumbs: false,
-        },
+        // TAT Check's three files (inventory, dispatch & pending, GRN) are uploaded on the
+        // TAT Check page itself.
         // Beat Outstanding's outlet -> beat map (views/dms-uploads/DmsFeedUpload.js). Its
         // daily Beat Plan and Outstanding Report are uploaded on the Beat Outstanding page.
         {

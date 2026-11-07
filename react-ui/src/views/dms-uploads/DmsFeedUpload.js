@@ -27,7 +27,7 @@ export const FEEDS = [
     feed: 'dispatch_pending',
     label: 'Dispatch and Pending',
     title: 'Dispatch and Pending Upload',
-    hint: 'Ebco workbook with DISPATCH and PENDING sheets (.xlsx)',
+    hint: 'Ebco workbook with a DISPATCH sheet, a PENDING sheet, or both (.xlsx or .csv) — only the sheets in the file are replaced',
     accept: '.xlsx',
     ...TAT_API,
   },

@@ -21,11 +21,12 @@ import {
 import { makeStyles } from '@material-ui/styles';
 import { IconSearch } from '@tabler/icons';
 import { lookupSku, suggestSkus, getFeedStatus } from '../../services/tatCheckService';
-import { FEEDS } from '../dms-uploads/DmsFeedUpload';
+import { FEEDS, UploadRow } from '../dms-uploads/DmsFeedUpload';
 
 // TAT Check — paste a SKU and see how much is in stock, in transit (dispatched by the
 // supplier, GRN not yet approved) and on PO (not yet dispatched), and the TAT that
-// follows. Built from the three Admin uploads in views/dms-uploads/DmsFeedUpload.js.
+// follows. Built from three uploads (views/dms-uploads/DmsFeedUpload.js), which admins make
+// on this page, and the SKU master from Admin.
 
 
 const STATUS_COLOR = {
@@ -205,7 +206,7 @@ const SkuResult = ({ r }) => {
 
 // ── when each file was last uploaded ─────────────────────────────────────────
 
-// Labels as on the Admin menu items; the SKU master is the one file not in FEEDS.
+// Labels as on the upload rows; the SKU master is the one file not in FEEDS.
 const SOURCE_LABEL = { sku_master: 'SKU Master', ...Object.fromEntries(FEEDS.map((f) => [f.feed, f.label])) };
 
 const ageText = (iso) => {
@@ -216,7 +217,7 @@ const ageText = (iso) => {
   return days === 1 ? 'yesterday' : `${days} days ago`;
 };
 
-const DataSources = ({ sources, isAdmin }) => {
+const DataSources = ({ sources }) => {
   const classes = useStyles();
   const missing = sources.filter((s) => !s.last_upload);
   return (
@@ -255,10 +256,40 @@ const DataSources = ({ sources, isAdmin }) => {
       })}
       {missing.length > 0 && (
         <Typography variant="caption" style={{ color: '#b91c1c', marginTop: 8 }} component="div">
-          Results are incomplete until {missing.length === 1 ? 'it is' : 'they are'} uploaded
-          {isAdmin ? ' from the Admin menu.' : ' by an admin.'}
+          Results are incomplete until {missing.length === 1 ? 'it is' : 'they are'} uploaded by an admin.
         </Typography>
       )}
+    </Paper>
+  );
+};
+
+// Admins see the files with their upload controls instead of the read-only list. The SKU
+// master is only shown: it is uploaded from Admin, as PO Builder uses it too.
+const FilesPanel = ({ sources, feeds, onUploaded }) => {
+  const classes = useStyles();
+  const master = sources.find((s) => s.key === 'sku_master')?.last_upload;
+  return (
+    <Paper variant="outlined" className={classes.section} style={{ padding: 16 }}>
+      <Typography variant="subtitle2">Files</Typography>
+      <Box py={1.5} style={{ borderBottom: '1px solid #eef0f3' }}>
+        <Typography variant="subtitle2">SKU Master</Typography>
+        {master ? (
+          <Typography variant="caption" component="div">
+            {fmtDateTime(master.uploaded_on)}
+            <span className={classes.muted}>
+              {' '}· {ageText(master.uploaded_on)}
+              {master.uploaded_by ? ` · ${master.uploaded_by}` : ''} · update from Admin → SKU Master Upload
+            </span>
+          </Typography>
+        ) : (
+          <Typography variant="caption" component="div" style={{ color: '#b91c1c' }}>
+            Not uploaded yet — upload it from Admin → SKU Master Upload
+          </Typography>
+        )}
+      </Box>
+      {FEEDS.map((def) => (
+        <UploadRow key={def.feed} def={def} statuses={feeds.filter((f) => f.feed === def.feed)} onUploaded={onUploaded} />
+      ))}
     </Paper>
   );
 };
@@ -277,10 +308,14 @@ const TatCheck = () => {
   const [results, setResults] = useState(null);
   const [error, setError] = useState('');
   const [sources, setSources] = useState(null);
+  const [feeds, setFeeds] = useState([]);
 
   const loadStatus = useCallback(() => {
     getFeedStatus()
-      .then((res) => setSources(res.sources || []))
+      .then((res) => {
+        setSources(res.sources || []);
+        setFeeds(res.feeds || []);
+      })
       .catch(() => setSources(null));
   }, []);
 
@@ -333,7 +368,20 @@ const TatCheck = () => {
         ordered but not yet dispatched.
       </Typography>
 
-      {sources && <DataSources sources={sources} isAdmin={isAdmin} />}
+      {sources &&
+        (isAdmin ? (
+          <FilesPanel
+            sources={sources}
+            feeds={feeds}
+            onUploaded={() => {
+              loadStatus();
+              // Results on screen were worked out from the previous file.
+              if (results) search(q);
+            }}
+          />
+        ) : (
+          <DataSources sources={sources} />
+        ))}
 
       <Paper variant="outlined" className={classes.section} style={{ padding: 16 }}>
         <Box display="flex" gap={1}>

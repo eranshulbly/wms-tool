@@ -17,8 +17,7 @@ const menuItems = {
 // Which section a given route belongs to. Keys are section group ids above.
 export const SECTION_FOR_PATH = [
     { match: (p) => p.startsWith('/admin'), section: 'admin' },
-    { match: (p) => ['/dms-inventory-upload', '/dispatch-pending-upload', '/grn-upload',
-                    '/sku-master-upload', '/scheme-upload', '/outlet-master-upload'].includes(p),
+    { match: (p) => ['/sku-master-upload', '/scheme-upload', '/outlet-master-upload'].includes(p),
       section: 'admin' },
     { match: (p) => p.startsWith('/po-builder'), section: 'po-builder' },
     { match: (p) => p.startsWith('/analytics'), section: 'analytics' },

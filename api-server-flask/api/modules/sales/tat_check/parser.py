@@ -2,7 +2,7 @@
 """Parsers for the three TAT Check uploads. Pure functions — no database.
 
   inventory         DMS Inventory Report (.csv/.xlsx)          -> inventory rows
-  dispatch_pending  supplier workbook, sheets DISPATCH+PENDING -> dispatch rows, pending rows
+  dispatch_pending  supplier workbook, DISPATCH and/or PENDING sheet -> dispatch rows, pending rows
   grn               DMS GRN Approved Status Report SKU-wise    -> grn rows
 
 Every feed replaces what is stored, so a file is checked against the slot it was
@@ -144,22 +144,44 @@ def parse_inventory(data, filename):
     return {'inventory': out}, warnings
 
 
-def parse_dispatch_pending(data, filename):
-    if not (filename or '').lower().endswith(('.xlsx', '.xlsm')):
-        raise ParseError('Upload the Dispatch & Pending workbook as .xlsx (it has a DISPATCH '
-                         'and a PENDING sheet). Nothing was changed.')
-    wb = _workbook(data)
-    sheets = {ws.title.strip().upper(): ws for ws in wb.worksheets}
-    missing = [s for s in ('DISPATCH', 'PENDING') if s not in sheets]
-    if missing:
-        raise ParseError(f'The workbook has no {" or ".join(missing)} sheet '
-                         f'(found: {", ".join(ws.title for ws in wb.worksheets)}). '
+def _dispatch_pending_sheets(data, filename):
+    """{'DISPATCH': (header, rows), 'PENDING': (header, rows)} for the sheets the file has.
+
+    A sheet is known by its name, or failing that by its columns, so a renamed sheet or a
+    single sheet saved as .csv is still read. Either sheet may be absent.
+    """
+    name = (filename or '').lower()
+    if name.endswith(('.xlsx', '.xlsm')):
+        found = [(ws.title, *_sheet_rows(ws)) for ws in _workbook(data).worksheets]
+    elif name.endswith('.csv'):
+        found = [('', *_table(data, filename))]
+    else:
+        raise ParseError('Upload the Dispatch & Pending file as .xlsx or .csv. Nothing was changed.')
+    out = {}
+    for kind, cols in (('DISPATCH', DISPATCH_COLS), ('PENDING', PENDING_COLS)):
+        named = [f for f in found if f[0].strip().upper() == kind]
+        by_cols = [f for f in found if all(c in f[1] for c in cols)]
+        pick = (named or by_cols or [None])[0]
+        if pick:
+            out[kind] = pick[1:]
+    if not out:
+        sheets = ', '.join(f[0] for f in found if f[0]) or 'one table'
+        raise ParseError(f'No DISPATCH or PENDING sheet found (file has: {sheets}). '
                          'Nothing was changed.')
+    return out
+
+
+def parse_dispatch_pending(data, filename):
+    """Dispatch and/or pending rows. Only the sheets present are returned, so a file with
+    just one of them replaces just that one."""
+    sheets = _dispatch_pending_sheets(data, filename)
     label = FEED_LABELS[FEED_DISPATCH_PENDING]
-    d_header, d_rows = _sheet_rows(sheets['DISPATCH'])
-    _require(d_header, DISPATCH_COLS, label, ' (DISPATCH sheet)')
-    p_header, p_rows = _sheet_rows(sheets['PENDING'])
-    _require(p_header, PENDING_COLS, label, ' (PENDING sheet)')
+    d_header, d_rows = sheets.get('DISPATCH', (None, []))
+    if d_header is not None:
+        _require(d_header, DISPATCH_COLS, label, ' (DISPATCH sheet)')
+    p_header, p_rows = sheets.get('PENDING', (None, []))
+    if p_header is not None:
+        _require(p_header, PENDING_COLS, label, ' (PENDING sheet)')
 
     warnings, dispatch, pending = [], [], []
     for i, r in enumerate(d_rows, start=2):
@@ -196,9 +218,12 @@ def parse_dispatch_pending(data, filename):
             'delivered_qty': _num(r.get('Delivered Quantity')),
             'open_qty': open_qty,
         })
-    if not dispatch and not pending:
-        raise ParseError('Both the DISPATCH and PENDING sheets are empty. Nothing was changed.')
-    return {'dispatch': dispatch, 'pending': pending}, warnings
+    tables = {}
+    if d_header is not None:
+        tables['dispatch'] = dispatch
+    if p_header is not None:
+        tables['pending'] = pending
+    return tables, warnings
 
 
 def parse_grn(data, filename):

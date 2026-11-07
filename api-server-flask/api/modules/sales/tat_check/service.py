@@ -51,7 +51,10 @@ _FEED_TABLES = {
 
 def ingest(feed, stream, filename, company_id, user):
     """Parse and load one upload, replacing that feed's rows in one transaction — a
-    failure part-way leaves the previous upload in place, never half of this one."""
+    failure part-way leaves the previous upload in place, never half of this one.
+
+    Only the tables the file supplied are replaced: a Dispatch & Pending file with just a
+    PENDING sheet leaves the stored dispatches as they were."""
     tables, warnings = P.parse(feed, stream, filename)
     counts = {}
     with mysql_manager.get_cursor() as cur:
@@ -62,8 +65,10 @@ def ingest(feed, stream, filename, company_id, user):
              sum(len(tables.get(k) or []) for k in _FEED_TABLES[feed]), (user or 'system')[:100]))
         upload_id = cur.lastrowid
         for key in _FEED_TABLES[feed]:
+            if key not in tables:
+                continue
             table, cols = _TABLES[key]
-            rows = tables.get(key) or []
+            rows = tables[key]
             all_cols = ['company_id', 'upload_id'] + cols
             cur.execute(f'DELETE FROM {table} WHERE company_id = %s', (company_id,))
             if rows:

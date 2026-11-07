@@ -67,9 +67,6 @@ const MainRoutes = () => {
                 '/admin-controls',
                 '/sku-master-upload',
                 '/scheme-upload',
-                '/dms-inventory-upload',
-                '/dispatch-pending-upload',
-                '/grn-upload',
                 '/outlet-master-upload',
                 '/beat-outstanding',
                 '/po-builder',
@@ -137,39 +134,6 @@ const MainRoutes = () => {
                         )}
                     />
 
-                    {/* DMS Inventory Upload — read by TAT Check, admin only */}
-                    <Route
-                        path="/dms-inventory-upload"
-                        render={() => (
-                            <AuthGuard>
-                                <AdminGuard>
-                                    <DmsFeedUpload key="inventory" feed="inventory" />
-                                </AdminGuard>
-                            </AuthGuard>
-                        )}
-                    />
-                    {/* Dispatch and Pending Upload — read by TAT Check, admin only */}
-                    <Route
-                        path="/dispatch-pending-upload"
-                        render={() => (
-                            <AuthGuard>
-                                <AdminGuard>
-                                    <DmsFeedUpload key="dispatch_pending" feed="dispatch_pending" />
-                                </AdminGuard>
-                            </AuthGuard>
-                        )}
-                    />
-                    {/* GRN Upload — read by TAT Check, admin only */}
-                    <Route
-                        path="/grn-upload"
-                        render={() => (
-                            <AuthGuard>
-                                <AdminGuard>
-                                    <DmsFeedUpload key="grn" feed="grn" />
-                                </AdminGuard>
-                            </AuthGuard>
-                        )}
-                    />
                     {/* Outlet Master Upload — read by Beat Outstanding, admin only */}
                     <Route
                         path="/outlet-master-upload"

@@ -86,3 +86,49 @@ def test_grn_unapproved_date_is_none():
     tables, _ = P.parse(P.FEED_GRN, io.BytesIO(csv), 'grn.csv')
     g = tables['grn'][0]
     assert g['billing_doc'] == '126025169' and g['approved_date'] is None
+
+
+_DISPATCH_HEAD = ['Profit Center', 'Billing Date', 'Billing Document', 'Doc. Reference ID',
+                  'Product', 'Product', 'Sales Volume Qty']
+_PENDING_HEAD = ['Plant Name', 'Order date', 'PO Number', 'Sales Document', 'Sales Document Item',
+                 'Product', 'Product Description', 'Order Quantity', 'Delivered Quantity',
+                 'Open Dlv Quantity']
+
+
+def _workbook(**sheets):
+    from openpyxl import Workbook
+    wb = Workbook()
+    wb.remove(wb.active)
+    for title, rows in sheets.items():
+        ws = wb.create_sheet(title)
+        for r in rows:
+            ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+_D_ROW = ['P1', date(2026, 11, 1), '126025169', 'R1', 'SKU1', 'Hinge', 10]
+_P_ROW = ['P1', date(2026, 10, 1), 'PO1', 'SO1', '10', 'SKU2', 'Slide', 5, 2, 3]
+
+
+def test_dispatch_pending_both_sheets():
+    data = _workbook(DISPATCH=[_DISPATCH_HEAD, _D_ROW], PENDING=[_PENDING_HEAD, _P_ROW])
+    tables, _ = P.parse_dispatch_pending(data, 'dp.xlsx')
+    assert (len(tables['dispatch']), len(tables['pending'])) == (1, 1)
+
+
+def test_pending_only_leaves_dispatch_out():
+    tables, _ = P.parse_dispatch_pending(_workbook(PENDING=[_PENDING_HEAD, _P_ROW]), 'p.xlsx')
+    assert list(tables) == ['pending'] and tables['pending'][0]['open_qty'] == 3
+
+
+def test_dispatch_only_csv_is_recognised_by_columns():
+    csv = (','.join(_DISPATCH_HEAD) + '\nP1,2026-11-01,126025169,R1,SKU1,Hinge,10\n').encode()
+    tables, _ = P.parse_dispatch_pending(csv, 'dispatch.csv')
+    assert list(tables) == ['dispatch'] and tables['dispatch'][0]['sku_name'] == 'Hinge'
+
+
+def test_file_with_neither_sheet_is_refused():
+    with pytest.raises(P.ParseError):
+        P.parse_dispatch_pending(_workbook(Sheet1=[['a', 'b'], [1, 2]]), 'x.xlsx')
