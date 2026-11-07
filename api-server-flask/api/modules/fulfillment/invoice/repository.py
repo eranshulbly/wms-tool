@@ -39,12 +39,30 @@ class InvoiceRepository(BaseRepository):
         from api.models import InvoiceProcessingConfig
         return InvoiceProcessingConfig.get_bypass_order_types()
 
+    def existing_invoice_numbers(self, invoice_numbers, company_id=None) -> set:
+        """Which of these invoice numbers are already stored, for this company.
+
+        Searches the whole table, not the partition window: an invoice uploaded a year ago
+        is still a duplicate today.
+        """
+        numbers = sorted({n for n in invoice_numbers if n})
+        if not numbers:
+            return set()
+        sql = (f"SELECT DISTINCT invoice_number FROM invoice "
+               f"WHERE invoice_number IN ({', '.join(['%s'] * len(numbers))})")
+        params = list(numbers)
+        if company_id is not None:
+            sql += " AND company_id = %s"
+            params.append(company_id)
+        rows = self._db.execute_query(sql, tuple(params)) or []
+        return {r['invoice_number'] for r in rows}
+
     def bulk_insert_invoices(self, invoices: list) -> int:
         """
         INSERT all Invoice objects in a single executemany call.
 
-        Uses INSERT IGNORE so duplicate invoice_numbers are silently skipped
-        rather than aborting the whole batch.
+        Duplicates are refused before this by invoice number (existing_invoice_numbers);
+        the table has no unique key on it to do that here.
 
         Returns:
             Number of rows actually inserted.

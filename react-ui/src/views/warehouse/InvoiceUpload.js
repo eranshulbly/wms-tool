@@ -7,6 +7,9 @@ const computeExtraStats = (data) => [
   ...(data.orders_invoiced != null
     ? [{ label: 'Orders Invoiced', value: data.orders_invoiced, color: 'secondary' }]
     : []),
+  ...(data.additional_invoices > 0
+    ? [{ label: 'Further invoices for invoiced orders', value: data.additional_invoices, color: 'secondary' }]
+    : []),
   ...(data.orders_flagged != null && data.orders_flagged > 0
     ? [{ label: 'Invoice Submitted (pending pack)', value: data.orders_flagged, color: 'default' }]
     : [])

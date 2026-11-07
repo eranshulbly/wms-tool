@@ -48,8 +48,8 @@ class InvoiceUploadService(BaseUploadService):
 
         # Invoiced goods have been billed and have left the building, so they come off the
         # shelf. Done ONLY when an invoice was actually created: a re-upload of the same
-        # invoice is refused upstream (the order is already Invoiced), and reducing stock
-        # again would take the same goods out twice.
+        # invoice number is refused upstream, and reducing stock again would take the same
+        # goods out twice. A second invoice for the same order is new goods, so it does.
         stock = None
         if is_pdf_invoice and result['invoices_processed'] > 0:
             from api.modules.fulfillment.order import temp_inventory
@@ -66,6 +66,7 @@ class InvoiceUploadService(BaseUploadService):
             'error_rows': result['error_rows'],
             'orders_invoiced': result['orders_invoiced'],
             'orders_flagged': result['orders_flagged'],
+            'additional_invoices': result['additional_invoices'],
         }
         if stock is not None:
             out['stock_parts_reduced'] = stock['parts']
@@ -96,13 +97,13 @@ def analyze_errors(errors):
     if not errors:
         return "Unknown errors occurred."
 
-    counts = {'missing_orders': 0, 'wrong_status': 0, 'missing_data': 0, 'other': 0}
+    counts = {'missing_orders': 0, 'duplicates': 0, 'missing_data': 0, 'other': 0}
     for error in errors:
         e = error.lower()
         if 'no matching order found' in e:
             counts['missing_orders'] += 1
-        elif 'already invoiced' in e or 'dispatch ready' in e or 'partially completed' in e:
-            counts['wrong_status'] += 1
+        elif 'already uploaded' in e:
+            counts['duplicates'] += 1
         elif 'missing' in e:
             counts['missing_data'] += 1
         else:
@@ -111,8 +112,8 @@ def analyze_errors(errors):
     parts = []
     if counts['missing_orders']:
         parts.append(f"{counts['missing_orders']} invoices had no matching orders in the system")
-    if counts['wrong_status']:
-        parts.append(f"{counts['wrong_status']} orders were already invoiced or in a terminal state")
+    if counts['duplicates']:
+        parts.append(f"{counts['duplicates']} invoices were already uploaded")
     if counts['missing_data']:
         parts.append(f"{counts['missing_data']} rows had missing required data")
     if counts['other']:

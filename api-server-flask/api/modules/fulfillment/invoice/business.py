@@ -16,8 +16,12 @@ State-transition rules for invoice upload
      When the user later moves the order to Packed in Order Management,
      the backend auto-transitions it to Invoiced and clears the flag.
 
-4. Orders already in {Invoiced, Dispatch Ready, Completed}:
-     Treated as duplicates — added to the error report.
+4. Orders already in {Invoiced, Dispatch Ready, Completed, Partially Completed}:
+     Create the invoice record; the order's status is left as it is. One order can be
+     billed on several invoices when it is fulfilled in parts.
+
+A duplicate is an INVOICE NUMBER already uploaded (or repeated in the same file), not a
+second invoice for the same order.
 
 Performance design
 ──────────────────
@@ -49,6 +53,7 @@ def process_invoice_dataframe(df, warehouse_id, company_id, user_id, upload_batc
           invoices_processed  — invoice records created in DB
           orders_invoiced     — orders transitioned to Invoiced
           orders_flagged      — orders that received the invoice_submitted flag
+          additional_invoices — invoices added to orders already invoiced (part fulfilment)
           error_rows          — list of row-level errors
     """
     current_time = datetime.utcnow()
@@ -72,6 +77,11 @@ def process_invoice_dataframe(df, warehouse_id, company_id, user_id, upload_batc
 
     invoiced_state = order_repo.get_or_create_state('Invoiced', 'Invoice uploaded for order')
 
+    already_uploaded = invoice_repo.existing_invoice_numbers(
+        [str(row.get('Invoice #', '') or '').strip() for _, row in df.iterrows()], company_id)
+    seen_invoices = set()
+    additional_invoices = 0
+
     # ── Phase 2: classify every row in memory (zero DB calls) ────────────────
     invoices_to_create = []       # Invoice objects ready for bulk INSERT
     orders_to_invoice  = {}       # pot_order_id → PotentialOrder (deduped)
@@ -89,6 +99,13 @@ def process_invoice_dataframe(df, warehouse_id, company_id, user_id, upload_batc
                 error_rows.append(_make_error_row(row, original_order_id, "Missing Invoice # or Order #"))
                 continue
 
+            if invoice_number in already_uploaded or invoice_number in seen_invoices:
+                error_rows.append(_make_error_row(
+                    row, original_order_id,
+                    f"Invoice {invoice_number} was already uploaded — duplicate, skipped."
+                ))
+                continue
+
             potential_order = potential_orders_map.get(original_order_id)
             if not potential_order:
                 error_rows.append(_make_error_row(
@@ -96,21 +113,17 @@ def process_invoice_dataframe(df, warehouse_id, company_id, user_id, upload_batc
                     f"No matching order found for Order #: {original_order_id}"
                 ))
                 continue
+            seen_invoices.add(invoice_number)
 
             current_status = potential_order.status
 
-            if OrderStateMachine.is_terminal(current_status):
-                error_rows.append(_make_error_row(
-                    row, original_order_id,
-                    f"Order already invoiced (current status: '{current_status}'). "
-                    "Invoice may be a duplicate."
-                ))
-                continue
-
+            # Already invoiced: this is another part of the same order, billed on its own
+            # invoice. Recorded against the order; the status does not move.
+            is_additional = OrderStateMachine.is_terminal(current_status)
             is_bypass = potential_order.order_type in bypass_types
             is_packed = current_status == 'Packed'
 
-            if is_bypass or is_packed:
+            if is_additional or is_bypass or is_packed:
                 dealer_id = _resolve_dealer(row, index)
 
                 if dealer_id and not potential_order.dealer_id:
@@ -137,7 +150,9 @@ def process_invoice_dataframe(df, warehouse_id, company_id, user_id, upload_batc
                     error_rows.append(_make_error_row(row, original_order_id, reason))
                     continue
 
-                if potential_order.potential_order_id not in processed_order_ids:
+                if is_additional:
+                    additional_invoices += 1
+                elif potential_order.potential_order_id not in processed_order_ids:
                     orders_to_invoice[potential_order.potential_order_id] = potential_order
                     processed_order_ids.add(potential_order.potential_order_id)
 
@@ -167,6 +182,7 @@ def process_invoice_dataframe(df, warehouse_id, company_id, user_id, upload_batc
             'invoices_created': invoices_saved,
             'orders_invoiced': len(orders_to_invoice),
             'orders_flagged': len(orders_to_flag),
+            'additional_invoices': additional_invoices,
             'error_count': len(error_rows),
         }
     )
@@ -175,6 +191,7 @@ def process_invoice_dataframe(df, warehouse_id, company_id, user_id, upload_batc
         'invoices_processed': invoices_saved,
         'orders_invoiced': len(orders_to_invoice),
         'orders_flagged': len(orders_to_flag),
+        'additional_invoices': additional_invoices,
         'error_rows': error_rows,
     }
 
