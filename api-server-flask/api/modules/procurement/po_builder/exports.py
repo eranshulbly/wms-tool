@@ -154,7 +154,8 @@ def dms_order_csv(view, dms):
 
     for_date = datetime.strptime(view['po']['po_date'][:10], '%Y-%m-%d').strftime('%d-%m-%Y')
     buf = io.StringIO()
-    w = csv.writer(buf, lineterminator='\n')
+    # Windows line endings (\r\n), byte for byte like the DMS's own template.
+    w = csv.writer(buf, lineterminator='\r\n')
     w.writerow(DMS_ORDER_HEADERS)
     for l in lines:
         qty = l['qty']

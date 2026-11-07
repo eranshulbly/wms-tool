@@ -146,6 +146,7 @@ class DmsOrderCsvTest(unittest.TestCase):
         out = dms_order_csv(self._view([self._line('A', 10.0, '1157'), self._line('B', 0, '1160')]), self.DMS)
         rows = list(csv.reader(io.StringIO(out)))
         self.assertEqual(rows[0], DMS_ORDER_HEADERS)
+        self.assertTrue(out.endswith('\r\n') and '\n' not in out.replace('\r\n', ''))
         self.assertEqual(len(rows), 2)  # a zero-qty line is not ordered
         self.assertEqual(rows[1][:12], ['16-10-2026', '171', '4962', '1', '1157', '0', '10', '1',
                                         '', '', '', '1'])
