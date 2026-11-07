@@ -209,21 +209,13 @@ const SkuResult = ({ r }) => {
 // Labels as on the upload rows; the SKU master is the one file not in FEEDS.
 const SOURCE_LABEL = { sku_master: 'SKU Master', ...Object.fromEntries(FEEDS.map((f) => [f.feed, f.label])) };
 
-const ageText = (iso) => {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
-  if (days <= 0) return 'today';
-  return days === 1 ? 'yesterday' : `${days} days ago`;
-};
-
 const DataSources = ({ sources }) => {
   const classes = useStyles();
   const missing = sources.filter((s) => !s.last_upload);
   return (
     <Paper variant="outlined" className={classes.section} style={{ padding: 16 }}>
       <Typography variant="subtitle2" gutterBottom>
-        Last uploaded
+        Last Updated
       </Typography>
       {sources.map((s, i) => {
         const last = s.last_upload;
@@ -240,8 +232,7 @@ const DataSources = ({ sources }) => {
             </Typography>
             {last ? (
               <Typography variant="body2" style={{ color: '#b91c1c', fontWeight: 600 }}>
-                {fmtDateTime(last.uploaded_on)} · {ageText(last.uploaded_on)}
-                {last.uploaded_by ? ` · ${last.uploaded_by}` : ''}
+                {fmtDateTime(last.uploaded_on)}
               </Typography>
             ) : (
               <Typography variant="body2" style={{ fontWeight: 600, color: '#b91c1c' }}>
@@ -273,8 +264,7 @@ const FilesPanel = ({ sources, feeds, onUploaded }) => {
         {master ? (
           <Typography variant="caption" component="div">
             <span style={{ color: '#b91c1c', fontWeight: 600 }}>
-              Last: {fmtDateTime(master.uploaded_on)} · {ageText(master.uploaded_on)}
-              {master.uploaded_by ? ` · ${master.uploaded_by}` : ''}
+              Last Updated: {fmtDateTime(master.uploaded_on)}
             </span>
             <span className={classes.muted}> · update from Admin → SKU Master Upload</span>
           </Typography>

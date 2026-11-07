@@ -53,13 +53,6 @@ const fmtDateTime = (iso) => {
     ? iso
     : d.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 };
-const ageText = (iso) => {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
-  if (days <= 0) return 'today';
-  return days === 1 ? 'yesterday' : `${days} days ago`;
-};
 const errMsg = (e, fallback) => e?.response?.data?.msg || fallback;
 
 const Days = ({ days }) => {
@@ -83,8 +76,7 @@ const FilesPanel = ({ feeds, onUploaded }) => {
         {last ? (
           <Typography variant="caption" component="div">
             <span style={{ color: '#b91c1c', fontWeight: 600 }}>
-              Last: {fmtDateTime(last.uploaded_on)} · {ageText(last.uploaded_on)}
-              {last.uploaded_by ? ` · ${last.uploaded_by}` : ''}
+              Last Updated: {fmtDateTime(last.uploaded_on)}
             </span>
             <span className={classes.muted}> · update from Admin → Outlet Master Upload</span>
           </Typography>

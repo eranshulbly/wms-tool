@@ -247,64 +247,78 @@ def _fmt(d):
 
 
 def _workbook_for(e, rep):
-    """One sheet: a header saying whose beats and as of when, then each dealer — worst
-    first — with its bills and a dealer total, then the executive's grand total."""
+    """One sheet laid out like the Tally Bills Receivable report it comes from: the
+    distributor, whose beats and when, then each party (A to Z) with its pending bills
+    and a party total, then the grand total. Days overdue are as of today."""
     from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.styles import Alignment, Border, Font, Side
 
     wb = Workbook()
     ws = wb.active
-    ws.title = 'Outstanding'
+    ws.title = 'Bills Receivable'
     bold = Font(bold=True)
     plan = datetime.strptime(rep['plan_date'], '%Y-%m-%d')
+    def tally_date(d):
+        dt = datetime.strptime(d, '%Y-%m-%d')
+        return f'{dt.day}-{dt:%b-%y}'
 
-    ws.append([f"Outstanding — {e['se_name']}"])
-    ws['A1'].font = Font(bold=True, size=14)
-    ws.append([f"Beats on {plan:%A, %d %b %Y}: " + ', '.join(b['beat_name'] for b in e['beats'])])
-    reports = '; '.join(f"{r['distributor']} up to {_fmt(r['report_to'])}"
-                        for r in rep['reports'] if r.get('report_to')) or '—'
-    ws.append([f"Tally report: {reports}. Days overdue as of {_fmt(rep['as_of'])}."])
-    ws.append([])
+    reports = [r for r in rep['reports'] if r.get('distributor')]
+    upto = '; '.join(f"{r['distributor']} up to {tally_date(r['report_to'])}"
+                     for r in reports if r.get('report_to'))
+    title = [
+        (', '.join(r['distributor'] for r in reports) or 'Bills Receivable', True),
+        (f"{e['se_name']} · {plan:%A, %d %b %Y} · " + ', '.join(b['beat_name'] for b in e['beats']), False),
+        ('Bills Receivable', True),
+        (f"Tally report: {upto}" if upto else '', False),
+        (f"Pending Bills · overdue days as on {tally_date(rep['as_of'])}", True),
+    ]
+    for text, is_bold in title:
+        ws.append([text])
+        ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=3)
+        ws.cell(ws.max_row, 1).font = Font(bold=is_bold)
 
-    header = ['Dealer', 'Beat', 'City', 'Bill date', 'Bill no.', 'Due on', 'Days overdue', 'Amount (₹)']
-    ws.append(header)
-    head_row = ws.max_row
-    for c in ws[head_row]:
-        c.font = bold
-        c.fill = PatternFill('solid', fgColor='E5E7EB')
+    ws.append(['Date', 'Ref. No.', "Party's Name", 'Pending', 'Due on', 'Overdue'])
+    ws.append(['', '', '', 'Amount', '', 'by days'])
+    head_row = ws.max_row - 1
+    line = Side(style='thin')
+    for r in (head_row, head_row + 1):
+        for col in range(1, 7):
+            c = ws.cell(r, col)
+            c.font = bold if col in (1, 3, 4) else Font()
+            c.border = Border(top=line) if r == head_row else Border(bottom=line)
+            if col in (4, 6):
+                c.alignment = Alignment(horizontal='right')
 
-    red = Font(color='B91C1C')
-    for d in e['dealers']:
+    amount_fmt = '0.00'
+    red = Font(bold=True, color='B91C1C')
+    for d in sorted(e['dealers'], key=lambda x: x['party_name'].lower()):
+        ws.append(['', '', d['party_name']])
+        ws.cell(ws.max_row, 3).font = bold
         for b in d['bills']:
-            ws.append([d['party_name'], d['beat_name'], d['city'],
-                       datetime.strptime(b['bill_date'], '%Y-%m-%d').date(), b['ref_no'],
-                       datetime.strptime(b['due_on'], '%Y-%m-%d').date(),
-                       b['days_overdue'], b['amount']])
+            ws.append([datetime.strptime(b['bill_date'], '%Y-%m-%d').date(), b['ref_no'], '',
+                       b['amount'], datetime.strptime(b['due_on'], '%Y-%m-%d').date(),
+                       b['days_overdue']])
             r = ws.max_row
-            ws.cell(r, 4).number_format = ws.cell(r, 6).number_format = 'DD-MMM-YY'
-            ws.cell(r, 8).number_format = '#,##0.00'
+            ws.cell(r, 1).font = ws.cell(r, 4).font = bold
+            ws.cell(r, 1).number_format = ws.cell(r, 5).number_format = 'dd-mmm-yy'
+            ws.cell(r, 4).number_format = amount_fmt
             if b['amount'] > 0 and b['days_overdue'] > 30:
-                ws.cell(r, 7).font = red
-        ws.append([f"{d['party_name']} — total", '', '', '', '', '', d['max_days_overdue'], d['amount']])
+                ws.cell(r, 6).font = red
+        ws.append(['', '', '', d['amount']])
         r = ws.max_row
-        for c in ws[r]:
-            c.font = bold
-        ws.cell(r, 8).number_format = '#,##0.00'
+        ws.cell(r, 4).font = bold
+        ws.cell(r, 4).number_format = amount_fmt
+        ws.cell(r, 4).border = Border(top=line)
 
-    ws.append([])
-    ws.append([f"Total — {e['dealer_count']} dealers, {e['bill_count']} bills",
-               '', '', '', '', '', '', e['amount']])
+    ws.append(['', '', '', e['amount']])
     r = ws.max_row
-    for c in ws[r]:
-        c.font = Font(bold=True, size=12)
-    ws.cell(r, 8).number_format = '#,##0.00'
+    ws.cell(r, 4).font = bold
+    ws.cell(r, 4).number_format = amount_fmt
+    ws.cell(r, 4).border = Border(top=line, bottom=Side(style='double'))
 
-    for col, width in zip('ABCDEFGH', (38, 26, 16, 11, 18, 11, 13, 15)):
+    for col, width in zip('ABCDEF', (10, 19, 45, 12, 10, 9)):
         ws.column_dimensions[col].width = width
-    ws.cell(head_row, 7).alignment = ws.cell(head_row, 8).alignment = Alignment(horizontal='right')
-    ws.freeze_panes = ws.cell(head_row + 1, 1)
-    ws.print_options.gridLines = True
-    ws.page_setup.orientation = 'landscape'
+    ws.freeze_panes = ws.cell(head_row + 2, 1)
     ws.page_setup.fitToWidth = 1
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.fitToHeight = 0

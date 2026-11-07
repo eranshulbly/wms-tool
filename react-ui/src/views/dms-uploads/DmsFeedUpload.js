@@ -87,7 +87,7 @@ const lastText = (s) => {
   const last = s?.last_upload;
   if (!last) return 'Not uploaded yet';
   const who = s.distributor ? `${s.distributor}${s.report_to ? ` (up to ${s.report_to})` : ''}: ` : '';
-  return `${who}${last.filename} · ${fmtDateTime(last.uploaded_on)} · ${last.uploaded_by}`;
+  return `${who}${fmtDateTime(last.uploaded_on)}`;
 };
 
 export const UploadRow = ({ def, statuses, onUploaded }) => {
@@ -131,7 +131,7 @@ export const UploadRow = ({ def, statuses, onUploaded }) => {
           </Typography>
           {(statuses.length ? statuses : [null]).map((st, i) => (
             <Typography key={i} variant="caption" component="div" style={{ color: '#b91c1c', fontWeight: 600 }}>
-              Last: {lastText(st)}
+              Last Updated: {lastText(st)}
             </Typography>
           ))}
         </Grid>

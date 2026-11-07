@@ -337,7 +337,7 @@ const SkuMasterTab = ({ notify }) => {
                   <TableCell align="right">{num(m.active_count)}</TableCell>
                   <TableCell align="right">{m.po_count}</TableCell>
                   <TableCell style={{ fontSize: 12, ...(i === 0 ? { color: '#b91c1c', fontWeight: 600 } : {}) }}>
-                    {m.uploaded_by} · {(m.uploaded_on || '').slice(0, 16).replace('T', ' ')}
+                    {(m.uploaded_on || '').slice(0, 16).replace('T', ' ')}
                   </TableCell>
                 </TableRow>
               ))}
@@ -494,7 +494,7 @@ const SchemesTab = ({ notify }) => {
                     {s.name} {s.current && <Chip size="small" color="success" label="in force" />}
                   </TableCell>
                   <TableCell style={{ fontSize: 12, whiteSpace: 'nowrap', ...(s.current ? { color: '#b91c1c', fontWeight: 600 } : {}) }}>
-                    {s.uploaded_by} · {(s.uploaded_on || '').slice(0, 16).replace('T', ' ')}
+                    {(s.uploaded_on || '').slice(0, 16).replace('T', ' ')}
                   </TableCell>
                   <TableCell align="right">{s.group_count}</TableCell>
                   <TableCell align="right">{num(s.sku_count)}</TableCell>
