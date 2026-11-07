@@ -73,6 +73,9 @@ _SETTING_FIELDS = ('dtr_discount_pct', 'std_discount_pct', 'show_case_helper')
 # (pob_dms_order_settings), and never frozen into a PO: they say who places the order in
 # the DMS, not what it costs.
 _DMS_ORDER_FIELDS = ('dms_user_id', 'dms_outlet_id', 'dms_warehouse_id')
+# Used until a value is saved, and when one is cleared: the ids on Ebco's own DMS order
+# upload sample (upload-secondary-and-primary-order-final.csv) — Anmol Associates' DMS user.
+_DMS_ORDER_DEFAULTS = {'dms_user_id': '171', 'dms_outlet_id': '4962', 'dms_warehouse_id': '1'}
 
 
 def get_settings(company_id):
@@ -86,7 +89,7 @@ def get_settings(company_id):
         'dtr_discount_pct': float(row['dtr_discount_pct']),
         'std_discount_pct': float(row['std_discount_pct']),
         'show_case_helper': bool(row['show_case_helper']),
-        **{k: dms.get(k) or '' for k in _DMS_ORDER_FIELDS},
+        **{k: dms.get(k) or _DMS_ORDER_DEFAULTS[k] for k in _DMS_ORDER_FIELDS},
         'updated_by': row['updated_by'],
         'updated_on': _iso(row['updated_on']),
     }

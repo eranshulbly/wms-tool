@@ -710,7 +710,7 @@ const SettingsTab = ({ notify }) => {
           <TextField label="DMS warehouse id" size="small" value={s.dms_warehouse_id} onChange={(e) => setS({ ...s, dms_warehouse_id: e.target.value })} />
         </Box>
         <Typography variant="body2" color="textSecondary" style={{ marginTop: 8 }}>
-          The PO&apos;s DMS Order (.csv) is raised under these — the user_id, *outlet_id and *warehouse_id columns of the DMS order upload file. Each SKU goes by its DMS Sku_Id, quantities in units, dated the PO date, with Auto Scheme Apply on.
+          The PO&apos;s DMS Order (.csv) is raised under these — the user_id, *outlet_id and *warehouse_id columns of the DMS order upload file. They default to the ids on Ebco&apos;s sample upload file (171, 4962, 1); a cleared field goes back to its default. Each SKU goes by its DMS Sku_Id, quantities in units, dated the PO date, with Auto Scheme Apply on.
         </Typography>
       </Grid>
       <Grid item xs={12}>
