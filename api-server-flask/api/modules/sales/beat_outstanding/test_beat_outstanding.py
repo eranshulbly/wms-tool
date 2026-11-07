@@ -111,3 +111,61 @@ def test_beat_plan_rows():
     r = tables['beat_plan'][0]
     assert (r['se_name'], r['plan_date'], r['beat_id'], r['total_outlets']) == \
         ('Nitesh Massey', date(2026, 11, 4), '1316', 32)
+
+
+def test_mapped_beats_match_by_name_without_case_or_spacing():
+    outlets = [_o('A', '1318', 'Anmol_BAREILLY'), _o('B', '1309', 'Anmol_PILIBHIT'), _o('C', '1316', 'Anmol_Agra')]
+    assert R.beat_ids_named([' anmol_bareilly', 'Anmol_Pilibhit '], outlets) == {'1318', '1309'}
+
+
+def test_cd_sheet_keeps_only_unpaid_bills_older_than_20_days():
+    today = date(2026, 11, 7)
+    outlets = [_o('SASTHI PLYWOOD', '1318', 'Anmol_BAREILLY')]
+    bills = [_b('SASTHI PLYWOOD', 100, date(2026, 10, 17), 'INV-21'),   # 21 days — lapsed
+             _b('SASTHI PLYWOOD', 50, date(2026, 10, 18), 'INV-20'),    # 20 days — still in CD
+             _b('SASTHI PLYWOOD', -30, date(2026, 9, 1), 'CR-1')]       # a credit, not chased
+    placed, _ = R.place_parties(bills, outlets)
+    cd = R.cd_lapsed(R.dealers_on({'1318'}, bills, placed, today), today)
+    assert [b['ref_no'] for b in cd[0]['bills']] == ['INV-21']
+    assert cd[0]['amount'] == 100 and cd[0]['max_days_since_bill'] == 21
+
+
+def test_cd_sheet_drops_dealers_with_nothing_lapsed():
+    today = date(2026, 11, 7)
+    bills = [_b('SASTHI PLYWOOD', 100, date(2026, 11, 1))]
+    placed, _ = R.place_parties(bills, [_o('SASTHI PLYWOOD', '1318', 'Anmol_BAREILLY')])
+    assert R.cd_lapsed(R.dealers_on({'1318'}, bills, placed, today), today) == []
+
+
+def test_exec_beats_file_needs_user_and_beat_and_drops_repeats():
+    csv_bytes = b'User,Beat\nNitesh Massey,Anmol_HAPUR\nnitesh massey,anmol_hapur\nKamlesh Kumar,\n,Anmol_Agra\nArun Dixit,Anmol_Agra\n'
+    rows, warnings = P.parse_exec_beats(csv_bytes, 'map.csv')
+    assert rows == [{'se_name': 'Nitesh Massey', 'beat_name': 'Anmol_HAPUR'},
+                    {'se_name': 'Arun Dixit', 'beat_name': 'Anmol_Agra'}]
+    assert len(warnings) == 2
+    with pytest.raises(P.ParseError):
+        P.parse_exec_beats(b'Name,Town\nA,B\n', 'map.csv')
+
+
+def test_exec_beats_file_accepts_the_dms_beat_plan_headers():
+    rows, _ = P.parse_exec_beats(b'UserID,SEName,BeatName\n177,Nitesh Massey,Anmol_HAPUR\n', 'plan.csv')
+    assert rows == [{'se_name': 'Nitesh Massey', 'beat_name': 'Anmol_HAPUR'}]
+
+
+def test_tally_group_layout_keeps_the_exact_party_name():
+    buf = _tally([
+        ['Group :', 'Ebco Debtors', None, '1-Apr-26 to 6-Nov-26'],
+        ['Details of:', 'Pending Bills'],
+        ['Date', 'Ref. No.', "Party's Name", 'Opening', 'Pending', 'Due on', 'Overdue'],
+        ['', '', '', 'Amount', 'Amount', '', 'by days'],
+        [None, '', 'Aggarwal Matal & Hardware | Ebco | Meerut', None, None, None, ''],
+        [date(2026, 9, 10), '26-27-EB-INV-7', '', 9930, 9930, date(2026, 9, 10), '57'],
+        [None, '', '', 9930, 9930, None, ''],
+    ])
+    tables, _, meta = P.parse(P.FEED_OUTSTANDING, buf, 'os.xlsx')
+    assert meta['distributor'] == 'Ebco Debtors'
+    assert meta['report_to'] == date(2026, 11, 6)
+    b = tables['bills'][0]
+    assert b['opening'] == 9930
+    assert b['party_name'] == 'Aggarwal Matal & Hardware | Ebco | Meerut'
+    assert b['name_key'] == P.name_key('Aggarwal Matal & Hardware')

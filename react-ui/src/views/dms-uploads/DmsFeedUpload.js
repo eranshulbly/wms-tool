@@ -62,7 +62,7 @@ export const BEAT_FEEDS = [
     feed: 'outstanding',
     label: 'Outstanding Report',
     title: 'Outstanding Upload',
-    hint: "Distributor's Tally Bills Receivable export (.xlsx) — replaces only that distributor's previous report",
+    hint: 'Tally Bills Receivable export (.xlsx) — replaces the previous report',
     accept: '.xlsx',
     ...BEAT_API,
   },

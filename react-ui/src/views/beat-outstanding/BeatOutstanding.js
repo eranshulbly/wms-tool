@@ -7,7 +7,6 @@ import {
   CircularProgress,
   Collapse,
   IconButton,
-  MenuItem,
   Paper,
   Table,
   TableBody,
@@ -15,7 +14,6 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  TextField,
   Typography,
 } from '@material-ui/core';
 import { makeStyles } from '@material-ui/styles';
@@ -31,6 +29,17 @@ import { BEAT_FEEDS, UploadRow } from '../dms-uploads/DmsFeedUpload';
 // listed separately so none of the outstanding goes unseen.
 
 const OVER_30_DAYS = 30;
+
+// '2026-11-07' -> 'Saturday, 7th Nov 2026'
+const dayLabel = (iso) => {
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  const n = d.getDate();
+  const th = n % 10 === 1 && n !== 11 ? 'st' : n % 10 === 2 && n !== 12 ? 'nd' : n % 10 === 3 && n !== 13 ? 'rd' : 'th';
+  const weekday = d.toLocaleDateString('en-IN', { weekday: 'long' });
+  const month = d.toLocaleDateString('en-IN', { month: 'short' });
+  return `${weekday}, ${n}${th} ${month} ${d.getFullYear()}`;
+};
 
 const useStyles = makeStyles((theme) => ({
   section: { marginBottom: theme.spacing(3) },
@@ -143,6 +152,7 @@ const ExecutiveRow = ({ exec, planDate, onError }) => {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const has = exec.dealers.length > 0;
+  const canDownload = has || exec.cd_dealers.length > 0;
 
   const download = async () => {
     setBusy(true);
@@ -179,17 +189,18 @@ const ExecutiveRow = ({ exec, planDate, onError }) => {
           </Box>
         </TableCell>
         <TableCell align="right">{exec.dealer_count}</TableCell>
-        <TableCell align="right" className={classes.num} style={{ fontWeight: 600 }}>
-          {has ? money(exec.amount) : <span className={classes.muted}>Nothing due</span>}
-        </TableCell>
-        <TableCell align="right">
-          <Days days={exec.max_days_overdue} />
+        <TableCell align="right" className={classes.num}>
+          {exec.cd_dealers.length ? (
+            <span className={classes.red}>{money(exec.cd_amount)}</span>
+          ) : (
+            <span className={classes.muted}>{exec.mapped_beats.length ? '—' : 'No beats mapped'}</span>
+          )}
         </TableCell>
         <TableCell align="right">
           <Button
             size="small"
             variant="outlined"
-            disabled={!has || busy}
+            disabled={!canDownload || busy}
             onClick={download}
             startIcon={busy ? <CircularProgress size={14} /> : <IconDownload size={14} />}
           >
@@ -199,7 +210,7 @@ const ExecutiveRow = ({ exec, planDate, onError }) => {
       </TableRow>
       {has && (
         <TableRow>
-          <TableCell colSpan={7} style={{ padding: 0, borderBottom: open ? undefined : 'none' }}>
+          <TableCell colSpan={6} style={{ padding: 0, borderBottom: open ? undefined : 'none' }}>
             <Collapse in={open} unmountOnExit>
               <Box px={2} py={1} style={{ background: '#fafbfc' }}>
                 <DealerTable dealers={exec.dealers} />
@@ -220,10 +231,11 @@ const BeatOutstanding = () => {
   const [error, setError] = useState(null);
   const [zipping, setZipping] = useState(false);
 
-  const load = useCallback((d) => {
+  // Always today's beat plan — the server's default when no date is asked for.
+  const load = useCallback(() => {
     setLoading(true);
     setError(null);
-    getBeatReport(d)
+    getBeatReport()
       .then((res) => {
         setRep(res);
         setDate(res.plan_date || '');
@@ -249,10 +261,7 @@ const BeatOutstanding = () => {
   };
 
   const execs = rep?.executives || [];
-  // Today is always offered (and is the default) even before its plan is uploaded.
-  const dateOptions = rep ? [...new Set([rep.today, ...rep.plan_dates])].sort().reverse() : [];
-  const onPlan = execs.reduce((s, e) => s + e.amount, 0);
-  const withDues = execs.filter((e) => e.dealers.length > 0).length;
+  const withDues = execs.filter((e) => e.dealers.length > 0 || e.cd_dealers.length > 0).length;
 
   return (
     <Box>
@@ -263,11 +272,7 @@ const BeatOutstanding = () => {
         Each executive gets the outstanding of the dealers on the beats they cover that day.
       </Typography>
 
-      {rep?.feeds && (
-        // A new beat plan reopens on today; a new outstanding report keeps the date
-        // being looked at.
-        <FilesPanel feeds={rep.feeds} onUploaded={(feed) => load(feed === 'beat_plan' ? undefined : date)} />
-      )}
+      {rep?.feeds && <FilesPanel feeds={rep.feeds} onUploaded={() => load()} />}
 
       {error && (
         <Alert severity="error" className={classes.section}>
@@ -281,29 +286,9 @@ const BeatOutstanding = () => {
         <>
           <Paper variant="outlined" className={classes.section} style={{ padding: 16 }}>
             <Box display="flex" alignItems="center" flexWrap="wrap" style={{ gap: 16 }}>
-              <TextField
-                select
-                size="small"
-                label="Beat plan date"
-                value={date}
-                onChange={(e) => load(e.target.value)}
-                style={{ minWidth: 260 }}
-              >
-                {dateOptions.map((d) => (
-                  <MenuItem key={d} value={d}>
-                    {fmtDate(d, { weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' })}
-                    {d === rep.today ? ' (today)' : ''}
-                  </MenuItem>
-                ))}
-              </TextField>
-              <Box flexGrow={1}>
-                <Typography variant="body2">
-                  <b>{money(onPlan)}</b> on this day's beats <span className={classes.muted}>of {money(rep.total_outstanding)} total outstanding</span>
-                </Typography>
-                <Typography variant="caption" className={classes.muted}>
-                  Days overdue as of {fmtDate(rep.as_of)}, counted from each bill's due date.
-                </Typography>
-              </Box>
+              <Typography variant="h5" style={{ flexGrow: 1 }}>
+                {dayLabel(rep.plan_date)}
+              </Typography>
               <Button
                 variant="contained"
                 disabled={!withDues || zipping || loading}
@@ -332,8 +317,7 @@ const BeatOutstanding = () => {
                     <TableCell>Executive</TableCell>
                     <TableCell>Beats this day</TableCell>
                     <TableCell align="right">Dealers</TableCell>
-                    <TableCell align="right">Outstanding</TableCell>
-                    <TableCell align="right">Oldest (days)</TableCell>
+                    <TableCell align="right">Past CD (over {rep.cd_days} days)</TableCell>
                     <TableCell />
                   </TableRow>
                 </TableHead>
@@ -343,7 +327,7 @@ const BeatOutstanding = () => {
                   ))}
                   {!execs.length && (
                     <TableRow>
-                      <TableCell colSpan={7} className={classes.muted}>
+                      <TableCell colSpan={6} className={classes.muted}>
                         {rep.plan_missing ? 'No beat plan for this day.' : 'No executives on this day\'s plan.'}
                       </TableCell>
                     </TableRow>
@@ -387,31 +371,6 @@ const BeatOutstanding = () => {
             </Paper>
           )}
 
-          {rep.off_plan.length > 0 && (
-            <Paper variant="outlined" className={classes.section} style={{ padding: 16 }}>
-              <Typography variant="subtitle2" gutterBottom>
-                Beats nobody covers this day
-              </Typography>
-              {rep.off_plan.map((b, i) => (
-                <Box
-                  key={b.beat_id}
-                  display="flex"
-                  flexWrap="wrap"
-                  style={{ gap: 8, padding: '6px 0', borderTop: i ? '1px solid #eef0f3' : 'none' }}
-                >
-                  <Typography variant="body2" style={{ minWidth: 220, fontWeight: 600 }}>
-                    {b.beat_name}
-                  </Typography>
-                  <Typography variant="body2">
-                    {money(b.amount)}
-                    <span className={classes.muted}>
-                      {' '}· {b.dealer_count} dealer{b.dealer_count === 1 ? '' : 's'}
-                    </span>
-                  </Typography>
-                </Box>
-              ))}
-            </Paper>
-          )}
         </>
       )}
     </Box>

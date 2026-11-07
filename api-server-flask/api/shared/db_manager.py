@@ -810,6 +810,7 @@ def create_all_tables():
     _migrate_dealer_columns()
     _migrate_product_columns()
     _migrate_invoice_columns()
+    _migrate_bo_bill_opening()
     # _migrate_dealer_target_rename() is NOT called here — it runs before the registry
     # DDL above, because CREATE TABLE IF NOT EXISTS would otherwise create the new name
     # first and strand the old table's rows. Every target migration below locates the
@@ -981,6 +982,23 @@ def _migrate_dealer_columns():
                 logger.info("dealer: added index %s", index_name)
         except Exception:
             logger.exception("dealer: migration failed for column %s", column)
+
+
+def _migrate_bo_bill_opening():
+    """bo_bill.opening (sales/beat_outstanding) — the registry only creates tables, so a
+    database that already had bo_bill gets the column here."""
+    try:
+        has_col = mysql_manager.execute_query(
+            """SELECT 1 FROM information_schema.COLUMNS
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bo_bill'
+                 AND COLUMN_NAME = 'opening'""")
+        if not has_col:
+            mysql_manager.execute_query(
+                "ALTER TABLE bo_bill ADD COLUMN opening DECIMAL(16,2) NULL AFTER amount",
+                fetch=False)
+            logger.info("bo_bill: added column opening")
+    except Exception:
+        logger.exception("bo_bill: migration failed for column opening")
 
 
 def _migrate_product_columns():

@@ -10,6 +10,12 @@ works out itself (there is no company parameter). Admin only — it is dealers' 
                                                        one executive's outstanding (.xlsx)
   GET  /api/beat-outstanding/export-all?date=          every executive's, one .xlsx each (.zip)
   POST /api/beat-outstanding/upload                    form fields feed, file
+  GET  /api/beat-outstanding/exec-beats                the executive → beats table
+  POST /api/beat-outstanding/exec-beats/parse          form field file (User, Beat columns)
+                                                       -> its rows, NOT saved: the page
+                                                       shows them in the table to save
+  PUT  /api/beat-outstanding/exec-beats                {rows: [{se_name, beat_name}]} —
+                                                       replaces the executive → beats table
 """
 
 import io
@@ -23,7 +29,7 @@ from api.extensions import rest_api
 from api.core.auth import token_required, active_required
 from api.core.logging import get_logger
 from api.modules.sales.beat_outstanding import service as svc
-from api.modules.sales.beat_outstanding.parser import ParseError, PARSERS
+from api.modules.sales.beat_outstanding.parser import ParseError, PARSERS, parse_exec_beats
 
 logger = get_logger(__name__)
 
@@ -106,3 +112,30 @@ class BeatOutstandingUpload(Resource):
             return {'success': False, 'msg': 'No file uploaded'}, 400
         out = svc.ingest(feed, f.stream, f.filename, svc.ebco_company_id(), current_user.username)
         return {'success': True, 'result': out}, 200
+
+
+@rest_api.route(f'{BASE}/exec-beats')
+class BeatOutstandingExecBeats(Resource):
+    @_guard
+    def get(self, current_user):
+        return {'success': True, **svc.exec_beats_page(svc.ebco_company_id())}, 200
+
+    @_guard
+    def put(self, current_user):
+        rows = (request.get_json(silent=True) or {}).get('rows')
+        if not isinstance(rows, list):
+            return {'success': False, 'msg': 'Send rows: [{se_name, beat_name}].'}, 400
+        out = svc.save_exec_beats(svc.ebco_company_id(), rows, current_user.username)
+        return {'success': True, **out}, 200
+
+
+@rest_api.route(f'{BASE}/exec-beats/parse')
+class BeatOutstandingExecBeatsParse(Resource):
+    @_guard
+    def post(self, current_user):
+        f = request.files.get('file')
+        if not f:
+            return {'success': False, 'msg': 'No file uploaded'}, 400
+        rows, warnings = parse_exec_beats(f.stream.read(), f.filename)
+        return {'success': True, 'rows': rows, 'warnings': warnings[:50],
+                'warning_count': len(warnings)}, 200

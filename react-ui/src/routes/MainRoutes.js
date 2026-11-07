@@ -40,6 +40,7 @@ const PoBuilderMasters = Loadable(lazy(() => import('../views/po-builder/PoBuild
 const TatCheck = Loadable(lazy(() => import('../views/tat-check/TatCheck')));
 const DmsFeedUpload = Loadable(lazy(() => import('../views/dms-uploads/DmsFeedUpload')));
 const BeatOutstanding = Loadable(lazy(() => import('../views/beat-outstanding/BeatOutstanding')));
+const ExecutiveBeats = Loadable(lazy(() => import('../views/beat-outstanding/ExecutiveBeats')));
 
 //-----------------------|| MAIN ROUTING ||-----------------------//
 
@@ -69,6 +70,7 @@ const MainRoutes = () => {
                 '/scheme-upload',
                 '/outlet-master-upload',
                 '/beat-outstanding',
+                '/beat-outstanding/executive-beats',
                 '/po-builder',
                 '/tat-check',
             ]}
@@ -146,6 +148,16 @@ const MainRoutes = () => {
                         )}
                     />
                     {/* Beat Outstanding — each executive's dealers' outstanding for the day, admin only */}
+                    <Route
+                        path="/beat-outstanding/executive-beats"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard>
+                                    <ExecutiveBeats />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
                     <Route
                         path="/beat-outstanding"
                         render={() => (

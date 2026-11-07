@@ -5,13 +5,14 @@ import supply from './supply';
 import analytics from './analytics';
 import adminMenu from './admin';
 import poBuilder from './poBuilder';
+import beatOutstanding from './beatOutstanding';
 
 //-----------------------|| MENU ITEMS ||-----------------------//
 
 // Full set of groups (used by Breadcrumbs). The sidebar itself renders only the
 // group relevant to the current section — see Sidebar/MenuList.
 const menuItems = {
-    items: [home, warehouse, eway, supply, analytics, adminMenu, poBuilder]
+    items: [home, warehouse, eway, supply, analytics, adminMenu, poBuilder, beatOutstanding]
 };
 
 // Which section a given route belongs to. Keys are section group ids above.
@@ -20,6 +21,7 @@ export const SECTION_FOR_PATH = [
     { match: (p) => ['/sku-master-upload', '/scheme-upload', '/outlet-master-upload'].includes(p),
       section: 'admin' },
     { match: (p) => p.startsWith('/po-builder'), section: 'po-builder' },
+    { match: (p) => p.startsWith('/beat-outstanding'), section: 'beat-outstanding' },
     { match: (p) => p.startsWith('/analytics'), section: 'analytics' },
     { match: (p) => p === '/warehouse/eway-bill', section: 'eway' },
     { match: (p) => p === '/warehouse/supply-sheet', section: 'supply' },

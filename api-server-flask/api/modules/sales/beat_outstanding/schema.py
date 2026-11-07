@@ -4,10 +4,11 @@ the stored rows for that feed, in one transaction.
 
   bo_outlet        DMS Outlet Master — which beat (and city) each outlet is on
   bo_beat_plan     DMS User Beat Details — which beats each executive covers on a date
-  bo_bill          Tally Bills Receivable — every pending bill per party. Replaced per
-                   distributor: each distributor's Tally sends its own report, so
-                   uploading one distributor's report keeps the others'
+  bo_bill          Tally Bills Receivable — every pending bill per party, from the
+                   latest report only: each upload replaces all of them
   bo_upload_log    one row per upload, for "last uploaded"
+  bo_exec_beat     every beat each executive owns, kept by hand on the page (not an
+                   upload) — the dealers on the executive's cash-discount sheet
 
 A Tally party is placed on a beat by name: `name_key` (see parser.name_key) on both
 sides. The Outlet Master's Beat_ID is the same id the beat plan carries, so beat_id is
@@ -64,6 +65,9 @@ CREATE TABLE IF NOT EXISTS bo_bill (
     bill_date     DATE NOT NULL,
     ref_no        VARCHAR(128) NOT NULL,
     amount        DECIMAL(16,2) NOT NULL DEFAULT 0,
+    -- Tally's Opening Amount, where the report prints one (NULL: the report has only
+    -- the pending amount)
+    opening       DECIMAL(16,2) NULL,
     due_on        DATE NOT NULL,
     PRIMARY KEY (id),
     KEY idx_bo_bill_name (company_id, name_key)
@@ -87,3 +91,17 @@ CREATE TABLE IF NOT EXISTS bo_upload_log (
     KEY idx_bo_upload_log_feed (company_id, feed, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 """, order=113)
+
+
+register_table("bo_exec_beat", """
+CREATE TABLE IF NOT EXISTS bo_exec_beat (
+    id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    company_id    INT NOT NULL,
+    se_name       VARCHAR(255) NOT NULL,
+    beat_name     VARCHAR(255) NOT NULL,
+    updated_by    VARCHAR(100) NOT NULL DEFAULT '',
+    updated_on    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_bo_exec_beat (company_id, se_name, beat_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+""", order=114)

@@ -35,3 +35,15 @@ export const downloadExecutive = (date, exec) =>
   download('beat-outstanding/export', { date, user_id: exec.user_id, se_name: exec.se_name }, 'outstanding.xlsx');
 
 export const downloadAll = (date) => download('beat-outstanding/export-all', { date }, 'beat_outstanding.zip');
+
+export const getExecBeats = () => data(api.get('beat-outstanding/exec-beats'));
+
+// Replaces the whole executive → beats table.
+export const saveExecBeats = (rows) => data(api.put('beat-outstanding/exec-beats', { rows }));
+
+// Reads a User / Beat file into rows for the table — nothing is saved until saveExecBeats.
+export const parseExecBeatsFile = (file) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return data(api.post('beat-outstanding/exec-beats/parse', fd, { headers: { 'Content-Type': 'multipart/form-data' } }));
+};
