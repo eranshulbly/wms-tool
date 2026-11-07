@@ -82,11 +82,11 @@ const FilesPanel = ({ feeds, onUploaded }) => {
         <Typography variant="subtitle2">Outlet Master</Typography>
         {last ? (
           <Typography variant="caption" component="div">
-            {fmtDateTime(last.uploaded_on)}
-            <span className={classes.muted}>
-              {' '}· {ageText(last.uploaded_on)}
-              {last.uploaded_by ? ` · ${last.uploaded_by}` : ''} · update from Admin → Outlet Master Upload
+            <span style={{ color: '#b91c1c', fontWeight: 600 }}>
+              Last: {fmtDateTime(last.uploaded_on)} · {ageText(last.uploaded_on)}
+              {last.uploaded_by ? ` · ${last.uploaded_by}` : ''}
             </span>
+            <span className={classes.muted}> · update from Admin → Outlet Master Upload</span>
           </Typography>
         ) : (
           <Typography variant="caption" className={classes.red} component="div">

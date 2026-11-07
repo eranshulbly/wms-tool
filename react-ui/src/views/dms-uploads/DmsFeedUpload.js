@@ -130,7 +130,7 @@ export const UploadRow = ({ def, statuses, onUploaded }) => {
             {def.hint}
           </Typography>
           {(statuses.length ? statuses : [null]).map((st, i) => (
-            <Typography key={i} variant="caption" component="div">
+            <Typography key={i} variant="caption" component="div" style={{ color: '#b91c1c', fontWeight: 600 }}>
               Last: {lastText(st)}
             </Typography>
           ))}

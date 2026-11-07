@@ -239,12 +239,9 @@ const DataSources = ({ sources }) => {
               {SOURCE_LABEL[s.key] || s.label}
             </Typography>
             {last ? (
-              <Typography variant="body2">
-                {fmtDateTime(last.uploaded_on)}
-                <span className={classes.muted}>
-                  {' '}· {ageText(last.uploaded_on)}
-                  {last.uploaded_by ? ` · ${last.uploaded_by}` : ''}
-                </span>
+              <Typography variant="body2" style={{ color: '#b91c1c', fontWeight: 600 }}>
+                {fmtDateTime(last.uploaded_on)} · {ageText(last.uploaded_on)}
+                {last.uploaded_by ? ` · ${last.uploaded_by}` : ''}
               </Typography>
             ) : (
               <Typography variant="body2" style={{ fontWeight: 600, color: '#b91c1c' }}>
@@ -275,11 +272,11 @@ const FilesPanel = ({ sources, feeds, onUploaded }) => {
         <Typography variant="subtitle2">SKU Master</Typography>
         {master ? (
           <Typography variant="caption" component="div">
-            {fmtDateTime(master.uploaded_on)}
-            <span className={classes.muted}>
-              {' '}· {ageText(master.uploaded_on)}
-              {master.uploaded_by ? ` · ${master.uploaded_by}` : ''} · update from Admin → SKU Master Upload
+            <span style={{ color: '#b91c1c', fontWeight: 600 }}>
+              Last: {fmtDateTime(master.uploaded_on)} · {ageText(master.uploaded_on)}
+              {master.uploaded_by ? ` · ${master.uploaded_by}` : ''}
             </span>
+            <span className={classes.muted}> · update from Admin → SKU Master Upload</span>
           </Typography>
         ) : (
           <Typography variant="caption" component="div" style={{ color: '#b91c1c' }}>
