@@ -3,24 +3,45 @@
 Two separate deployments of this repo run on two separate EC2 boxes in `ap-south-1`.
 They share one RDS server but **not** one database, and they do **not** run the same code.
 
-If you only remember one thing: **`warehub` is Hero/Cadila, `warehub-ebco` is Ebco.**
+If you only remember one thing: **`warehub` is Hero, `warehub-cadila` is Cadila (same box
+as Hero), `warehub-ebco` is Ebco.**
 
-| | **HERO / CADILA** (original) | **EBCO** (second instance) |
-|---|---|---|
-| URL | https://warehub.duckdns.org | https://warehub-ebco.duckdns.org |
-| Public IP | `13.203.20.67` | `65.1.42.160` |
-| EC2 instance id | `i-0dd6fb2d0b43e5e2d` | `i-0ceb1b1201dc9ef1a` |
-| Database | `warehouse_management` | `warehouse_management_ebco` |
-| DB user | `wms_app` | `ebco_app` |
-| pm2 process | `wms-backend` | `ebco-backend` |
-| Security groups | `ec2-rds-1`, `launch-wizard-1` | `ec2-rds-1`, `wms-tool-2-web` |
-| IAM instance role | `anshul-ec2` | **none attached** |
-| Shares the box with | 4 unrelated apps | nothing |
+## Getting onto a box — SSH through SSM, never the IP
 
-Both are `t4g.small` (ARM64) in `ap-south-1c`, both SSH as `ubuntu` with
-`warehousemanagement.pem`, and both serve on `127.0.0.1:3001` behind nginx with a
-Let's Encrypt cert. Same private key, same layout, same port — which is exactly why
-it is easy to run a command on the wrong one. Check the IP.
+Port 22 is closed to the internet: `ssh ubuntu@<ip>` and `scp ... ubuntu@<ip>:` **time
+out**. Both boxes are reached by SSH tunnelled through AWS Session Manager, set up as
+host aliases in `~/.ssh/config` (ProxyCommand `aws ssm start-session ...
+AWS-StartSSHSession --profile wms --region ap-south-1`):
+
+```bash
+ssh ebco 'cmd'          # Ebco box
+ssh hero 'cmd'          # Hero + Cadila box
+scp <file> ebco:/home/ubuntu/wms-tool/<path>
+```
+
+The `wms` profile may start sessions (`ssm:StartSession`) but **not**
+`ssm:SendCommand`, and cannot read its own IAM policies — do not try `aws ssm
+send-command` or policy lookups; use the aliases.
+
+| | **HERO** (original) | **CADILA** (same box as Hero) | **EBCO** (second instance) |
+|---|---|---|---|
+| URL | https://warehub.duckdns.org | https://warehub-cadila.duckdns.org | https://warehub-ebco.duckdns.org |
+| SSH alias | `hero` | `hero` | `ebco` |
+| Code folder | `~/wms-tool` | `~/wms-tool-cadila` | `~/wms-tool` |
+| Public IP (not for SSH) | `13.203.20.67` | `13.203.20.67` | `65.1.42.160` |
+| EC2 instance id | `i-0dd6fb2d0b43e5e2d` | `i-0dd6fb2d0b43e5e2d` | `i-0ceb1b1201dc9ef1a` |
+| Database | `warehouse_management` | `warehouse_management_cadila` | `warehouse_management_ebco` |
+| DB user | `wms_app` | — | `ebco_app` |
+| pm2 process | `wms-backend` (port 3001) | `wms-cadila-backend` (port 3002) | `ebco-backend` |
+| Security groups | `ec2-rds-1`, `launch-wizard-1` | (Hero's) | `ec2-rds-1`, `wms-tool-2-web` |
+| Shares the box with | Cadila + 4 unrelated apps | Hero + 4 unrelated apps | nothing |
+
+Both boxes are `t4g.small` (ARM64) in `ap-south-1c`, log in as `ubuntu` (the aliases
+use `warehousemanagement.pem`), and serve behind nginx with a Let's Encrypt cert. Hero
+and Cadila share a box but nothing else: own folder, own pm2 process, own database —
+deploying one does not touch the other. **None of the three is a git checkout**, and each
+carries changes made on the server that are not in git: diff the server's copy against
+git before overwriting a file, and patch only your change onto it.
 
 ## Shared RDS
 
@@ -88,11 +109,13 @@ silently keeps running the old code.
 
 ```bash
 # Ebco
-scp -i warehousemanagement.pem <files> ubuntu@65.1.42.160:/home/ubuntu/wms-tool/api-server-flask/<path>/
-ssh -i warehousemanagement.pem ubuntu@65.1.42.160 \
-  'find /home/ubuntu/wms-tool/api-server-flask -name __pycache__ -type d -exec rm -rf {} + ; pm2 restart ebco-backend'
+scp <files> ebco:/home/ubuntu/wms-tool/api-server-flask/<path>/
+ssh ebco 'export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh";
+  find ~/wms-tool/api-server-flask -name __pycache__ -type d -exec rm -rf {} + ; pm2 restart ebco-backend'
 
-# Hero/Cadila — same, but 13.203.20.67 and `pm2 restart wms-backend`
+# Hero   — ssh hero, ~/wms-tool,        pm2 restart wms-backend
+# Cadila — ssh hero, ~/wms-tool-cadila, pm2 restart wms-cadila-backend
+# On the shared box restart only the one process — never `pm2 restart all`.
 ```
 
 `pm2` lives under nvm, so a non-interactive `ssh host 'pm2 ...'` may not find it. Source
@@ -101,9 +124,17 @@ it first: `export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"`.
 Verify with `curl -s -o /dev/null -w '%{http_code}' https://<domain>/health` — a 200 from
 the public URL proves nginx, the cert, gunicorn and the DB connection are all up.
 
-Frontend builds are served statically by nginx from
-`/home/ubuntu/wms-tool/react-ui/build`; rebuilding needs
-`NODE_OPTIONS=--openssl-legacy-provider` (CRA 4 on Node 22) and no restart.
+Frontend builds are served statically by nginx from each app's `react-ui/build`; no
+restart needed.
+
+- **Ebco** builds on the box: `ssh ebco 'bash ~/build-ebco.sh > ~/build-ebco.log'`
+  (builds into `build_new`, then swaps it in).
+- **Cadila** has no frontend source on the box: build elsewhere and swap the `build`
+  folder in, keeping the old one as `build_old_<ts>` and copying its `static/` files into
+  the new build (open tabs still ask for old chunk files). If you build in the local dev
+  container, **unset `REACT_APP_BACKEND_SERVER`** (it is `http://localhost:5001/api/`
+  there) — otherwise the live site sends every request to the visitor's own machine.
+  Before uploading, check the main chunk contains `"/api/"` and no `localhost:5001`.
 
 ## Also worth knowing
 
@@ -113,5 +144,5 @@ Frontend builds are served statically by nginx from
 - **Neither box is in an Auto Scaling group, and there are no snapshots on a schedule.**
   The only durable state is in RDS. Order photos are on **local disk** on the box that
   received them — see the S3 note in the order-photo code; losing an instance loses them.
-- **The Ebco box has no IAM role.** Anything needing AWS APIs (S3 for order photos,
-  for one) will fail there until `anshul-ec2` or an equivalent is attached.
+- **The Ebco box's IAM role:** it was once listed as having none; SSM works on it now, so
+  it has one — check the console for which, and whether it covers S3 (order photos).
