@@ -317,7 +317,7 @@ const BeatOutstanding = () => {
                     <TableCell>Executive</TableCell>
                     <TableCell>Beats this day</TableCell>
                     <TableCell align="right">Dealers</TableCell>
-                    <TableCell align="right">Past CD (over {rep.cd_days} days)</TableCell>
+                    <TableCell align="right">Past CD ({rep.cd_days}+ days)</TableCell>
                     <TableCell />
                   </TableRow>
                 </TableHead>

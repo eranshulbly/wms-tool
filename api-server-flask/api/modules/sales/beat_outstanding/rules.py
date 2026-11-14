@@ -11,8 +11,8 @@ their own.
   3. Days overdue are counted from the bill's due date to `today`, not taken from the
      report, so an older report still shows today's age.
   4. Cash discount lapses CD_DAYS after the bill date. An executive's CD sheet lists the
-     unpaid bills older than that on every beat mapped to them (bo_exec_beat), not only
-     the day's beats.
+     unpaid bills CD_DAYS or more old on every beat mapped to them (bo_exec_beat), not
+     only the day's beats.
 
 Parties that cannot be placed are returned too (`unplaced`), with the reason, so no
 outstanding silently drops out of what is handed to the field.
@@ -129,7 +129,7 @@ def beat_ids_named(beat_names, outlets):
 
 
 def cd_lapsed(dealers, today, cd_days=CD_DAYS):
-    """`dealers` (from dealers_on) cut to the unpaid bills more than `cd_days` old from
+    """`dealers` (from dealers_on) cut to the unpaid bills `cd_days` or more old from
     the bill date, each bill with its `days_since_bill`; dealers left with none dropped.
     Oldest first."""
     out = []
@@ -137,7 +137,7 @@ def cd_lapsed(dealers, today, cd_days=CD_DAYS):
         bills = []
         for b in d['bills']:
             age = (today - b['bill_date']).days
-            if b['amount'] > 0 and age > cd_days:
+            if b['amount'] > 0 and age >= cd_days:
                 bills.append({**b, 'days_since_bill': age})
         if bills:
             out.append({**d, 'bills': bills, 'bill_count': len(bills),

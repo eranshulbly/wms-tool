@@ -336,14 +336,14 @@ def _workbook_for(e, rep):
 
     cd_days = rep['cd_days']
     if e['mapped_beats']:
-        who = (f"{e['se_name']} · bills older than {cd_days} days (cash discount lapsed) · all beats: "
+        who = (f"{e['se_name']} · bills {cd_days} days or more old (cash discount lapsed) · all beats: "
                + ', '.join(e['mapped_beats']))
-        empty = f'No unpaid bills older than {cd_days} days on these beats.'
+        empty = f'No unpaid bills {cd_days} days or more old on these beats.'
     else:
         who = f"{e['se_name']} · no beats mapped"
         empty = 'No beats are mapped to this executive — add them under Beat Outstanding → Executive Beats.'
     _tally_sheet(
-        wb.create_sheet(_sheet_name(f'CD over {cd_days} days', {first.title})), group, _period(rep),
+        wb.create_sheet(_sheet_name(f'CD {cd_days}+ days', {first.title})), group, _period(rep),
         e['cd_dealers'], who, ('Days since', 'bill'), 'days_since_bill', empty=empty)
 
     buf = io.BytesIO()

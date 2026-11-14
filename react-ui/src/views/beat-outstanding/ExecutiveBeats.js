@@ -371,8 +371,8 @@ const ExecutiveBeats = () => {
         Executive Beats
       </Typography>
       <Typography variant="body2" className={classes.muted} style={{ marginBottom: 16 }}>
-        Every beat that belongs to each executive. Their Beat Outstanding Excel gets a second sheet with the bills older
-        than {data?.cd_days ?? 20} days (cash discount lapsed) on all these beats, not just the day's.
+        Every beat that belongs to each executive. Their Beat Outstanding Excel gets a second sheet with the bills{' '}
+        {data?.cd_days ?? 20} days or more old (cash discount lapsed) on all these beats, not just the day's.
       </Typography>
       {error && (
         <Alert severity="error" style={{ marginBottom: 16 }}>

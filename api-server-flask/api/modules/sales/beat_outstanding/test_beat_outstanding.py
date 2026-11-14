@@ -118,16 +118,17 @@ def test_mapped_beats_match_by_name_without_case_or_spacing():
     assert R.beat_ids_named([' anmol_bareilly', 'Anmol_Pilibhit '], outlets) == {'1318', '1309'}
 
 
-def test_cd_sheet_keeps_only_unpaid_bills_older_than_20_days():
+def test_cd_sheet_keeps_unpaid_bills_20_days_or_more_old():
     today = date(2026, 11, 7)
     outlets = [_o('SASTHI PLYWOOD', '1318', 'Anmol_BAREILLY')]
     bills = [_b('SASTHI PLYWOOD', 100, date(2026, 10, 17), 'INV-21'),   # 21 days — lapsed
-             _b('SASTHI PLYWOOD', 50, date(2026, 10, 18), 'INV-20'),    # 20 days — still in CD
+             _b('SASTHI PLYWOOD', 50, date(2026, 10, 18), 'INV-20'),    # 20 days — lapsed
+             _b('SASTHI PLYWOOD', 40, date(2026, 10, 19), 'INV-19'),    # 19 days — still in CD
              _b('SASTHI PLYWOOD', -30, date(2026, 9, 1), 'CR-1')]       # a credit, not chased
     placed, _ = R.place_parties(bills, outlets)
     cd = R.cd_lapsed(R.dealers_on({'1318'}, bills, placed, today), today)
-    assert [b['ref_no'] for b in cd[0]['bills']] == ['INV-21']
-    assert cd[0]['amount'] == 100 and cd[0]['max_days_since_bill'] == 21
+    assert [b['ref_no'] for b in cd[0]['bills']] == ['INV-21', 'INV-20']
+    assert cd[0]['amount'] == 150 and cd[0]['max_days_since_bill'] == 21
 
 
 def test_cd_sheet_drops_dealers_with_nothing_lapsed():
