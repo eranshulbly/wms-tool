@@ -2,6 +2,10 @@
 """sales.beat_outstanding service — loads the uploads and builds each executive's
 outstanding for a day, on screen and as an Excel file to hand to them.
 
+The Tally outstanding report is never stored: the page sends the file with every request
+(read_outstanding), and the amounts exist only for that request. The DMS feeds — Outlet
+Master and Beat Plan — are stored as uploads.
+
 Parsing lives in parser.py and the rules in rules.py; this file is the database half of
 both, plus the Excel writer.
 """
@@ -41,14 +45,11 @@ _TABLES = {
                               'city', 'distributor']),
     'beat_plan': ('bo_beat_plan', ['user_id', 'se_name', 'plan_date', 'beat_id', 'beat_name',
                                    'total_outlets']),
-    'bills': ('bo_bill', ['distributor', 'party_name', 'name_key', 'bill_date', 'ref_no',
-                          'amount', 'opening', 'due_on']),
 }
 
 _FEED_TABLE = {
     P.FEED_OUTLETS: 'outlets',
     P.FEED_BEAT_PLAN: 'beat_plan',
-    P.FEED_OUTSTANDING: 'bills',
 }
 
 
@@ -56,9 +57,11 @@ _FEED_TABLE = {
 
 def ingest(feed, stream, filename, company_id, user):
     """Parse and load one upload in one transaction — a failure part-way leaves the
-    previous upload in place, never half of this one. The DMS feeds replace all their
-    rows, and so does an outstanding report: only the latest report is kept, whoever's
-    books it is from."""
+    previous upload in place, never half of this one. Each replaces all its rows. The
+    Tally outstanding report is refused: it is never stored (see read_outstanding)."""
+    if feed == P.FEED_OUTSTANDING:
+        raise BeatOutstandingError('The Tally outstanding report is not stored — pick it on the '
+                                   'Beat Outstanding page.')
     tables, warnings, meta = P.parse(feed, stream, filename)
     key = _FEED_TABLE[feed]
     table, cols = _TABLES[key]
@@ -73,8 +76,6 @@ def ingest(feed, stream, filename, company_id, user):
              len(rows), (user or 'system')[:100]))
         upload_id = cur.lastrowid
         cur.execute(f'DELETE FROM {table} WHERE company_id = %s', (company_id,))
-        if feed == P.FEED_OUTSTANDING:
-            rows = [{**r, 'distributor': distributor} for r in rows]
         all_cols = ['company_id', 'upload_id'] + cols
         cur.executemany(
             f'INSERT INTO {table} ({", ".join(all_cols)}) '
@@ -83,15 +84,11 @@ def ingest(feed, stream, filename, company_id, user):
     out = {'feed': feed, 'label': P.FEED_LABELS[feed], 'filename': filename,
            'counts': {key: len(rows)}, 'warnings': warnings[:50],
            'warning_count': len(warnings)}
-    if feed == P.FEED_OUTSTANDING:
-        out.update(distributor=distributor, report_to=_iso(meta.get('report_to')),
-                   total=meta.get('total'))
     return out
 
 
 def feed_status(company_id):
-    """Last upload per feed. The outstanding report also says whose books it is from
-    and the last day it covers."""
+    """Last upload of each stored feed (the outstanding report is never stored)."""
     out = []
     for feed in (P.FEED_OUTLETS, P.FEED_BEAT_PLAN):
         last = mysql_manager.execute_query(
@@ -100,18 +97,6 @@ def feed_status(company_id):
             (company_id, feed))
         out.append({'feed': feed, 'label': P.FEED_LABELS[feed],
                     'last_upload': _upload_out(last[0]) if last else None})
-    reports = mysql_manager.execute_query(
-        """SELECT distributor, report_to, filename, row_count, uploaded_by, uploaded_on
-           FROM bo_upload_log WHERE company_id = %s AND feed = %s ORDER BY id DESC LIMIT 1""",
-        (company_id, P.FEED_OUTSTANDING)) or []
-    if not reports:
-        out.append({'feed': P.FEED_OUTSTANDING, 'label': P.FEED_LABELS[P.FEED_OUTSTANDING],
-                    'last_upload': None})
-    for r in reports:
-        out.append({'feed': P.FEED_OUTSTANDING,
-                    'label': f"{P.FEED_LABELS[P.FEED_OUTSTANDING]} — {r['distributor']}",
-                    'distributor': r['distributor'], 'report_to': _iso(r['report_to']),
-                    'last_upload': _upload_out(r)})
     return out
 
 
@@ -139,6 +124,50 @@ def exec_beats_page(company_id):
     return {'exec_beats': exec_beats(company_id), 'cd_days': R.CD_DAYS,
             'executive_names': executive_names(company_id),
             'beat_names': sorted({o['beat_name'] for o in outlets}, key=str.casefold)}
+
+
+def set_day_beats(company_id, se_name, beat_names, today=None):
+    """Set by hand the beats `se_name` covers today — for a day with no beat plan file, or
+    to change it. Replaces that executive's beats for today only; a beat plan uploaded
+    later replaces the whole plan, these included."""
+    today = today or today_ist()
+    mapping = exec_beats(company_id)
+    mapped_name = next((m['se_name'] for m in mapping if R.name_match(m['se_name']) == R.name_match(se_name)), None)
+    if not mapped_name:
+        raise BeatOutstandingError(f'{se_name} is not in Executive Beats.')
+    outlets = _load(company_id)
+    by_name = {}
+    for o in outlets:
+        if o['beat_id']:
+            by_name.setdefault(R.name_match(o['beat_name']), (o['beat_id'], o['beat_name']))
+    beats, unknown = [], []
+    for n in beat_names or []:
+        hit = by_name.get(R.name_match(n))
+        if not hit:
+            unknown.append(n)
+        elif hit not in beats:
+            beats.append(hit)
+    if unknown:
+        raise BeatOutstandingError('Not a beat in the Outlet Master: ' + ', '.join(unknown))
+    rows = mysql_manager.execute_query(
+        'SELECT se_name, user_id FROM bo_beat_plan WHERE company_id = %s AND user_id <> %s '
+        'ORDER BY plan_date DESC', (company_id, '')) or []
+    user_id = next((r['user_id'] for r in rows if R.name_match(r['se_name']) == R.name_match(se_name)), '')
+    on_day = mysql_manager.execute_query(
+        'SELECT id, se_name FROM bo_beat_plan WHERE company_id = %s AND plan_date = %s',
+        (company_id, today)) or []
+    drop = [r['id'] for r in on_day if R.name_match(r['se_name']) == R.name_match(se_name)]
+    # the name the day's plan already uses for them, else Executive Beats'
+    name = next((r['se_name'] for r in on_day if r['id'] in drop), mapped_name)
+    with mysql_manager.get_cursor() as cur:
+        if drop:
+            cur.execute(f'DELETE FROM bo_beat_plan WHERE id IN ({", ".join(["%s"] * len(drop))})', drop)
+        # upload_id 0: set on the page, not from a file
+        cur.executemany(
+            'INSERT INTO bo_beat_plan (company_id, upload_id, user_id, se_name, plan_date, beat_id, '
+            'beat_name, total_outlets) VALUES (%s, 0, %s, %s, %s, %s, %s, 0)',
+            [(company_id, user_id, name, today, bid, bname) for bid, bname in beats])
+    return {'se_name': name, 'beats': [b for _, b in beats]}
 
 
 def save_exec_beats(company_id, rows, user):
@@ -174,13 +203,21 @@ def save_exec_beats(company_id, rows, user):
 # ── report ───────────────────────────────────────────────────────────────────
 
 def _load(company_id):
-    outlets = mysql_manager.execute_query(
+    return mysql_manager.execute_query(
         'SELECT outlet_name, name_key, beat_id, beat_name, city FROM bo_outlet '
         'WHERE company_id = %s', (company_id,)) or []
-    bills = mysql_manager.execute_query(
-        'SELECT distributor, party_name, name_key, bill_date, ref_no, amount, opening, due_on '
-        'FROM bo_bill WHERE company_id = %s ORDER BY id', (company_id,)) or []
-    return outlets, bills
+
+
+def read_outstanding(stream, filename):
+    """The Tally outstanding report sent with a request, parsed — held only for that
+    request, never stored. {'bills', 'distributor', 'report_to', 'filename', 'total',
+    'bill_count', 'warnings'}."""
+    tables, warnings, meta = P.parse(P.FEED_OUTSTANDING, stream, filename)
+    distributor = meta.get('distributor') or ''
+    bills = [{**b, 'distributor': distributor} for b in tables['bills']]
+    return {'bills': bills, 'distributor': distributor, 'report_to': meta.get('report_to'),
+            'filename': filename or '', 'total': round(sum(b['amount'] for b in bills), 2),
+            'bill_count': len(bills), 'warnings': warnings[:50]}
 
 
 def plan_dates(company_id):
@@ -198,13 +235,17 @@ def _pick_date(dates, wanted, today):
     return wanted or today
 
 
-def report(company_id, wanted_date=None, today=None):
-    """Every executive on the beat plan for the date, with the outstanding of the dealers
-    on their beats, and the parties that could not be placed on a beat."""
+def report(company_id, wanted_date=None, today=None, outstanding=None):
+    """Every executive in Executive Beats — with the beats the beat plan (uploaded, or
+    set by hand with set_day_beats) gives them for the date, none if it gives none — and
+    the outstanding of the dealers on those beats; the parties that could not be placed
+    on a beat; and every dealer no executive covers (`other`)."""
     today = today or today_ist()
     dates = plan_dates(company_id)
     plan_date = _pick_date(dates, wanted_date, today)
-    outlets, bills = _load(company_id)
+    outlets = _load(company_id)
+    # No report picked: no bills, so no amounts anywhere.
+    bills = outstanding['bills'] if outstanding else []
     placed, unplaced = R.place_parties(bills, outlets)
 
     plan = mysql_manager.execute_query(
@@ -213,8 +254,17 @@ def report(company_id, wanted_date=None, today=None):
         (company_id, plan_date)) or []
 
     mapping = exec_beats(company_id)
+    users = {R.name_match(m['se_name']) for m in mapping}
+    # Only the users kept in Executive Beats are shown and get a file: those on the plan,
+    # in its order, then the rest with no beats yet (their beats can be added by hand).
+    on_plan = [e for e in R.executives_on(plan) if R.name_match(e['se_name']) in users]
+    seen = {R.name_match(e['se_name']) for e in on_plan}
+    for m in mapping:
+        if R.name_match(m['se_name']) not in seen:
+            seen.add(R.name_match(m['se_name']))
+            on_plan.append({'user_id': '', 'se_name': m['se_name'], 'beats': []})
     executives = []
-    for e in R.executives_on(plan):
+    for e in on_plan:
         dealers = R.dealers_on([b['beat_id'] for b in e['beats']], bills, placed, today)
         for b in e['beats']:
             mine = [d for d in dealers if d['beat_id'] == b['beat_id']]
@@ -223,6 +273,10 @@ def report(company_id, wanted_date=None, today=None):
         cd = R.cd_lapsed(R.dealers_on(R.beat_ids_named(mapped, outlets), bills, placed, today), today)
         executives.append({**e, **_totals(dealers), 'dealers': dealers, 'mapped_beats': mapped,
                            'cd_dealers': cd, 'cd_amount': round(sum(d['amount'] for d in cd), 2)})
+
+    owned = R.beat_ids_named([m['beat_name'] for m in mapping], outlets)
+    unassigned = R.unassigned_dealers(bills, placed, unplaced, owned, today)
+    other_cd = R.cd_lapsed(unassigned, today)
 
     feeds = feed_status(company_id)
     return _jsonable({
@@ -233,7 +287,9 @@ def report(company_id, wanted_date=None, today=None):
         'plan_missing': plan_date not in dates,
         'plan_dates': dates,
         'feeds': feeds,
-        'reports': [f for f in feeds if f['feed'] == P.FEED_OUTSTANDING and f['last_upload']],
+        # the Tally report this request carried (its bills are not sent back), or None
+        'outstanding': ({k: v for k, v in outstanding.items() if k != 'bills'}
+                        if outstanding else None),
         'total_outstanding': round(sum(float(b['amount']) for b in bills), 2),
         'executives': executives,
         'cd_days': R.CD_DAYS,
@@ -242,6 +298,10 @@ def report(company_id, wanted_date=None, today=None):
         'beat_names': sorted({o['beat_name'] for o in outlets if o['beat_name']}, key=str.casefold),
         'executive_names': executive_names(company_id),
         'unplaced': unplaced,
+        # 'Other': every dealer no executive covers, as one more row of the table
+        'other': {'dealers': unassigned, 'dealer_count': len(unassigned),
+                  'amount': round(sum(d['amount'] for d in unassigned), 2),
+                  'cd_dealers': other_cd, 'cd_amount': round(sum(d['amount'] for d in other_cd), 2)},
     })
 
 
@@ -255,41 +315,74 @@ def _totals(dealers):
 
 # ── Excel ────────────────────────────────────────────────────────────────────
 
-def export_one(company_id, wanted_date, user_id, se_name):
-    """(filename, xlsx bytes) for one executive's outstanding on the date."""
-    rep = report(company_id, wanted_date)
-    _require_plan(rep)
+def export_one(company_id, wanted_date, user_id, se_name, outstanding):
+    """(filename, xlsx bytes) for one executive's outstanding on the date, from the Tally
+    report sent with the request."""
+    _require_outstanding(outstanding)
+    rep = report(company_id, wanted_date, outstanding=outstanding)
     e = next((x for x in rep['executives']
               if x['user_id'] == (user_id or '') and x['se_name'] == se_name), None)
     if not e:
-        raise BeatOutstandingError(f'{se_name} is not on the beat plan for that day.')
+        raise BeatOutstandingError(f'{se_name} is not in Executive Beats.')
     if not e['dealers'] and not e['cd_dealers']:
         raise BeatOutstandingError(f'No outstanding on {se_name}\'s beats that day.')
     return _filename(e, rep['plan_date'], 'xlsx'), _workbook_for(e, rep)
 
 
-def export_all(company_id, wanted_date):
-    """(filename, zip bytes) with one workbook per executive who has outstanding that day."""
-    rep = report(company_id, wanted_date)
-    _require_plan(rep)
+def export_all(company_id, wanted_date, outstanding):
+    """(filename, zip bytes) with one workbook per executive who has outstanding that day,
+    plus the Other row's workbook when there are any, from the Tally report sent."""
+    _require_outstanding(outstanding)
+    rep = report(company_id, wanted_date, outstanding=outstanding)
     execs = [e for e in rep['executives'] if e['dealers'] or e['cd_dealers']]
-    if not execs:
+    if not execs and not rep['other']['dealers']:
         raise BeatOutstandingError('No executive has outstanding on their beats that day.')
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        # Two executives with one first name would overwrite each other: they get their
+        # full names instead.
+        firsts = [_first_name(e['se_name']) for e in execs]
         for e in execs:
-            z.writestr(_filename(e, rep['plan_date'], 'xlsx'), _workbook_for(e, rep))
-    return f"Beat_Outstanding_{rep['plan_date']}.zip", buf.getvalue()
+            full = firsts.count(_first_name(e['se_name'])) > 1
+            z.writestr(_filename(e, rep['plan_date'], 'xlsx', full_name=full), _workbook_for(e, rep))
+        if rep['other']['dealers']:
+            z.writestr(_unassigned_filename(rep), _unassigned_workbook(rep))
+    return f"{_file_date(rep['plan_date'])}_outstanding.zip", buf.getvalue()
 
 
-def _require_plan(rep):
-    if rep['plan_missing']:
-        raise BeatOutstandingError(f"No beat plan uploaded for {_fmt(rep['plan_date'])}.")
+def export_unassigned(company_id, outstanding):
+    """(filename, xlsx bytes): the 'Other' row — every dealer with outstanding that no
+    executive covers, from the Tally report sent."""
+    _require_outstanding(outstanding)
+    rep = report(company_id, outstanding=outstanding)
+    if not rep['other']['dealers']:
+        raise BeatOutstandingError('Every dealer with outstanding is on an executive\'s beats.')
+    return _unassigned_filename(rep), _unassigned_workbook(rep)
 
 
-def _filename(e, plan_date, ext):
-    who = re.sub(r'[^A-Za-z0-9]+', '_', e['se_name']).strip('_') or 'executive'
-    return f'Outstanding_{who}_{plan_date}.{ext}'
+def _unassigned_filename(rep):
+    return f"Other_{_file_date(rep['as_of'])}_outstanding.xlsx"
+
+
+def _require_outstanding(outstanding):
+    if not outstanding:
+        raise BeatOutstandingError('Pick the Tally outstanding report first.')
+
+
+def _first_name(se_name):
+    return (se_name or '').split()[0] if (se_name or '').split() else ''
+
+
+def _file_date(d):
+    """'2026-11-14' -> '14-11-2026', the date in a download's name."""
+    return datetime.strptime(d, '%Y-%m-%d').strftime('%d-%m-%Y')
+
+
+def _filename(e, plan_date, ext, full_name=False):
+    """'<first name>_<dd-mm-yyyy>_outstanding.xlsx', e.g. Nitesh_14-11-2026_outstanding.xlsx."""
+    name = e['se_name'] if full_name else _first_name(e['se_name'])
+    who = re.sub(r'[^A-Za-z0-9]+', '_', name).strip('_') or 'executive'
+    return f'{who}_{_file_date(plan_date)}_outstanding.{ext}'
 
 
 def _fmt(d):
@@ -303,9 +396,9 @@ def _tally_date(d):
 
 def _period(rep):
     """Tally's period line, '1-Apr-26 to 6-Nov-26': from the start of the financial year
-    to the latest report date (today when no report carries one)."""
-    ends = [r['report_to'] for r in rep['reports'] if r.get('report_to')]
-    end = datetime.strptime(max(ends) if ends else rep['as_of'], '%Y-%m-%d').date()
+    to the report's date (today when the report carries none)."""
+    o = rep['outstanding'] or {}
+    end = datetime.strptime(o.get('report_to') or rep['as_of'], '%Y-%m-%d').date()
     start = date(end.year if end.month >= 4 else end.year - 1, 4, 1)
     return f'{_tally_date(start)} to {_tally_date(end)}'
 
@@ -324,7 +417,7 @@ def _workbook_for(e, rep):
 
     wb = Workbook()
     plan = datetime.strptime(rep['plan_date'], '%Y-%m-%d')
-    group = ', '.join(r['distributor'] for r in rep['reports'] if r.get('distributor')) or 'Bills Receivable'
+    group = (rep['outstanding'] or {}).get('distributor') or 'Bills Receivable'
     first = wb.active
     first.title = _sheet_name(group, set())
     _tally_sheet(
@@ -346,6 +439,33 @@ def _workbook_for(e, rep):
         wb.create_sheet(_sheet_name(f'CD {cd_days}+ days', {first.title})), group, _period(rep),
         e['cd_dealers'], who, ('Days since', 'bill'), 'days_since_bill', empty=empty)
 
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _unassigned_workbook(rep):
+    """The 'Other' row's file: the dealers no executive covers, as an executive's file —
+    all their outstanding, then their bills past the cash-discount period — in the same
+    Tally layout. Beside each party, why no executive has it (its beat is in nobody's
+    Executive Beats, or it is not on a beat at all)."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    group = (rep['outstanding'] or {}).get('distributor') or 'Bills Receivable'
+    other, cd_days = rep['other'], rep['cd_days']
+    ws = wb.active
+    ws.title = _sheet_name(group, set())
+    _tally_sheet(
+        ws, group, _period(rep), other['dealers'],
+        f"Other — dealers not on any executive's beats · overdue days as on {_tally_date(rep['as_of'])}",
+        ('Overdue', 'by days'), 'days_overdue', red_over=30)
+    _tally_sheet(
+        wb.create_sheet(_sheet_name(f'CD {cd_days}+ days', {ws.title})), group, _period(rep),
+        other['cd_dealers'],
+        f"Other · bills {cd_days} days or more old (cash discount lapsed)",
+        ('Days since', 'bill'), 'days_since_bill',
+        empty=f'No unpaid bills {cd_days} days or more old.')
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -391,9 +511,14 @@ def _tally_sheet(ws, group, period, dealers, who_line, days_head, days_key, red_
         c.font = bold if is_bold else plain
 
     red = Font(color='B91C1C')
+    note = Font(italic=True, color='7A869A')
     for d in sorted(dealers, key=lambda x: x['party_name'].lower()):
         ws.append(['', '', d['party_name']])
         ws.cell(ws.max_row, 3).font = bold
+        if d.get('reason'):
+            # unassigned dealers only: why no executive has this party
+            c = ws.cell(ws.max_row, 4, d['reason'] + (f" ({d['beat_name']})" if d.get('beat_name') else ''))
+            c.font = note
         for b in d['bills']:
             days = b[days_key]
             ws.append([datetime.strptime(b['bill_date'], '%Y-%m-%d').date(), b['ref_no'], '', None, None,

@@ -4,8 +4,8 @@ the stored rows for that feed, in one transaction.
 
   bo_outlet        DMS Outlet Master — which beat (and city) each outlet is on
   bo_beat_plan     DMS User Beat Details — which beats each executive covers on a date
-  bo_bill          Tally Bills Receivable — every pending bill per party, from the
-                   latest report only: each upload replaces all of them
+  bo_bill          no longer written: the Tally outstanding report is never stored —
+                   the page sends it with each request (service.read_outstanding)
   bo_upload_log    one row per upload, for "last uploaded"
   bo_exec_beat     every beat each executive owns, kept by hand on the page (not an
                    upload) — the dealers on the executive's cash-discount sheet

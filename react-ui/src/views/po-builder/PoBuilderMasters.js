@@ -133,7 +133,7 @@ const Stat = ({ label, value, warn }) => (
 // --------------------------------------------------------------------------- upload formats
 
 const SKU_MASTER_FORMAT = {
-  intro: 'Bizom → Reports → “Category Wise SKU Master”, exported as CSV or Excel, uploaded as it is. One row per SKU; the header row can sit below a title block.',
+  intro: 'DMS → Analytics → “Category Wise SKU Master”, exported as CSV or Excel, uploaded as it is. One row per SKU; the header row can sit below a title block.',
   note: 'A file missing a required column is rejected. A row with a required value blank is skipped and listed in the preview — it is not loaded with a guessed value.',
   columns: [
     ['SKU_Code', 'Required', 'HTD1-SC-NP', 'The full code including the finish. Finish is read from the end of the code.'],

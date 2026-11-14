@@ -170,3 +170,14 @@ def test_tally_group_layout_keeps_the_exact_party_name():
     assert b['opening'] == 9930
     assert b['party_name'] == 'Aggarwal Matal & Hardware | Ebco | Meerut'
     assert b['name_key'] == P.name_key('Aggarwal Matal & Hardware')
+
+
+def test_unassigned_dealers_are_those_no_executive_covers():
+    today = date(2026, 11, 14)
+    outlets = [_o('OWNED', '1', 'Anmol_BAREILLY'), _o('FREE', '2', 'Anmol_Agra')]
+    bills = [_b('OWNED', 10), _b('FREE', 20, ref='F1'), _b('STRANGER', 30, ref='S1')]
+    placed, unplaced = R.place_parties(bills, outlets)
+    out = R.unassigned_dealers(bills, placed, unplaced, {'1'}, today)
+    assert [(d['party_name'], d['reason'], d['beat_name']) for d in out] == [
+        ('FREE', R.REASON_BEAT_UNOWNED, 'Anmol_Agra'),
+        ('STRANGER', R.REASON_NOT_IN_MASTER, '')]

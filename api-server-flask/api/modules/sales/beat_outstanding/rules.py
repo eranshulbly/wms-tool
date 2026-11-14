@@ -13,6 +13,9 @@ their own.
   4. Cash discount lapses CD_DAYS after the bill date. An executive's CD sheet lists the
      unpaid bills CD_DAYS or more old on every beat mapped to them (bo_exec_beat), not
      only the day's beats.
+  5. A dealer no executive covers — its beat is in nobody's Executive Beats, or it could
+     not be placed on a beat at all (rule 1) — goes on the unassigned list, so its
+     outstanding still reaches someone.
 
 Parties that cannot be placed are returned too (`unplaced`), with the reason, so no
 outstanding silently drops out of what is handed to the field.
@@ -63,7 +66,7 @@ def place_parties(bills, outlets):
 def _parties(bills):
     out = {}
     for b in bills:
-        p = out.setdefault(b['name_key'], {'party_name': b['party_name'],
+        p = out.setdefault(b['name_key'], {'party_name': b['party_name'], 'name_key': b['name_key'],
                                            'distributor': b.get('distributor') or '',
                                            'bill_count': 0, 'amount': 0.0})
         p['bill_count'] += 1
@@ -144,4 +147,37 @@ def cd_lapsed(dealers, today, cd_days=CD_DAYS):
                         'amount': round(sum(b['amount'] for b in bills), 2),
                         'max_days_since_bill': max(b['days_since_bill'] for b in bills)})
     out.sort(key=lambda d: (-d['max_days_since_bill'], -d['amount']))
+    return out
+
+
+REASON_BEAT_UNOWNED = 'Beat not in any executive\'s beats'
+
+
+def unassigned_dealers(bills, placed, unplaced, owned_beat_ids, today):
+    """Every party with bills that no executive covers, each with its bills and why:
+    placed on a beat outside `owned_beat_ids`, or not placed on a beat at all. A to Z."""
+    why = {p['name_key']: p['reason'] for p in unplaced}
+    dealers = {}
+    for b in bills:
+        where = placed.get(b['name_key'])
+        if where and where['beat_id'] in owned_beat_ids:
+            continue
+        d = dealers.setdefault((b['name_key'], b['party_name']), {
+            'party_name': b['party_name'],
+            'beat_name': where['beat_name'] if where else '',
+            'reason': REASON_BEAT_UNOWNED if where else why.get(b['name_key'], REASON_NOT_IN_MASTER),
+            'city': where['city'] if where else '',
+            'bills': [], 'amount': 0.0, 'max_days_overdue': None})
+        opening = b.get('opening')
+        d['bills'].append({'bill_date': b['bill_date'], 'ref_no': b['ref_no'], 'due_on': b['due_on'],
+                           'days_overdue': (today - b['due_on']).days, 'amount': float(b['amount']),
+                           'opening': float(opening) if opening is not None else float(b['amount'])})
+        d['amount'] = round(d['amount'] + float(b['amount']), 2)
+        if float(b['amount']) > 0:
+            d['max_days_overdue'] = max(d['max_days_overdue'] or 0, (today - b['due_on']).days)
+    out = list(dealers.values())
+    for d in out:
+        d['bills'].sort(key=lambda x: x['due_on'])
+        d['bill_count'] = len(d['bills'])
+    out.sort(key=lambda d: d['party_name'].lower())
     return out

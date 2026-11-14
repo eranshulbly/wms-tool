@@ -266,7 +266,7 @@ const FilesPanel = ({ sources, feeds, onUploaded }) => {
             <span style={{ color: '#b91c1c', fontWeight: 600 }}>
               Last Updated: {fmtDateTime(master.uploaded_on)}
             </span>
-            <span className={classes.muted}> · update from Admin → SKU Master Upload</span>
+            <span className={classes.muted}> · DMS → Analytics → Category Wise SKU Master (uploaded in Admin → SKU Master Upload)</span>
           </Typography>
         ) : (
           <Typography variant="caption" component="div" style={{ color: '#b91c1c' }}>

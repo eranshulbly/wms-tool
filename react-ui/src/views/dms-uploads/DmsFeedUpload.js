@@ -8,18 +8,20 @@ import { getBeatFeedStatus, uploadBeatFeed } from '../../services/beatOutstandin
 // The DMS / Tally uploads. Each upload replaces the previous one of the same kind.
 //   FEEDS       read by TAT Check (views/tat-check/TatCheck.js) — Admin pages, one per file
 //   BEAT_FEEDS  read by Beat Outstanding (views/beat-outstanding/BeatOutstanding.js) — the
-//               Outlet Master has an Admin page; the daily Beat Plan and Outstanding Report
-//               are uploaded on the Beat Outstanding page itself (UploadRow below)
+//               Outlet Master has an Admin page; the daily Beat Plan is uploaded on the
+//               Beat Outstanding page itself (UploadRow below). The Tally outstanding
+//               report is not an upload: it is never stored (see BeatOutstanding.js)
 
 const TAT_API = { getStatus: getFeedStatus, upload: uploadFeed, usedBy: 'TAT Check' };
 const BEAT_API = { getStatus: getBeatFeedStatus, upload: uploadBeatFeed, usedBy: 'Beat Outstanding' };
 
+// `hint` is where each file comes from — the menu path in the system that exports it.
 export const FEEDS = [
   {
     feed: 'inventory',
     label: 'DMS Inventory',
     title: 'DMS Inventory Upload',
-    hint: 'DMS inventory export (.csv) — only current stock (Units) is used',
+    hint: 'DMS → Analytics → Inventory Report',
     accept: '.csv,.xlsx',
     ...TAT_API,
   },
@@ -27,7 +29,7 @@ export const FEEDS = [
     feed: 'dispatch_pending',
     label: 'Dispatch and Pending',
     title: 'Dispatch and Pending Upload',
-    hint: 'Ebco workbook with a DISPATCH sheet, a PENDING sheet, or both (.xlsx or .csv) — only the sheets in the file are replaced',
+    hint: 'Ebco → Email',
     accept: '.xlsx',
     ...TAT_API,
   },
@@ -35,7 +37,7 @@ export const FEEDS = [
     feed: 'grn',
     label: 'GRN',
     title: 'GRN Upload',
-    hint: 'DMS GRN report, SKU-wise (.csv) — approved GRNs mark dispatches as received',
+    hint: 'DMS → Analytics → GRN Approved Status Report Sku-wise',
     accept: '.csv,.xlsx',
     ...TAT_API,
   },
@@ -46,7 +48,7 @@ export const BEAT_FEEDS = [
     feed: 'outlets',
     label: 'Outlet Master',
     title: 'Outlet Master Upload',
-    hint: 'DMS Outlet Master export (.csv) — which beat and city each outlet is on',
+    hint: 'DMS → Analytics → New Outlets Addition Master Report',
     accept: '.csv,.xlsx',
     ...BEAT_API,
   },
@@ -54,16 +56,8 @@ export const BEAT_FEEDS = [
     feed: 'beat_plan',
     label: 'Beat Plan',
     title: 'Beat Plan Upload',
-    hint: 'DMS User Beat Details export (.csv) — which beats each executive covers on a day',
+    hint: 'DMS → Analytics → User Beat Details',
     accept: '.csv,.xlsx',
-    ...BEAT_API,
-  },
-  {
-    feed: 'outstanding',
-    label: 'Outstanding Report',
-    title: 'Outstanding Upload',
-    hint: 'Tally Bills Receivable export (.xlsx) — replaces the previous report',
-    accept: '.xlsx',
     ...BEAT_API,
   },
 ];
