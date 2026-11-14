@@ -40,6 +40,7 @@ def register_all_routes():
     from ..modules.sales.uploads import router as _monthly_uploads  # noqa: F401
     from ..modules.sales.analytics import router as _sales_analytics  # noqa: F401
     from ..modules.sales.report import router as _sales_report  # noqa: F401
+    from ..modules.sales.beat_outstanding import router as _beat_outstanding  # noqa: F401
 
     # Mobile API (/api/v1/*) — ported from wms-v2-backend, see docs/V2_API_PORT.md
     from ..modules.platform.user_auth import router_v1 as _v1_auth_router        # noqa: F401

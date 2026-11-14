@@ -42,8 +42,9 @@ const InventoryIngestion = Loadable(lazy(() => import('../views/inventory/Invent
 // margin check (top-level, admin only) — reads invoices, stores nothing
 const MarginCheck = Loadable(lazy(() => import('../views/margin/MarginCheck')));
 
-// outstanding check (top-level, admin only) — reads a Tally export, stores nothing
-const OutstandingCheck = Loadable(lazy(() => import('../views/outstanding/OutstandingCheck')));
+// beat outstanding — each executive's dealers' outstanding from a picked Tally export
+const BeatOutstanding = Loadable(lazy(() => import('../views/beat-outstanding/BeatOutstanding')));
+const ExecutiveBeats = Loadable(lazy(() => import('../views/beat-outstanding/ExecutiveBeats')));
 
 //-----------------------|| MAIN ROUTING ||-----------------------//
 
@@ -74,7 +75,8 @@ const MainRoutes = () => {
                 // Supplier document ingestion (top-level, admin only)
                 '/inventory-ingestion',
                 '/margin-check',
-                '/outstanding-check',
+                '/beat-outstanding',
+                '/beat-outstanding/executive-beats',
             ]}
         >
             <MainLayout>
@@ -177,15 +179,26 @@ const MainRoutes = () => {
                         )}
                     />
 
-                    {/* Outstanding Check — dealer outstanding from an uploaded Tally
-                        export. Same access as Margin Check (see AdminGuard's
-                        allowManager): a manager chasing payments needs this day to day. */}
+                    {/* Beat Outstanding — each executive's dealers' outstanding from a picked
+                        Tally export, and the executive -> beats table. Same access as Margin
+                        Check (see AdminGuard's allowManager): a manager chasing payments
+                        needs this day to day. */}
                     <Route
-                        path="/outstanding-check"
+                        path="/beat-outstanding/executive-beats"
                         render={() => (
                             <AuthGuard>
                                 <AdminGuard allowManager>
-                                    <OutstandingCheck />
+                                    <ExecutiveBeats />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+                    <Route
+                        path="/beat-outstanding"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard allowManager>
+                                    <BeatOutstanding />
                                 </AdminGuard>
                             </AuthGuard>
                         )}

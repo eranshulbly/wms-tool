@@ -131,14 +131,14 @@ const Launcher = () => {
             show: isAdmin || isManager
         },
         {
-            key: 'outstanding-check',
-            title: 'Outstanding Check',
-            description: 'Upload a Tally outstanding statement to see what each dealer owes, and for how long.',
+            key: 'beat-outstanding',
+            title: 'Beat Outstanding',
+            description: "Each executive's dealers' outstanding from a Tally export, as Excel.",
             icon: IconCashBanknote,
             color: theme.palette.info.dark,
             tint: theme.palette.info.light,
-            path: '/outstanding-check',
-            // Same access as Margin Check, see fulfillment/invoice/router.py::OutstandingCheck.
+            path: '/beat-outstanding',
+            // Same access as Margin Check, see sales/beat_outstanding/router.py.
             show: isAdmin || isManager
         }
     ];
