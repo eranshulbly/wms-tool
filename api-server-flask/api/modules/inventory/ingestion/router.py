@@ -15,7 +15,7 @@ from flask import request
 from flask_restx import Resource
 
 from api.extensions import rest_api
-from api.core.auth import token_required, active_required
+from api.core.auth import token_required, active_required, upload_permission_required
 from api.core.logging import get_logger
 from api.modules.inventory.ingestion import service as svc
 from api.modules.inventory.ingestion.parser import ParseError
@@ -47,8 +47,12 @@ def _scope(current_user):
 
 @rest_api.route(f'{BASE}/upload')
 class IngestionUpload(Resource):
+    # Receiving stock is a permission of its own ('ingestion'), like the other uploads.
+    # It used to be guarded only in the React app, by a role == 'admin' route check, so
+    # any signed-in user who called this endpoint directly could receive stock.
     @token_required
     @active_required
+    @upload_permission_required('ingestion')
     def post(self, current_user):
         files = request.files.getlist('files') or (
             [request.files['file']] if 'file' in request.files else [])

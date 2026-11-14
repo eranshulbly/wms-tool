@@ -191,16 +191,16 @@ const MainRoutes = () => {
                         )}
                     />
 
-                    {/* Inventory Ingestion — supplier GRN / credit notes. Admin and
-                        manager-type roles: cadila_manager's role_uploads includes
-                        'ingestion', so it needs this screen for its actual job. */}
+                    {/* Inventory Ingestion — supplier GRN / credit notes. Gated on the
+                        'ingestion' upload permission (admins bypass), so receiving stock
+                        can be granted without the rest of the admin portal. */}
                     <Route
                         path="/inventory-ingestion"
                         render={() => (
                             <AuthGuard>
-                                <AdminGuard allowManager>
+                                <UploadPermissionGuard uploadType="ingestion">
                                     <InventoryIngestion />
-                                </AdminGuard>
+                                </UploadPermissionGuard>
                             </AuthGuard>
                         )}
                     />

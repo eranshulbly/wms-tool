@@ -6,7 +6,7 @@ No code changes needed to add/edit roles.
 from .db_manager import mysql_manager
 
 ALL_ORDER_STATES = ['Open', 'Picking', 'Packed', 'Invoiced', 'Dispatch Ready', 'Completed', 'Partially Completed']
-ALL_UPLOAD_TYPES = ['orders', 'invoices', 'products']
+ALL_UPLOAD_TYPES = ['orders', 'invoices', 'products', 'ingestion']
 
 
 def get_permissions(role_name):

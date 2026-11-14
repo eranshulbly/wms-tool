@@ -113,11 +113,10 @@ const Launcher = () => {
             color: theme.palette.success.dark,
             tint: theme.palette.success.light,
             path: '/inventory-ingestion',
-            // Its own tile now, not bundled under Admin. Matches the actual route guard
-            // (MainRoutes.js: <AdminGuard allowManager>) — admin or manager-type role,
-            // not the 'ingestion' upload permission, which nothing on the backend
-            // actually checks for this screen.
-            show: isAdmin || isManager
+            // Its own tile, not bundled under Admin. The route and the backend gate it on
+            // the 'ingestion' upload permission (admins bypass; manager-type roles hold
+            // it), so anyone granted that permission gets the tile too.
+            show: isAdmin || isManager || (perms.uploads || []).includes('ingestion')
         },
         {
             key: 'margin-check',

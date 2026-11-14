@@ -64,18 +64,36 @@ def _part_number(cursor_free_company_id, prefix, line):
     ONE product row; inventing a different code here would create a duplicate product for
     the same item, splitting its stock.
 
-    An existing product for the same company and printed name wins outright, so a product
-    already created by ingestion is reused even if its code was disambiguated. When the
-    exact name doesn't hit, three progressively looser (but still guarded) lookups run
-    before falling back to generating a new code — the same chain inventory ingestion's
-    own _lookup_product already runs for exactly this reason: a name that drifts from the
-    catalogue's spelling must still land on the one product that's already there, or this
-    upload mints a second, stockless product for an item the warehouse actually has.
+    A line that prints a batch takes its product from that batch first: the batch number
+    must match a received batch exactly and the product's name must be at least half like
+    the printed one (see product_upload_business.pick_batch). Sales invoices print names
+    that differ from the catalogue's ('CIPRODAC-500 TABLET' vs 'CIPRODAC-500 TAABLET', a
+    double space); requiring the name to match exactly refused stock that was on the shelf.
+
+    Otherwise — no batch, or no received batch matches — an existing product for the same
+    company and printed name wins outright, so a product already created by ingestion is
+    reused even if its code was disambiguated. When the exact name doesn't hit, three
+    progressively looser (but still guarded) lookups run before falling back to generating
+    a new code — the same chain inventory ingestion's own _lookup_product already runs for
+    exactly this reason: a name that drifts from the catalogue's spelling must still land
+    on the one product that's already there, or this upload mints a second, stockless
+    product for an item the warehouse actually has.
     """
     from api.modules.inventory.ingestion.service import _slug, _name_tokens, _NAME_FUZZY_CUTOFF
+    from api.modules.platform.catalog.product_upload_business import (
+        _norm_batch, find_batches_by_number, pick_batch,
+    )
     import difflib
     name = (line['raw_product_name'] or '').strip()
     company_id = cursor_free_company_id
+    batch = _norm_batch(line.get('raw_batch'))
+
+    if company_id and batch:
+        found, _why = pick_batch(
+            find_batches_by_number(company_id, [batch]).get(batch),
+            name=name, expiry=line.get('expiry_date'))
+        if found:
+            return found['product_string']
 
     if company_id and name:
         rows = mysql_manager.execute_query(
