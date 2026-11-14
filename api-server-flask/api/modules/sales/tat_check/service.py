@@ -193,6 +193,32 @@ def lookup(company_id, q):
     return results
 
 
+def inventory_by_category(company_id):
+    """Category, SKUs, stock and each in-stock SKU — the latest Inventory Report summed per category of the
+    SKU master in force (Analytics → Inventory Report). The two tables are joined here
+    rather than in SQL: they were created with different collations."""
+    master_id = _master_id(company_id)
+    inventory = mysql_manager.execute_query(
+        'SELECT sku_code, sku_name, stock_qty FROM tat_inventory WHERE company_id = %s', (company_id,)) or []
+    master = mysql_manager.execute_query(
+        'SELECT sku_code, category, description FROM dms_sku_master_item WHERE master_id = %s', (master_id,)) or []
+    rows = T.stock_by_category(inventory, {m['sku_code']: m for m in master})
+    # Upload times are not repeated here: the page reads them from /status, as TAT Check
+    # does, so every page shows the one latest upload.
+    return {'categories': [_jsonable(r) for r in rows]}
+
+
+def inventory_uploaded_on(company_id):
+    """When the Inventory Report in use was uploaded, in IST (stored in UTC), or None."""
+    from datetime import timedelta
+    last = mysql_manager.execute_query(
+        """SELECT uploaded_on FROM tat_upload_log WHERE company_id = %s AND feed = %s
+           ORDER BY id DESC LIMIT 1""", (company_id, P.FEED_INVENTORY))
+    if not last or not last[0]['uploaded_on']:
+        return None
+    return last[0]['uploaded_on'] + timedelta(hours=5, minutes=30)
+
+
 SUGGEST_LIMIT = 15
 
 

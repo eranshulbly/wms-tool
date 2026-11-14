@@ -68,3 +68,55 @@ def summarize(stock_qty, transit_lines, po_qty):
     return {'status': nearest['status'] if nearest else STATUS_NONE,
             'eta': nearest.get('eta') if nearest else None,
             'buckets': buckets}
+
+
+NOT_IN_MASTER = 'Not in SKU master'
+
+# Where this report shows a SKU when it is not where the SKU master files it, as
+# (code prefix, master category, category shown). The DMS files the ESmart digital locks
+# (ESDL...) under Furniture Locks; they are reported with the digital door locks
+# (DHDDL...) under Window, D&G Hardware. Only this report — the SKU master is not changed.
+CATEGORY_OVERRIDES = [
+    ('ESDL', 'FG-Furniture Locks', 'FG-Window, D&G Hard'),
+]
+
+
+def report_category(sku_code, master_category):
+    code = str(sku_code).upper()
+    for prefix, frm, to in CATEGORY_OVERRIDES:
+        if code.startswith(prefix) and master_category == frm:
+            return to
+    return master_category
+
+
+def stock_by_category(inventory, master):
+    """The Inventory Report per SKU-master category, largest stock first.
+
+    `inventory` is [{sku_code, sku_name, stock_qty}], `master` is {sku_code: {category,
+    description}} from the SKU master. Codes are compared without case, as MySQL compares
+    them in lookup(). A code is reported under report_category(). A code the master does not know goes under NOT_IN_MASTER — listed
+    last, never dropped, so the category totals always add up to the whole report.
+
+    Per category: `skus` (codes in the report), `skus_in_stock` (stock above zero),
+    `stock` (units) and `items` — each in-stock code with its description and qty, A to Z.
+    The description is the master's, else the name the Inventory Report gives.
+    """
+    by_code = {str(c).upper(): m for c, m in master.items()}
+    out = defaultdict(lambda: {'skus': 0, 'skus_in_stock': 0, 'stock': 0.0, 'items': []})
+    for r in inventory:
+        m = by_code.get(str(r['sku_code']).upper()) or {}
+        qty = float(r['stock_qty'] or 0)
+        c = out[report_category(r['sku_code'], m.get('category')) or NOT_IN_MASTER]
+        c['skus'] += 1
+        c['stock'] += qty
+        if qty > 0:
+            c['skus_in_stock'] += 1
+            c['items'].append({'sku_code': r['sku_code'],
+                               'description': m.get('description') or r.get('sku_name') or '',
+                               'qty': round(qty, 3)})
+    rows = []
+    for k, v in out.items():
+        v['items'].sort(key=lambda i: str(i['sku_code']).upper())
+        rows.append({'category': k, **v, 'stock': round(v['stock'], 3)})
+    rows.sort(key=lambda r: (r['category'] == NOT_IN_MASTER, -r['stock'], r['category']))
+    return rows

@@ -16,11 +16,14 @@ import {
   TextField,
   Snackbar,
   Alert,
+  Tabs,
+  Tab,
 } from '@material-ui/core';
 import { makeStyles } from '@material-ui/styles';
 import { IconRefresh, IconDownload } from '@tabler/icons';
 import api from '../../../services/api';
 import { useWarehouse } from '../../../context/WarehouseContext';
+import CategoryStock from './CategoryStock';
 
 const BASE = 'admin/inventory/ingestion';
 
@@ -86,7 +89,8 @@ const render = (type, v) => {
 
 const isNumeric = (t) => t === 'money' || t === 'rate' || t === 'qty';
 
-const InventoryReport = () => {
+// Batch costing from Inventory Ingestion (supplier invoices) — unchanged; now the second tab.
+const BatchCosting = () => {
   const classes = useStyles();
   const { companies, selectedCompany, setSelectedCompany } = useWarehouse();
   const [rows, setRows] = useState([]);
@@ -164,10 +168,6 @@ const InventoryReport = () => {
 
   return (
     <Box>
-      <Typography variant="h4" gutterBottom>
-        Inventory Report
-      </Typography>
-
       <Paper variant="outlined" className={classes.section} style={{ padding: 12 }}>
         <Grid container spacing={2} alignItems="center">
           {/* Ebco-only build: the one company is selected by WarehouseContext; no picker. */}
@@ -325,6 +325,22 @@ const InventoryReport = () => {
       >
         {toast && <Alert severity={toast.severity}>{toast.msg}</Alert>}
       </Snackbar>
+    </Box>
+  );
+};
+
+const InventoryReport = () => {
+  const [tab, setTab] = useState(0);
+  return (
+    <Box>
+      <Typography variant="h4" gutterBottom>
+        Inventory Report
+      </Typography>
+      <Tabs value={tab} onChange={(e, v) => setTab(v)} indicatorColor="primary" textColor="primary" style={{ marginBottom: 12 }}>
+        <Tab label="By Category" />
+        <Tab label="Batch Costing" />
+      </Tabs>
+      {tab === 0 ? <CategoryStock /> : <BatchCosting />}
     </Box>
   );
 };

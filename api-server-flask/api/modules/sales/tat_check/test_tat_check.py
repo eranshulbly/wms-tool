@@ -132,3 +132,52 @@ def test_dispatch_only_csv_is_recognised_by_columns():
 def test_file_with_neither_sheet_is_refused():
     with pytest.raises(P.ParseError):
         P.parse_dispatch_pending(_workbook(Sheet1=[['a', 'b'], [1, 2]]), 'x.xlsx')
+
+
+def test_stock_by_category_sums_per_category_and_keeps_unknown_codes():
+    inv = [{'sku_code': 'CSQL1', 'sku_name': 'Lock', 'stock_qty': 4},
+           {'sku_code': 'csql1lk', 'sku_name': 'Lock LK', 'stock_qty': 0},
+           {'sku_code': 'H1', 'sku_name': 'Hinge', 'stock_qty': 10},
+           {'sku_code': 'GHOST', 'sku_name': 'Unknown thing', 'stock_qty': 2}]
+    master = {'CSQL1': {'category': 'FG-Furniture Locks', 'description': 'Cupboard Lock'},
+              'CSQL1LK': {'category': 'FG-Furniture Locks', 'description': 'Cupboard Lock (Longer Key)'},
+              'H1': {'category': 'FG-Hinges', 'description': 'Hinge 1'}}
+    rows = T.stock_by_category(inv, master)
+    assert [r['category'] for r in rows] == ['FG-Hinges', 'FG-Furniture Locks', T.NOT_IN_MASTER]
+    locks = rows[1]
+    assert (locks['skus'], locks['skus_in_stock'], locks['stock']) == (2, 1, 4)
+    # only in-stock codes are listed, with the master's description
+    assert locks['items'] == [{'sku_code': 'CSQL1', 'description': 'Cupboard Lock', 'qty': 4}]
+    # a code the master does not know keeps the Inventory Report's name
+    assert rows[2]['items'][0]['description'] == 'Unknown thing'
+    assert sum(r['stock'] for r in rows) == 16
+
+
+def test_esmart_digital_locks_are_reported_under_window_door_hardware():
+    inv = [{'sku_code': 'ESDL2-V-FNN-BL', 'sku_name': '', 'stock_qty': 3},
+           {'sku_code': 'CSQL1', 'sku_name': '', 'stock_qty': 5}]
+    master = {'ESDL2-V-FNN-BL': {'category': 'FG-Furniture Locks', 'description': 'ESmart Digital Lock 2'},
+              'CSQL1': {'category': 'FG-Furniture Locks', 'description': 'Cupboard Lock'}}
+    rows = {r['category']: r for r in T.stock_by_category(inv, master)}
+    assert [i['sku_code'] for i in rows['FG-Window, D&G Hard']['items']] == ['ESDL2-V-FNN-BL']
+    assert [i['sku_code'] for i in rows['FG-Furniture Locks']['items']] == ['CSQL1']
+
+
+def test_inventory_export_is_the_rows_sent_with_text_kept_as_text():
+    import io as _io
+    from openpyxl import load_workbook
+    from api.modules.sales.tat_check import exports as X
+    rows = X.clean_rows([{'category': 'FG-Hinges', 'sku_code': 'H1', 'description': '=HYPERLINK("x")', 'qty': 10},
+                         {'category': 'FG-Hinges', 'sku_code': 'H2', 'description': 'Hinge', 'qty': '2.5'}])
+    wb = load_workbook(_io.BytesIO(X.build_workbook(rows)))
+    ws = wb['In-stock SKUs']
+    data = [r for r in ws.iter_rows(values_only=True) if r[1] in ('H1', 'H2')]
+    assert data == [('FG-Hinges', 'H1', '=HYPERLINK("x")', 10), ('FG-Hinges', 'H2', 'Hinge', 2.5)]
+    assert ws['C4'].data_type == 's'   # a description is never a formula
+    assert ws.auto_filter.ref == 'A3:D5'
+    assert [ws['A1'].value, ws['A2'].value] == ['In-stock SKUs by Category', None]  # title only
+    assert wb.sheetnames == ['In-stock SKUs']
+    assert {ws.cell(row=r, column=4).number_format for r in (4, 5, 6)} == {X.QTY_FORMAT}
+    assert '.' not in X.QTY_FORMAT  # whole numbers show as 420, not '420.'
+    with pytest.raises(X.ExportError):
+        X.clean_rows([])
