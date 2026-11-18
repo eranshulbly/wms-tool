@@ -1,6 +1,7 @@
 # -*- encoding: utf-8 -*-
 """The Outstanding download: a Tally-style bills-outstanding workbook (pure: data in, bytes out).
 
+  Invoices               one row per pending bill with its dealer — a flat table to filter
   Outstanding            Tally's layout — party header, one line per pending bill, the party
                          total — then, under each party, what the app knows on top of Tally:
                          payments received but not yet in Tally, Effective O/S, PDCs held.
@@ -82,9 +83,36 @@ def build_outstanding_xlsx(*, as_of, dealers, bills, payments, cheques, bounced_
 
     wb = Workbook()
 
-    # ── Outstanding ──
+    # ── Invoices: one row per pending bill, the dealer on every row (filter / sort / pivot) ──
     ws = wb.active
-    ws.title = 'Outstanding'
+    ws.title = 'Invoices'
+    row = _title(ws, ['Cadila Dist — Outstanding by invoice', subtitle])
+    _header(ws, row, ['Dealer ID', 'Dealer', 'Town', 'Tally Ledger Name', 'Bill date', 'Ref. No.', 'Type',
+                      'Bill amount', 'Outstanding', 'Due on', 'Overdue by days', 'Note'],
+            [10, 30, 16, 44, 11, 14, 15, 15, 15, 11, 10, 28])
+    first = row
+    row += 1
+    for d in shown:
+        for b in bills_by.get(d['dealer_id'], []):
+            vals = [d['dealer_id'], d['dealer_name'], d.get('town') or '', d['tally_ledger_name'], b['bill_date'],
+                    b['ref_no'], KIND_LABEL.get(b['kind'], b['kind'] or ''), _f(b['opening_amt']),
+                    _f(b['pending_amt']), b['due_on'], b['overdue_days'],
+                    R.BOUNCE_LABEL if b['kind'] == KIND_BOUNCE else None]
+            for col, v in enumerate(vals, start=1):
+                ws.cell(row=row, column=col, value=v)
+            for col in (5, 10):
+                ws.cell(row=row, column=col).number_format = DATE
+            for col in (8, 9):
+                ws.cell(row=row, column=col).number_format = DRCR
+            row += 1
+    if row > first + 1:
+        ws.auto_filter.ref = f'A{first}:{get_column_letter(12)}{row - 1}'
+    ws.cell(row=row, column=4, value='Total outstanding').font = BOLD
+    c = ws.cell(row=row, column=9, value=_f(sum((b['pending_amt'] for b in bills), R.ZERO)))
+    c.number_format, c.font = DRCR, BOLD
+
+    # ── Outstanding ──
+    ws = wb.create_sheet('Outstanding')
     row = _title(ws, ['Cadila Dist — Bills outstanding (dealer-wise)', subtitle])
     _header(ws, row, ['Date', 'Ref. No.', "Party's Name", 'Type', 'Opening Amount', 'Pending Amount',
                       'Due on', 'Overdue by days', 'Note'], [11, 14, 46, 15, 16, 16, 11, 10, 44])
