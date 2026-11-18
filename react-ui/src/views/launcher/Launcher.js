@@ -19,7 +19,8 @@ import {
     IconArrowRight,
     IconShoppingCart,
     IconClock,
-    IconRoute
+    IconRoute,
+    IconCurrencyRupee
 } from '@tabler/icons';
 
 import { scopeForRole } from '../../utils/roleScope';
@@ -134,6 +135,17 @@ const Launcher = () => {
             tint: theme.palette.warning.light,
             path: '/beat-outstanding',
             // Same access as the backend (sales/beat_outstanding/router.py): admin only.
+            show: isAdmin
+        },
+        {
+            key: 'dealer-payments',
+            title: 'Dealer Payments',
+            description: 'Log payments as they arrive; see who to chase, who to wait for (PDC) and who is clear.',
+            icon: IconCurrencyRupee,
+            color: theme.palette.success.dark,
+            tint: theme.palette.success.light,
+            path: '/dealer-payments',
+            // Admin only, as the backend (sales/dealer_payments/router.py).
             show: isAdmin
         }
     ];

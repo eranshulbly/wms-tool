@@ -42,6 +42,12 @@ const DmsFeedUpload = Loadable(lazy(() => import('../views/dms-uploads/DmsFeedUp
 const BeatOutstanding = Loadable(lazy(() => import('../views/beat-outstanding/BeatOutstanding')));
 const ExecutiveBeats = Loadable(lazy(() => import('../views/beat-outstanding/ExecutiveBeats')));
 
+// dealer payment tracker — Tally outstanding + receipts, payments logged here, PDCs
+const DealerPayments = Loadable(lazy(() => import('../views/dealer-payments/DealerPayments')));
+const PaymentLog = Loadable(lazy(() => import('../views/dealer-payments/PaymentLog')));
+const LogPaymentPage = Loadable(lazy(() =>
+    import('../views/dealer-payments/PaymentLog').then((m) => ({ default: m.LogPaymentPage }))));
+
 //-----------------------|| MAIN ROUTING ||-----------------------//
 
 const MainRoutes = () => {
@@ -71,6 +77,9 @@ const MainRoutes = () => {
                 '/outlet-master-upload',
                 '/beat-outstanding',
                 '/beat-outstanding/executive-beats',
+                '/dealer-payments',
+                '/dealer-payments/log',
+                '/dealer-payments/payments',
                 '/po-builder',
                 '/tat-check',
             ]}
@@ -164,6 +173,38 @@ const MainRoutes = () => {
                             <AuthGuard>
                                 <AdminGuard>
                                     <BeatOutstanding />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+
+                    {/* Dealer Payment Tracker — admin only on Ebco (sales/dealer_payments/router.py). */}
+                    <Route
+                        path="/dealer-payments/log"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard>
+                                    <LogPaymentPage />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+                    <Route
+                        path="/dealer-payments/payments"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard>
+                                    <PaymentLog />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+                    <Route
+                        path="/dealer-payments"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard>
+                                    <DealerPayments />
                                 </AdminGuard>
                             </AuthGuard>
                         )}
