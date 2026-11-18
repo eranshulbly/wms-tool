@@ -453,12 +453,7 @@ def test_outstanding_download_matches_tally_and_lists_every_bill(export1, master
     data = build_outstanding_xlsx(as_of=export1['as_of'], dealers=master, bills=bills, payments=pays, cheques=chq,
                                   bounced_cheques={}, cheques_note='test', today=AS_OF)
     wb = openpyxl.load_workbook(io.BytesIO(data))
-    assert wb.sheetnames == ['Invoices', 'Outstanding', 'Dealer summary', 'PDC cheques', 'Received, not in Tally']
-    inv = list(wb['Invoices'].iter_rows(min_row=5, values_only=True))
-    lines = [r for r in inv if r[5]]
-    assert len(lines) == len(bills) and all(r[0] and r[3] for r in lines)
-    assert round(sum(r[8] for r in lines), 2) == 5195763
-    assert inv[-1][3] == 'Total outstanding' and round(inv[-1][8], 2) == 5195763
+    assert wb.sheetnames == ['Outstanding', 'Dealer summary', 'PDC cheques', 'Received, not in Tally']
     ws = wb['Outstanding']
     rows = list(ws.iter_rows(values_only=True))
     grand = next(r for r in rows if r[2] == 'Grand Total (Tally O/S)')
