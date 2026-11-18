@@ -552,3 +552,10 @@ def test_ebco_grpbills_kinds():
     by_ref = {b['ref_no']: b['kind'] for b in out['bills']}
     assert by_ref['26-27/EBVCN/001'] == P.KIND_CREDIT_NOTE and by_ref['4730'] == P.KIND_RECEIPT
     assert by_ref['535'] == P.KIND_OTHER and by_ref['AE/26-27/4795'] == P.KIND_OTHER
+
+
+def test_name_key_ignores_leading_for():
+    assert R.name_key('FOR FUTURE INDUSTRIES') == R.name_key('Future Industries | Ebco | Bareilly')
+    assert R.name_key('For  Future Industries') == R.name_key('FUTURE INDUSTRIES')
+    assert R.name_key('FORTUNE HARDWARE') == 'FORTUNEHARDWARE'        # only the word "For"
+    assert R.name_key('M/S GULATHI MEDICAL CENTRE') == R.name_key('Gulathi Medical Centre | Cadila | Sambhal')

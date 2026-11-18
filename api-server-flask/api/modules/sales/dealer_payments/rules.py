@@ -273,10 +273,11 @@ def credit_balances(bills):
 
 def name_key(name):
     """A party name reduced for matching across systems: the part before the first '|',
-    upper case, a leading M/S or MS dropped, letters and digits only.
+    upper case, a leading M/S, MS or FOR dropped (FOR: a name read off the signature line,
+    "For Future Industries"), letters and digits only.
     'M/S GULATHI MEDICAL CENTRE' and 'Gulathi Medical Centre | Cadila | Sambhal' agree."""
     s = str(name or '').split('|')[0].upper().strip()
-    s = re.sub(r'^(M\s*/\s*S\.?|M\.S\.|MS\.?)\s+', '', s)
+    s = re.sub(r'^(M\s*/\s*S\.?|M\.S\.|MS\.?|FOR)\s+', '', s)
     return re.sub(r'[^A-Z0-9]', '', s)
 
 
