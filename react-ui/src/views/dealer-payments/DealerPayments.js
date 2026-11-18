@@ -35,9 +35,12 @@ import {
   uploadTallyExport,
 } from '../../services/dealerPaymentsService';
 import PaymentForm from './PaymentForm';
-import DealerDetail, { ChequeStatusChip, CHEQUE_STATUS, countedIn, OverdueList, pdcs, Received } from './DealerDetail';
+import DealerDetail, {
+  ACTION_COLOR, actionLabel, ChequeStatusChip, CHEQUE_STATUS, countedIn, OverdueList, pdcs, Received
+} from './DealerDetail';
 
-// The daily dealer screen (spec 4): who to chase, who to wait for (PDC), who is clear.
+// The daily dealer screen (spec 4): who to chase, who to wait for (PDC), who is not due yet,
+// who is clear.
 // Tally O/S comes from the latest Outstanding export; Received, not in Tally from payments
 // logged here and still OPEN; PDCs from the cheque system. Flags in Manual check never
 // change a balance.
@@ -50,7 +53,6 @@ const fmtDate = (iso) =>
 const fmtWhen = (iso) =>
   iso ? new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
 
-const ACTION_COLOR = { CHASE: 'error', WAIT: 'warning', CLEAR: 'success' };
 
 const FILES = [
   {
@@ -331,8 +333,7 @@ const DealerPayments = () => {
                 <TableCell align="right" sx={{ fontWeight: 600 }}>{inr(r.effective_os)}</TableCell>
                 <TableCell align="right"><OverdueList overdue={r.overdue} /></TableCell>
                 <TableCell>
-                  <Chip size="small" color={ACTION_COLOR[r.action]}
-                    label={r.action === 'WAIT' ? `WAIT till ${fmtDate(r.wait_till)}` : r.action} />
+                  <Chip size="small" color={ACTION_COLOR[r.action]} label={actionLabel(r)} />
                 </TableCell>
               </TableRow>
             ))}

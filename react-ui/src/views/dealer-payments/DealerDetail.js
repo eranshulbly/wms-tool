@@ -81,7 +81,14 @@ const PAY_COLOR = { OPEN: 'warning', POSTED: 'success', CANCELLED: 'default', BO
 const KIND = {
   invoice: 'Invoice', bounce: 'Bounced receipt', credit_note: 'Credit note', receipt: 'Receipt (on account)', other: 'Other'
 };
-const ACTION_COLOR = { CHASE: 'error', WAIT: 'warning', CLEAR: 'success' };
+// The dealer's action (sales/dealer_payments/rules.py action_for). NOT DUE: money is owed but
+// no bill is past its due date yet; `wait_till` is then the next due date.
+export const ACTION_COLOR = { CHASE: 'error', WAIT: 'warning', NOT_DUE: 'info', CLEAR: 'success' };
+export const actionLabel = (r) => {
+  if (r.action === 'WAIT') return `WAIT till ${fmtDate(r.wait_till)}`;
+  if (r.action === 'NOT_DUE') return r.wait_till ? `NOT DUE till ${fmtDate(r.wait_till)}` : 'NOT DUE';
+  return r.action;
+};
 const H = { fontWeight: 600, whiteSpace: 'nowrap' };
 
 const Section = ({ title, count, children }) => (
@@ -188,8 +195,7 @@ const DealerDetail = ({ dealerId }) => {
           <Stat label="Overdue (amount · days)" value={<OverdueList overdue={s.overdue} />} />
           <Grid item xs={6} sm={4} md={2}>
             <Typography variant="caption" color="textSecondary" component="div">Action</Typography>
-            <Chip size="small" color={ACTION_COLOR[s.action]}
-              label={s.action === 'WAIT' ? `WAIT till ${fmtDate(s.wait_till)}` : s.action} />
+            <Chip size="small" color={ACTION_COLOR[s.action]} label={actionLabel(s)} />
           </Grid>
         </Grid>
       </Paper>

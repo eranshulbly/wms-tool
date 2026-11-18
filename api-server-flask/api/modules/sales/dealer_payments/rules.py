@@ -48,7 +48,7 @@ FLAG_LABELS = {
     FLAG_NEW_DEALER: 'New dealer',
 }
 
-ACTION_CHASE, ACTION_WAIT, ACTION_CLEAR = 'CHASE', 'WAIT', 'CLEAR'
+ACTION_CHASE, ACTION_WAIT, ACTION_NOT_DUE, ACTION_CLEAR = 'CHASE', 'WAIT', 'NOT_DUE', 'CLEAR'
 
 
 def receipt_key(r):
@@ -382,17 +382,38 @@ def age_bills(bills, today):
 
 # ── 4. the daily dealer screen ────────────────────────────────────────────────
 
-def action_for(effective, pdc_amount, next_pdc):
-    """(action, wait_till) — CLEAR if Effective O/S ≤ 0; WAIT till the next PDC if PDCs
-    held cover it; else CHASE (4)."""
+def action_for(effective, pdc_amount, next_pdc, overdue=None, next_due=None):
+    """(action, till) — CLEAR if Effective O/S ≤ 0; NOT_DUE till `next_due` if none of it is
+    past due yet; WAIT till the next PDC if PDCs held cover the overdue part; else CHASE (4).
+
+    `overdue` is the part of Effective O/S that is past due (overdue_os); None treats all
+    of it as due, as before due dates were used."""
     if effective <= 0:
         return ACTION_CLEAR, None
-    if pdc_amount >= effective:
+    due = effective if overdue is None else overdue
+    if due <= 0:
+        return ACTION_NOT_DUE, next_due
+    if pdc_amount >= due:
         return ACTION_WAIT, next_pdc
     return ACTION_CHASE, None
 
 
-_ACTION_ORDER = {ACTION_CHASE: 0, ACTION_WAIT: 1, ACTION_CLEAR: 2}
+def overdue_os(dbills, received):
+    """(overdue part of Effective O/S, next due date) for one dealer's bills, due dates counted
+    to today (age_bills). Payments not in Tally and credit balances (Cr bills: on-account
+    receipts, credit notes) settle the overdue bills first. (None, None) when a bill that is
+    not overdue has no due date, so whether it is due cannot be told."""
+    overdue = sum((b['pending_amt'] for b in dbills
+                   if b['pending_amt'] > 0 and b.get('overdue_days') is not None), ZERO)
+    credits = -sum((b['pending_amt'] for b in dbills if b['pending_amt'] < 0), ZERO)
+    not_due = [b for b in dbills if b['pending_amt'] > 0 and b.get('overdue_days') is None]
+    if any(b.get('due_on') is None for b in not_due):
+        return None, None
+    next_due = min((b['due_on'] for b in not_due), default=None)
+    return max(ZERO, overdue - credits - received), next_due
+
+
+_ACTION_ORDER = {ACTION_CHASE: 0, ACTION_WAIT: 1, ACTION_NOT_DUE: 2, ACTION_CLEAR: 3}
 
 
 def dealer_summary(d, dbills, payments, cheques, bounced_cheque_keys=(), cleared=()):
@@ -411,7 +432,8 @@ def dealer_summary(d, dbills, payments, cheques, bounced_cheque_keys=(), cleared
     pdc_amount = sum((c['amount'] for c in held), ZERO)
     next_pdc = held[0]['cheque_date'] if held else None
     effective = tally - received
-    action, wait_till = action_for(effective, pdc_amount, next_pdc)
+    due_os, next_due = overdue_os(dbills, received)
+    action, wait_till = action_for(effective, pdc_amount, next_pdc, due_os, next_due)
     overdue = [b['overdue_days'] for b in dbills if b['pending_amt'] > 0 and b.get('overdue_days') is not None]
     # How much is overdue by how many days: the pending amounts of the overdue bills, bills
     # overdue by the same number of days added together, oldest first.
@@ -428,6 +450,7 @@ def dealer_summary(d, dbills, payments, cheques, bounced_cheque_keys=(), cleared
         'cleared_cheques': len(my_cleared), 'cleared_cheques_amount': cleared_amt,
         'pdc_count': len(held), 'pdc_amount': pdc_amount, 'next_pdc_date': next_pdc,
         'effective_os': effective,
+        'overdue_os': due_os, 'next_due_date': next_due,
         'oldest_overdue_days': max(overdue) if overdue else None,
         'overdue': [{'days': days, 'amount': amt} for days, amt in sorted(by_days.items(), reverse=True)],
         'action': action, 'wait_till': wait_till,
@@ -438,8 +461,8 @@ def dealer_summary(d, dbills, payments, cheques, bounced_cheque_keys=(), cleared
 
 
 def dealer_rows(dealers, bills, payments, cheques, today, bounced_cheque_keys=(), cleared=()):
-    """One row per active dealer not excluded from chasing (4), sorted CHASE first, each
-    group by Effective O/S descending.
+    """One row per active dealer not excluded from chasing (4), sorted CHASE, WAIT, NOT_DUE,
+    CLEAR, each group by Effective O/S descending.
 
     `bills` the latest Export 1 snapshot; `payments` the payment log; `cheques` mapped
     cheques (with dealer_id). A cheque labelled bounced by a Boo bill is not counted as held.
