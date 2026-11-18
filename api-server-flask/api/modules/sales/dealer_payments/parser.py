@@ -33,12 +33,14 @@ CENTS = Decimal('0.01')
 KIND_INVOICE = 'invoice'          # A000031 (Cadila), 26-27-EB-INV-20 (Ebco) — sales invoice (Dr)
 KIND_BOUNCE = 'bounce'            # Boo 338558 — bill made by a Payment voucher: a bounced /
                                   # reversed receipt, Dr: the dealer owes it again
-KIND_CREDIT_NOTE = 'credit_note'  # CN00005, SC00001 — credit notes (Cr)
+KIND_CREDIT_NOTE = 'credit_note'  # CN00005, SC00001 (Cadila), 26-27/EBVCN/001 (Ebco) — credit notes (Cr)
+KIND_RECEIPT = 'receipt'          # a receipt not adjusted against any bill (on account, Cr); told by
+                                  # its own voucher line being a Receipt, not by the ref (a bare number)
 KIND_OTHER = 'other'
 
 _RE_INVOICE = re.compile(r'^(A\d{6}|\d{2}-\d{2}-[A-Z]+-INV-\d+)$')
 _RE_BOUNCE = re.compile(r'^Boo\s+\d+$')
-_RE_CREDIT_NOTE = re.compile(r'^(CN|SC)\d+$')
+_RE_CREDIT_NOTE = re.compile(r'^((CN|SC)\d+|\d{2}-\d{2}/[A-Z]*CN/\d+)$')
 _RE_PERIOD = re.compile(r'(\d{1,2}-[A-Za-z]{3}-\d{2,4})\s+to\s+(\d{1,2}-[A-Za-z]{3}-\d{2,4})')
 
 
@@ -327,6 +329,12 @@ def parse_outstanding(data):
         seen[key] = x
         unique.append(x)
     bills = unique
+    # A receipt Tally holds on account shows as its own "bill": the ref is the receipt's voucher
+    # number and the one voucher line under it is that Receipt.
+    own_type = {(v['party'], v['ref_no']): v['vch_type'] for v in adjustments if v['vch_no'] == v['ref_no']}
+    for x in bills:
+        if x['kind'] == KIND_OTHER and (own_type.get((x['party'], x['ref_no'])) or '').lower() == 'receipt':
+            x['kind'] = KIND_RECEIPT
     kept_rows = {x['row'] for x in bills}
     adjustments = [v for v in adjustments if (v['party'], v['ref_no']) in seen
                    and seen[(v['party'], v['ref_no'])]['row'] in kept_rows]

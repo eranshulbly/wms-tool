@@ -17,7 +17,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from api.modules.sales.dealer_payments import rules as R
-from api.modules.sales.dealer_payments.parser import KIND_BOUNCE, KIND_CREDIT_NOTE
+from api.modules.sales.dealer_payments.parser import KIND_BOUNCE, KIND_CREDIT_NOTE, KIND_RECEIPT
 
 DRCR = '#,##0.00 "Dr";#,##0.00 "Cr";0.00'
 MONEY = '#,##0.00;-#,##0.00;0.00'
@@ -27,7 +27,8 @@ HEAD = Font(bold=True, color='FFFFFF')
 HEAD_FILL = PatternFill('solid', fgColor='1F4E78')
 PARTY_FILL = PatternFill('solid', fgColor='DDEBF7')
 TOTAL_TOP = Border(top=Side(style='thin'))
-KIND_LABEL = {KIND_BOUNCE: 'Bounced receipt', KIND_CREDIT_NOTE: 'Credit note', 'invoice': 'Invoice'}
+KIND_LABEL = {KIND_BOUNCE: 'Bounced receipt', KIND_CREDIT_NOTE: 'Credit note', 'invoice': 'Invoice',
+              KIND_RECEIPT: 'Receipt (on account)', 'other': 'Other'}
 
 
 def _f(v):

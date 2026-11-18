@@ -78,7 +78,9 @@ export const CHEQUE_STATUS = {
   BOUNCED: { label: 'Bounced', color: 'error' },
 };
 const PAY_COLOR = { OPEN: 'warning', POSTED: 'success', CANCELLED: 'default', BOUNCED: 'error' };
-const KIND = { invoice: 'Invoice', bounce: 'Bounced receipt', credit_note: 'Credit note', other: 'Other' };
+const KIND = {
+  invoice: 'Invoice', bounce: 'Bounced receipt', credit_note: 'Credit note', receipt: 'Receipt (on account)', other: 'Other'
+};
 const ACTION_COLOR = { CHASE: 'error', WAIT: 'warning', CLEAR: 'success' };
 const H = { fontWeight: 600, whiteSpace: 'nowrap' };
 

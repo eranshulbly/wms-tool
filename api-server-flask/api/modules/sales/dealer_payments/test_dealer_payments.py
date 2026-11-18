@@ -538,3 +538,17 @@ def test_cleared_cheques_not_in_tally():
     assert (s['cleared_cheques'], s['cleared_cheques_amount']) == (3, D('3900'))
     assert s['received_not_in_tally'] == D('4000')             # ₹100 logged + ₹3,900 cleared cheques
     assert s['effective_os'] == D('1000')
+
+
+def test_ebco_grpbills_kinds():
+    out = P.parse_outstanding(_sample('EbcoGrpBills.xlsx'))
+    assert out['grand_total'] == D('6474522.80') and len(out['bills']) == 180 and not out['warnings']
+    kinds = {}
+    for b in out['bills']:
+        kinds[b['kind']] = kinds.get(b['kind'], 0) + 1
+    # 26-27/EBVCN/n are credit notes; a receipt held on account (ref = its voucher no.) is a
+    # receipt; the Ebco Purchase bills (AE/26-27/n) and one Payment (535) stay "other".
+    assert kinds == {P.KIND_INVOICE: 156, P.KIND_CREDIT_NOTE: 14, P.KIND_RECEIPT: 6, P.KIND_OTHER: 4}
+    by_ref = {b['ref_no']: b['kind'] for b in out['bills']}
+    assert by_ref['26-27/EBVCN/001'] == P.KIND_CREDIT_NOTE and by_ref['4730'] == P.KIND_RECEIPT
+    assert by_ref['535'] == P.KIND_OTHER and by_ref['AE/26-27/4795'] == P.KIND_OTHER
