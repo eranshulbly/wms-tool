@@ -25,7 +25,7 @@ import {
   useMediaQuery,
   useTheme,
 } from '@material-ui/core';
-import { IconDownload, IconFileInvoice, IconPlus, IconRefresh, IconSearch, IconUpload, IconX } from '@tabler/icons';
+import { IconDownload, IconFileInvoice, IconPlus, IconRefresh, IconUpload, IconX } from '@tabler/icons';
 import {
   downloadOutstanding,
   errMsg,
@@ -53,6 +53,43 @@ const fmtDate = (iso) =>
 const fmtWhen = (iso) =>
   iso ? new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
 
+// ── Column filters for the dealer table ─────────────────────────────────────────────────────
+// A money column (and Overdue, by days) takes a comparison: >50000, >=50000, <1000, <=1000,
+// =0, or a range 10000-50000 (₹ and commas ignored). Anything else is looked for in the text
+// the cell shows. Every filled-in filter must match.
+const toNum = (t) => Number(String(t).replace(/[₹,\s]/g, ''));
+const COMPARE = /^(>=|<=|>|<|=)\s*(-?[\d.,₹\s]+)$/;
+const RANGE = /^(-?[\d.,₹]+)\s*(?:-|to)\s*(-?[\d.,₹]+)$/i;
+
+export const matchesFilter = (value, text, filter) => {
+  const f = (filter || '').trim();
+  if (!f) return true;
+  const cmp = f.match(COMPARE);
+  const rng = !cmp && f.match(RANGE);
+  if (cmp || rng) {
+    if (value === null || value === undefined) return false;
+    const v = Number(value);
+    if (rng) return v >= Math.min(toNum(rng[1]), toNum(rng[2])) && v <= Math.max(toNum(rng[1]), toNum(rng[2]));
+    const n = toNum(cmp[2]);
+    return { '>': v > n, '>=': v >= n, '<': v < n, '<=': v <= n, '=': v === n }[cmp[1]];
+  }
+  const plain = (x) => String(x).toLowerCase().replace(/[,.]/g, '');   // "sas" finds S.A.S
+  return plain(f).split(/\s+/).every((w) => plain(text).includes(w));
+};
+
+// key, the value compared, and the text searched, per column of the dealer table.
+const COLUMN_FILTERS = [
+  { key: 'dealer', placeholder: 'Name, town or ID', value: () => null, text: (r) => `${r.dealer} ${r.dealer_id}` },
+  { key: 'tally_os', placeholder: 'e.g. >50000', value: (r) => r.tally_os, text: (r) => inr(r.tally_os) },
+  { key: 'received', placeholder: 'e.g. >0', value: (r) => r.received_not_in_tally || 0,
+    text: (r) => `${inr(r.received_not_in_tally)} ${r.cleared_cheques ? 'cleared cheque' : ''}` },
+  { key: 'pdc', placeholder: 'e.g. >0', value: (r) => r.pdc_amount || 0,
+    text: (r) => (r.pdc_count ? `${r.pdc_count} PDC ${inr(r.pdc_amount)} ${fmtDate(r.next_pdc_date)}` : '—') },
+  { key: 'effective', placeholder: 'e.g. 10000-50000', value: (r) => r.effective_os, text: (r) => inr(r.effective_os) },
+  // Overdue compares the oldest overdue days: >30 = something overdue more than 30 days.
+  { key: 'overdue', placeholder: 'Days, e.g. >30', value: (r) => (r.overdue?.length ? r.overdue[0].days : null),
+    text: (r) => (r.overdue || []).map((o) => `${inr(o.amount)} ${o.days} days`).join(' ') || '—' }
+];
 
 const FILES = [
   {
@@ -180,7 +217,8 @@ const DealerPayments = () => {
   const [chequesOpen, setChequesOpen] = useState(false);
   const [chequeStatus, setChequeStatus] = useState('');
   const [downloading, setDownloading] = useState(false);
-  const [search, setSearch] = useState('');
+  const [filters, setFilters] = useState({});   // column key -> what is typed; action -> chosen action
+  const setFilter = (key, v) => setFilters((f) => ({ ...f, [key]: v }));
 
   const download = async () => {
     setDownloading(true);
@@ -227,15 +265,12 @@ const DealerPayments = () => {
 
   const s = screen || {};
   const rows = s.rows || [];
-  // Search the dealer table: every word typed must appear in the dealer's name (town), ID or
-  // action — so "moradabad chase" finds Moradabad dealers to chase.
-  const words = search.toLowerCase().split(/\s+/).filter(Boolean);
-  const shownRows = words.length
-    ? rows.filter((r) => {
-        const text = `${r.dealer} ${r.dealer_id} ${actionLabel(r)}`.toLowerCase();
-        return words.every((w) => text.includes(w));
-      })
-    : rows;
+  const filtersOn = Object.values(filters).some((v) => (v || '').trim());
+  const shownRows = rows.filter(
+    (r) =>
+      COLUMN_FILTERS.every((c) => matchesFilter(c.value(r), c.text(r), filters[c.key])) &&
+      (!filters.action || r.action === filters.action)
+  );
   const uploads = s.uploads || {};
   const cheque = s.cheque_system || {};
 
@@ -296,19 +331,12 @@ const DealerPayments = () => {
       </Grid>
       {cheque.error && <Alert severity="warning" sx={{ mb: 1 }}>{cheque.error}</Alert>}
 
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 1, flexWrap: 'wrap' }}>
-        <TextField size="small" value={search} onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search dealer, town, ID or action" sx={{ width: { xs: '100%', sm: 340 } }}
-          InputProps={{
-            startAdornment: <IconSearch size={16} style={{ marginRight: 8, opacity: 0.6 }} />,
-            endAdornment: search ? (
-              <IconButton size="small" onClick={() => setSearch('')} aria-label="Clear search"><IconX size={14} /></IconButton>
-            ) : null
-          }} />
-        {words.length > 0 && (
+      {filtersOn && (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 1 }}>
           <Typography variant="body2" color="textSecondary">{shownRows.length} of {rows.length} dealers</Typography>
-        )}
-      </Box>
+          <Button size="small" onClick={() => setFilters({})}>Clear filters</Button>
+        </Box>
+      )}
 
       <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 2, mb: 2 }}>
         <Table size="small">
@@ -323,6 +351,25 @@ const DealerPayments = () => {
               <TableCell align="right" sx={{ fontWeight: 600 }}>Effective O/S</TableCell>
               <TableCell align="right" sx={{ fontWeight: 600 }}>Overdue (amount · days)</TableCell>
               <TableCell sx={{ fontWeight: 600 }}>Action</TableCell>
+            </TableRow>
+            <TableRow>
+              {COLUMN_FILTERS.map((c) => (
+                <TableCell key={c.key} sx={{ py: 0.5 }}>
+                  <TextField variant="standard" size="small" fullWidth placeholder={c.placeholder}
+                    value={filters[c.key] || ''} onChange={(e) => setFilter(c.key, e.target.value)}
+                    inputProps={{ 'aria-label': `Filter ${c.key}`, style: { fontSize: 13 } }} />
+                </TableCell>
+              ))}
+              <TableCell sx={{ py: 0.5 }}>
+                <TextField select variant="standard" size="small" fullWidth value={filters.action || ''}
+                  onChange={(e) => setFilter('action', e.target.value)}
+                  SelectProps={{ displayEmpty: true }} inputProps={{ 'aria-label': 'Filter action', style: { fontSize: 13 } }}>
+                  <MenuItem value="">All</MenuItem>
+                  {['CHASE', 'WAIT', 'NOT_DUE', 'CLEAR'].map((a) => (
+                    <MenuItem key={a} value={a}>{a === 'NOT_DUE' ? 'NOT DUE' : a}</MenuItem>
+                  ))}
+                </TextField>
+              </TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -341,7 +388,7 @@ const DealerPayments = () => {
             {screen && rows.length > 0 && !shownRows.length && (
               <TableRow>
                 <TableCell colSpan={7} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                  No dealer matches "{search}".
+                  No dealer matches the filters.
                 </TableCell>
               </TableRow>
             )}
