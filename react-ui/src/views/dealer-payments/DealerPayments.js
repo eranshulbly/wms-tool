@@ -54,6 +54,28 @@ const fmtWhen = (iso) =>
   iso ? new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
 
 
+// Header filters on the dealer table.
+const NO_FILTERS = { dealer: '', tally: '', received: '', pdc: '', effective: '', overdue: '', action: '' };
+const FILTER_CELL = { py: 0.5, borderBottomWidth: 2 };
+const FILTER_INPUT = { size: 'small', variant: 'standard', fullWidth: true };
+
+// Whether `value` passes a number filter: ">50000", "<= 1,000", "=0", "10000-50000", or a
+// plain number (matched as text, so "56" finds 56,000). Blank passes everything; a missing
+// value counts as 0.
+export const numberMatches = (expr, value) => {
+  const e = String(expr || '').replace(/[₹,\s]/g, '').replace(/^days/i, '');
+  if (!e) return true;
+  const v = Number(value || 0);
+  let m = /^(>=|<=|>|<|=)(-?\d+(?:\.\d+)?)$/.exec(e);
+  if (m) {
+    const n = Number(m[2]);
+    return { '>': v > n, '<': v < n, '>=': v >= n, '<=': v <= n, '=': v === n }[m[1]];
+  }
+  m = /^(-?\d+(?:\.\d+)?)-(-?\d+(?:\.\d+)?)$/.exec(e);
+  if (m) return v >= Number(m[1]) && v <= Number(m[2]);
+  return String(Math.round(v * 100) / 100).includes(e);
+};
+
 const FILES = [
   {
     key: 'outstanding',
@@ -180,6 +202,8 @@ const DealerPayments = () => {
   const [chequesOpen, setChequesOpen] = useState(false);
   const [chequeStatus, setChequeStatus] = useState('');
   const [downloading, setDownloading] = useState(false);
+  const [filters, setFilters] = useState(NO_FILTERS);
+  const setFilter = (key) => (e) => setFilters((f) => ({ ...f, [key]: e.target.value }));
 
   const download = async () => {
     setDownloading(true);
@@ -225,7 +249,22 @@ const DealerPayments = () => {
   };
 
   const s = screen || {};
-  const rows = s.rows || [];
+  const allRows = s.rows || [];
+  // The filters in the table header, all applied together.
+  const active = Object.values(filters).some((v) => String(v).trim());
+  const rows = active
+    ? allRows.filter((r) => {
+        const words = filters.dealer.trim().toLowerCase().split(/\s+/).filter(Boolean);
+        const hay = `${r.dealer} ${r.dealer_id}`.toLowerCase();
+        return words.every((w) => hay.includes(w))
+          && numberMatches(filters.tally, r.tally_os)
+          && numberMatches(filters.received, r.received_not_in_tally)
+          && numberMatches(filters.pdc, r.pdc_amount)
+          && numberMatches(filters.effective, r.effective_os)
+          && numberMatches(filters.overdue, r.oldest_overdue_days)
+          && (!filters.action || r.action === filters.action);
+      })
+    : allRows;
   const uploads = s.uploads || {};
   const cheque = s.cheque_system || {};
 
@@ -286,6 +325,12 @@ const DealerPayments = () => {
       </Grid>
       {cheque.error && <Alert severity="warning" sx={{ mb: 1 }}>{cheque.error}</Alert>}
 
+      {active && (
+        <Box display="flex" alignItems="center" sx={{ gap: 1, mb: 0.5 }}>
+          <Typography variant="body2" color="textSecondary">{rows.length} of {allRows.length} dealers</Typography>
+          <Button size="small" onClick={() => setFilters(NO_FILTERS)}>Clear filters</Button>
+        </Box>
+      )}
       <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 2, mb: 2 }}>
         <Table size="small">
           <TableHead>
@@ -300,6 +345,27 @@ const DealerPayments = () => {
               <TableCell align="right" sx={{ fontWeight: 600 }}>Overdue (amount · days)</TableCell>
               <TableCell sx={{ fontWeight: 600 }}>Action</TableCell>
             </TableRow>
+            {/* One filter per column. Amounts and days take >, <, >=, <=, = or a range a-b. */}
+            <TableRow>
+              <TableCell sx={FILTER_CELL}>
+                <TextField {...FILTER_INPUT} placeholder="Name, town or ID" value={filters.dealer} onChange={setFilter('dealer')} />
+              </TableCell>
+              {[['tally', '>50000'], ['received', '>0'], ['pdc', '>0'], ['effective', '>50000'], ['overdue', 'days >30']].map(([key, hint]) => (
+                <TableCell key={key} sx={FILTER_CELL} align="right">
+                  <TextField {...FILTER_INPUT} placeholder={hint} value={filters[key]} onChange={setFilter(key)}
+                    inputProps={{ style: { textAlign: 'right' } }} />
+                </TableCell>
+              ))}
+              <TableCell sx={FILTER_CELL}>
+                <TextField {...FILTER_INPUT} select value={filters.action} onChange={setFilter('action')}
+                  SelectProps={{ displayEmpty: true }}>
+                  <MenuItem value="">All</MenuItem>
+                  {['CHASE', 'WAIT', 'NOT_DUE', 'CLEAR'].map((a) => (
+                    <MenuItem key={a} value={a}>{a.replace('_', ' ')}</MenuItem>
+                  ))}
+                </TextField>
+              </TableCell>
+            </TableRow>
           </TableHead>
           <TableBody>
             {loading && !screen && (
@@ -310,7 +376,8 @@ const DealerPayments = () => {
             {screen && !rows.length && (
               <TableRow>
                 <TableCell colSpan={7} align="center" sx={{ py: 4, color: 'text.secondary' }}>
-                  {s.dealer_count ? 'No active dealers to show.' : 'Upload the Tally Outstanding export to start: dealers are created from it.'}
+                  {active && allRows.length ? 'No dealer matches the filters.'
+                    : s.dealer_count ? 'No active dealers to show.' : 'Upload the Tally Outstanding export to start: dealers are created from it.'}
                 </TableCell>
               </TableRow>
             )}
