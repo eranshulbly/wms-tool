@@ -31,15 +31,16 @@ export const DMS_REPORTS = {
   },
 };
 
-// "DMS → Analytics → GRN … · Open report (Last 30 Days)" — the path as before, plus the
-// link (new tab) and the date range to choose.
+// "DMS → Analytics → GRN … · https://reports.bizom.in/reports/view/4073 (Last 30 Days)" —
+// the path as before, plus the full report address as a link (new tab) and the date
+// range to choose.
 const DmsReportLink = ({ report }) => (
   <>
     {report.path}
     {' · '}
     <Link href={report.url} target="_blank" rel="noopener noreferrer" underline="always"
-      onClick={(e) => e.stopPropagation()}>
-      Open report
+      onClick={(e) => e.stopPropagation()} sx={{ wordBreak: 'break-all' }}>
+      {report.url}
     </Link>
     {report.range ? ` (${report.range})` : ''}
   </>
