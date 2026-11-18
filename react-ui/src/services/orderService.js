@@ -62,9 +62,10 @@ export const bulkStatusUpdate = (file, targetStatus, warehouseId, companyId) => 
 
 // App-submitted orders (from the submitted_orders store, separate from potential_order).
 // stage: 'submitted' (awaiting part-convertor upload) | 'download' (ready / already
-// downloaded). warehouseId / companyId are optional filters.
-export const getSubmittedOrders = (warehouseId = null, companyId = null, stage = 'submitted') => {
-  const params = { stage };
+// downloaded). warehouseId / companyId are optional filters. state: 'pending' (default:
+// not yet accepted) | 'accepted' | 'all'.
+export const getSubmittedOrders = (warehouseId = null, companyId = null, stage = 'submitted', state = 'pending') => {
+  const params = { stage, state };
   if (warehouseId && warehouseId !== 'all') params.warehouse_id = warehouseId;
   if (companyId && companyId !== 'all') params.company_id = companyId;
   return api.get('orders/submitted', { params }).then((res) => res.data);
@@ -166,3 +167,24 @@ export const getRecentActivity = (warehouseId, companyId, limit = 100) => {
   if (companyId && companyId !== 'all') params.company_id = companyId;
   return api.get('orders/recent', { params }).then((res) => res.data);
 };
+
+// ── App orders on Submitted Orders: Accept and Edit ─────────────────────────
+// Close an app order: it leaves the pending list and the app can no longer change it.
+export const acceptSubmittedOrder = (orderId) =>
+  api.post(`orders/submitted/${orderId}/accept`).then((res) => res.data);
+
+// An order's lines, as the expandable row shows them.
+export const getSubmittedOrderLines = (orderId) =>
+  api.get(`orders/submitted/${orderId}/items`).then((res) => res.data);
+
+// Exactly these products, with their unit ladders (to load an order's lines into the cart).
+export const getOrderProductsByIds = (companyId, ids) =>
+  api.get('orders/products', { params: { company_id: companyId, ids: ids.join(',') } }).then((res) => res.data);
+
+// Replace an app order's lines. `items` is [{ productId, uom, quantity }], as Add Order sends.
+export const updateSubmittedOrderItems = (orderId, items) =>
+  api
+    .put(`orders/submitted/${orderId}/items`, {
+      items: items.map((i) => ({ product_id: i.productId, uom: i.uom, quantity: i.quantity }))
+    })
+    .then((res) => res.data);

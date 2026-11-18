@@ -38,6 +38,7 @@ from api.permissions import (
     resolve_company_scope, company_filter_sql, CompanyAccessDenied,
 )
 from api.core.logging import get_logger
+from api.modules.fulfillment.order.constants import OrderStatus
 
 logger = get_logger(__name__)
 
@@ -828,6 +829,41 @@ class RecentOrders(Resource):
             return {'success': False, 'msg': f'Error retrieving recent orders: {str(e)}'}, 400
 
 
+# An app order the office has accepted: closed here, and frozen in the app (the app may
+# edit an order only while it is 'submitted' — see service_v1.update_order).
+ORDER_ACCEPTED = 'accepted'
+
+# Whether an order came from the mobile app. The app stamps location_captured_at on every
+# order it creates (falling back to receipt time when the device sends none — see
+# service_v1._location_columns); the web's Add Order and sheet upload never set it.
+FROM_APP_SQL = '(so.location_captured_at IS NOT NULL)'
+
+
+def _app_order_for_change(current_user, order_id):
+    """(order, error) for Accept / Edit: the order must exist, be in the caller's company
+    scope, come from the app, and still be 'submitted'. `error` is (body, status)."""
+    rows = mysql_manager.execute_query(
+        f"""SELECT so.submitted_order_id, so.order_number, so.company_id, so.status, so.dms_status,
+                   {FROM_APP_SQL} AS from_app
+              FROM submitted_orders so WHERE so.submitted_order_id = %s""", (order_id,))
+    if not rows:
+        return None, ({'success': False, 'msg': 'order not found'}, 404)
+    order = rows[0]
+    try:
+        company_ids = resolve_company_scope(current_user, order['company_id'])
+    except CompanyAccessDenied as e:
+        return None, ({'success': False, 'msg': str(e)}, 403)
+    if company_ids is not None and order['company_id'] not in company_ids:
+        return None, ({'success': False, 'msg': 'Not your company'}, 403)
+    if not order['from_app']:
+        return None, ({'success': False, 'msg': 'only orders raised in the mobile app can be '
+                                                'accepted or edited here'}, 409)
+    if order['status'] != OrderStatus.SUBMITTED.value:
+        return None, ({'success': False,
+                       'msg': f"this order is already {order['status']} and can no longer change"}, 409)
+    return order, None
+
+
 @rest_api.route('/api/orders/submitted')
 class SubmittedOrdersList(Resource):
     """App-submitted orders, read from the app's own submitted_orders store.
@@ -840,6 +876,7 @@ class SubmittedOrdersList(Resource):
 
     @rest_api.doc(params={'warehouse_id': 'Warehouse ID', 'company_id': 'Company ID',
                           'stage': "Which tab: 'submitted' (awaiting upload) | 'download' (ready/done)",
+                          'state': "'pending' (default: not yet accepted) | 'accepted' | 'all'",
                           'dealer_id': 'Dealer ID'})
     @rest_api.response(400, 'Error', dash_error_response)
     @token_required
@@ -862,7 +899,14 @@ class SubmittedOrdersList(Resource):
                 where = ["so.dms_status IN ('ready','done')"]
             else:
                 where = ["so.dms_status IN ('submitted','re_submitted')"]
-            params = []
+            # Accept (SubmittedOrderAccept) moves an app order to status 'accepted'; the
+            # list shows the ones still waiting unless asked otherwise.
+            state = request.args.get('state', 'pending')
+            if state == 'accepted':
+                where.append("so.status = %s")
+            elif state != 'all':
+                where.append("so.status <> %s")
+            params = [ORDER_ACCEPTED] if state != 'all' else []
             if dealer_id:
                 where.append("so.dealer_id = %s")
                 params.append(dealer_id)
@@ -890,8 +934,16 @@ class SubmittedOrdersList(Resource):
                            su.name AS sales_executive_name,
                            su.role AS sales_executive_role,
                            (SELECT COUNT(*) FROM submitted_order_products p
-                             WHERE p.submitted_order_id = so.submitted_order_id) AS item_count
+                             WHERE p.submitted_order_id = so.submitted_order_id) AS item_count,
+                           {FROM_APP_SQL} AS from_app,
+                           acc.changed_at AS accepted_at, au.name AS accepted_by
                     FROM submitted_orders so
+                    LEFT JOIN submitted_order_status_history acc
+                           ON acc.id = (SELECT MAX(h.id)
+                                                  FROM submitted_order_status_history h
+                                                 WHERE h.submitted_order_id = so.submitted_order_id
+                                                   AND h.status = 'accepted')
+                    LEFT JOIN users au ON au.id = acc.changed_by
                     LEFT JOIN company   c ON c.company_id   = so.company_id
                     LEFT JOIN dealer    d ON d.dealer_id    = so.dealer_id
                     LEFT JOIN warehouse w ON w.warehouse_id = so.warehouse_id
@@ -959,6 +1011,11 @@ class SubmittedOrdersList(Resource):
                 'submitted_at':           _iso(r['submitted_at']),
                 'expected_delivery_date': _iso(r['expected_delivery_date']),
                 'attachments':            atts_by_order.get(r['order_id'], []),
+                # Raised in the mobile app (not added on this page) — only these get
+                # Accept and Edit.
+                'from_app':               bool(r['from_app']),
+                'accepted_at':            _iso(r['accepted_at']),
+                'accepted_by':            r['accepted_by'],
             } for r in rows]
 
             return {'success': True, 'orders': orders}, 200
@@ -1085,6 +1142,88 @@ class SubmittedOrderItems(Resource):
         except Exception as e:
             logger.exception("Error in /api/orders/submitted/<id>/items")
             return {'success': False, 'msg': str(e)}, 400
+
+
+    @rest_api.response(409, 'Not editable', dash_error_response)
+    @token_required
+    @active_required
+    def put(self, current_user, order_id):
+        """Edit an app order's products and quantities (the operator fixing a rep's
+        mistake). JSON body: items [{product_id, uom, quantity}, ...] — the whole new line
+        set, as Add Order sends it. Only while the order is still 'submitted', and not once
+        its DMS file has been downloaded (that file would no longer match the order).
+
+        A product that stays on the order keeps the rate the app recorded for it; a newly
+        added product takes the catalogue price, as on Add Order."""
+        order, err = _app_order_for_change(current_user, order_id)
+        if err:
+            return err
+        if order['dms_status'] == 'done':
+            return {'success': False,
+                    'msg': 'its DMS file has already been downloaded, so it can no longer be edited'}, 409
+        data = request.get_json(silent=True) or {}
+        try:
+            lines = _cart_lines(data.get('items'), order['company_id'])
+        except ValueError as e:
+            return {'success': False, 'msg': str(e)}, 422
+
+        old_rates = {r['product_id']: r['net_rate'] for r in (mysql_manager.execute_query(
+            """SELECT product_id, net_rate FROM submitted_order_products
+                WHERE submitted_order_id = %s AND product_id IS NOT NULL AND net_rate IS NOT NULL""",
+            (order_id,)) or [])}
+        now = datetime.utcnow()
+        with mysql_manager.get_cursor() as cursor:
+            # Still 'submitted' at write time — an Accept in between wins.
+            cursor.execute(
+                "UPDATE submitted_orders SET updated_at = %s WHERE submitted_order_id = %s AND status = %s",
+                (now, order_id, OrderStatus.SUBMITTED.value))
+            if cursor.rowcount != 1:
+                return {'success': False, 'msg': 'this order changed meanwhile; reload and try again'}, 409
+            cursor.execute("DELETE FROM submitted_order_products WHERE submitted_order_id = %s", (order_id,))
+            for ln in lines:
+                cursor.execute(
+                    """INSERT INTO submitted_order_products
+                         (submitted_order_id, product_id, sku_code, product_name, uom,
+                          quantity, mrp, net_rate, order_quantity, order_uom,
+                          created_at, updated_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (order_id, ln['product_id'], ln['sku_code'], ln['product_name'],
+                     ln['uom'], ln['quantity'], ln['mrp'],
+                     old_rates.get(ln['product_id'], ln['net_rate']),
+                     ln['order_quantity'], ln['order_uom'], now, now))
+        logger.info("submitted order %s edited on the web: %s line(s)", order_id, len(lines),
+                    extra={'edited_by': getattr(current_user, 'id', None)})
+        return {'success': True, 'order_id': order_id, 'item_count': len(lines)}, 200
+
+
+@rest_api.route('/api/orders/submitted/<int:order_id>/accept')
+class SubmittedOrderAccept(Resource):
+    """Accept an app order: it is closed — out of the pending list on Submitted Orders, and
+    frozen in the app, which may edit an order only while it is 'submitted'."""
+
+    @rest_api.response(409, 'Not acceptable', dash_error_response)
+    @token_required
+    @active_required
+    def post(self, current_user, order_id):
+        order, err = _app_order_for_change(current_user, order_id)
+        if err:
+            return err
+        user_id = getattr(current_user, 'id', None)
+        now = datetime.utcnow()
+        with mysql_manager.get_cursor() as cursor:
+            cursor.execute(
+                """UPDATE submitted_orders SET status = %s, updated_at = %s
+                   WHERE submitted_order_id = %s AND status = %s""",
+                (ORDER_ACCEPTED, now, order_id, OrderStatus.SUBMITTED.value))
+            if cursor.rowcount != 1:
+                return {'success': False, 'msg': 'this order changed meanwhile; reload and try again'}, 409
+            cursor.execute(
+                """INSERT INTO submitted_order_status_history
+                     (submitted_order_id, status, changed_by, changed_at)
+                   VALUES (%s, %s, %s, %s)""",
+                (order_id, ORDER_ACCEPTED, user_id, now))
+        logger.info("submitted order %s accepted", order_id, extra={'accepted_by': user_id})
+        return {'success': True, 'order_id': order_id, 'status': ORDER_ACCEPTED}, 200
 
 
 @rest_api.route('/api/orders/submitted/<int:order_id>/part-convertor')
@@ -1403,8 +1542,19 @@ class OrderProductOptions(Resource):
         if search:
             where.append('(LOWER(p.name) LIKE %s OR LOWER(p.product_string) LIKE %s)')
             params += [f'%{search.lower()}%'] * 2
+        # ids=1,2,3 — exactly these products (Edit loads an order's own lines this way).
+        raw_ids = [x for x in (request.args.get('ids') or '').split(',') if x.strip()]
+        if raw_ids:
+            try:
+                id_list = [int(x) for x in raw_ids]
+            except ValueError:
+                return {'success': False, 'msg': 'ids must be numbers'}, 422
+            where.append(f"p.product_id IN ({','.join(['%s'] * len(id_list))})")
+            params += id_list
+            # Edit must find a product the order already has even if it was since retired.
+            where.remove('(p.is_active IS NULL OR p.is_active = 1)')
 
-        limit = min(int(request.args.get('limit', 50) or 50), 200)
+        limit = len(id_list) if raw_ids else min(int(request.args.get('limit', 50) or 50), 200)
         rows = mysql_manager.execute_query(
             f"""SELECT p.product_id, p.product_string, p.name, p.uom
                   FROM product p
@@ -1553,6 +1703,43 @@ def _resolve_cart_line(product_id, product_name, sku_code, company_id, sub_lines
     }
 
 
+def _cart_lines(raw_items, company_id):
+    """Validate a cart — [{product_id, uom, quantity}, ...] — and turn it into order lines,
+    one per product (see _resolve_cart_line). Raises ValueError with a message meant for
+    the operator. Shared by Add Order and by Edit on an app order."""
+    if not isinstance(raw_items, list) or not raw_items:
+        raise ValueError('at least one item is required')
+    product_ids = []
+    for it in raw_items:
+        try:
+            product_ids.append(int((it or {}).get('product_id')))
+        except (ValueError, TypeError):
+            raise ValueError('each item needs a product_id')
+
+    ph = ','.join(['%s'] * len(product_ids))
+    found = {r['product_id']: r for r in (mysql_manager.execute_query(
+        f"""SELECT product_id, product_string, name, company_id
+              FROM product WHERE product_id IN ({ph})""", tuple(product_ids)) or [])}
+
+    # Grouped by product before conversion: a cart legitimately has "2 BOX + 1 CASE"
+    # of the same item as two separate entries (the operator picked them one at a
+    # time), but they must become exactly one order line — see _resolve_cart_line.
+    grouped = OrderedDict()
+    for pid, it in zip(product_ids, raw_items):
+        grouped.setdefault(pid, []).append((it.get('uom'), it.get('quantity')))
+
+    lines = []
+    for pid, sub_lines in grouped.items():
+        product = found.get(pid)
+        if not product:
+            raise ValueError(f'product {pid} not found')
+        if product['company_id'] not in (None, company_id):
+            raise ValueError(f"{product['name']} does not belong to the selected company")
+        lines.append(_resolve_cart_line(
+            pid, product['name'], product['product_string'], company_id, sub_lines))
+    return lines
+
+
 @rest_api.route('/api/orders/submitted/manual-cart')
 class SubmittedOrderCartCreate(Resource):
     """Raise an order from the web side, with its lines picked by hand rather than
@@ -1625,43 +1812,10 @@ class SubmittedOrderCartCreate(Resource):
         else:
             return {'success': False, 'msg': 'a dealer is required'}, 422
 
-        raw_items = data.get('items')
-        if not isinstance(raw_items, list) or not raw_items:
-            return {'success': False, 'msg': 'at least one item is required'}, 422
-
-        product_ids = []
-        for it in raw_items:
-            pid, err = _int((it or {}).get('product_id'))
-            if err or pid is None:
-                return {'success': False, 'msg': 'each item needs a product_id'}, 422
-            product_ids.append(pid)
-
-        ph = ','.join(['%s'] * len(product_ids))
-        found = {r['product_id']: r for r in (mysql_manager.execute_query(
-            f"""SELECT product_id, product_string, name, company_id
-                  FROM product WHERE product_id IN ({ph})""", tuple(product_ids)) or [])}
-
-        # Grouped by product before conversion: a cart legitimately has "2 BOX + 1 CASE"
-        # of the same item as two separate entries (the operator picked them one at a
-        # time), but they must become exactly one order line — see _resolve_cart_line.
-        grouped = OrderedDict()
-        for it in raw_items:
-            pid = int(it['product_id'])
-            grouped.setdefault(pid, []).append((it.get('uom'), it.get('quantity')))
-
-        lines = []
-        for pid, sub_lines in grouped.items():
-            product = found.get(pid)
-            if not product:
-                return {'success': False, 'msg': f'product {pid} not found'}, 422
-            if product['company_id'] not in (None, company_id):
-                return {'success': False,
-                        'msg': f"{product['name']} does not belong to the selected company"}, 422
-            try:
-                lines.append(_resolve_cart_line(
-                    pid, product['name'], product['product_string'], company_id, sub_lines))
-            except ValueError as e:
-                return {'success': False, 'msg': str(e)}, 422
+        try:
+            lines = _cart_lines(data.get('items'), company_id)
+        except ValueError as e:
+            return {'success': False, 'msg': str(e)}, 422
 
         expected = (data.get('expected_delivery_date') or '').strip() or None
         notes = (data.get('notes') or '').strip() or None

@@ -28,10 +28,11 @@ import {
   IconButton,
   Snackbar,
   Alert,
-  Autocomplete
+  Autocomplete,
+  Chip
 } from '@material-ui/core';
 import {
-  IconPhoto, IconX, IconPlus, IconChevronRight, IconTrash
+  IconPhoto, IconX, IconPlus, IconChevronRight, IconTrash, IconCheck, IconPencil
 } from '@tabler/icons';
 import SubmittedOrderItems from './components/SubmittedOrderItems';
 
@@ -44,13 +45,19 @@ import {
   deleteSubmittedOrder,
   createCartOrder,
   getOrderDealers,
-  getOrderProducts
+  getOrderProducts,
+  acceptSubmittedOrder,
+  getSubmittedOrderLines,
+  getOrderProductsByIds,
+  updateSubmittedOrderItems
 } from '../../services/orderService';
 import { dealerLabel } from '../../utils/dealerLabel';
 
 // Submitted Orders — orders raised by hand here (Add Order, built from the catalogue) or
 // brought in from the app. Viewing, creating, and deleting; no DMS file generation,
-// product-list download or stock-upload step lives on this screen.
+// product-list download or stock-upload step lives on this screen. An order from the app
+// can also be edited (products and quantities, to fix a rep's mistake) and accepted —
+// accepting closes it: it leaves the Pending list and the app can no longer change it.
 
 // The grid's column headers show the plain word a rep actually says ("Box", "Case")
 // rather than the pack-specific code the catalogue stores ("30X10T").
@@ -63,6 +70,7 @@ const DownloadDmsInput = () => {
   const [companyFilter, setCompanyFilter] = useState('all');
   const [warehouseFilter, setWarehouseFilter] = useState('all');
   const [dealerFilter, setDealerFilter] = useState('all');
+  const [stateFilter, setStateFilter] = useState('pending'); // pending | accepted | all
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -84,6 +92,16 @@ const DownloadDmsInput = () => {
   // Delete confirmation.
   const [deleteOrder, setDeleteOrder] = useState(null);
   const [deleting, setDeleting] = useState(false);
+
+  // Accept confirmation (app orders only).
+  const [acceptOrder, setAcceptOrder] = useState(null);
+  const [accepting, setAccepting] = useState(false);
+
+  // Edit — the Add Order dialog, opened on an app order's own lines. Only products and
+  // quantities change; dealer, company and the rest stay as the rep sent them.
+  const [editOrder, setEditOrder] = useState(null);
+  const [editLoading, setEditLoading] = useState(false);
+  const [editProblem, setEditProblem] = useState('');
 
   // Add-order dialog — raise an order by hand, built line by line from the catalogue.
   // It becomes an ordinary order in this same list.
@@ -127,7 +145,73 @@ const DownloadDmsInput = () => {
     });
     setCartRows([]);
     setProductSearch('');
+    setEditOrder(null);
+    setEditProblem('');
     setAddOpen(true);
+  };
+
+  // A line as stored ("6 BOX", or "2 CASE + 6 BOX" when several units were mixed) back
+  // into the grid's per-unit cells; failing that, the total in the stock unit.
+  const qtyCellsFor = (item, product) => {
+    const codes = new Set(product.uoms.map((u) => u.uom_code));
+    if (item.order_uom && item.order_quantity != null && codes.has(item.order_uom)) {
+      return { [item.order_uom]: String(item.order_quantity) };
+    }
+    if (item.order_uom && item.order_uom.includes('+')) {
+      const cells = {};
+      const ok = item.order_uom.split('+').every((part) => {
+        const [q, u] = part.trim().split(/\s+/);
+        if (!codes.has(u) || !(Number(q) > 0)) return false;
+        cells[u] = q;
+        return true;
+      });
+      if (ok) return cells;
+    }
+    const stock = product.uoms.find((u) => u.is_stock_unit) || product.uoms[0];
+    return stock ? { [stock.uom_code]: String(item.quantity) } : {};
+  };
+
+  const openEdit = async (order) => {
+    setEditOrder(order);
+    setEditProblem('');
+    setNewOrder({ ...BLANK_ORDER, companyId: order.company_id });
+    setCartRows([]);
+    setProductSearch('');
+    setAddOpen(true);
+    setEditLoading(true);
+    try {
+      const lines = await getSubmittedOrderLines(order.order_id);
+      if (!lines.success) throw new Error(lines.msg);
+      const items = lines.items || [];
+      const ids = [...new Set(items.filter((i) => i.product_id).map((i) => i.product_id))];
+      const prods = ids.length ? await getOrderProductsByIds(order.company_id, ids) : { products: [] };
+      const byId = new Map((prods.products || []).map((p) => [p.product_id, p]));
+      const missing = items.filter((i) => !i.product_id || !byId.has(i.product_id));
+      if (missing.length) {
+        setEditProblem(
+          `${missing.map((i) => i.product_name || i.sku_code).join(', ')} ${missing.length === 1 ? 'is' : 'are'} ` +
+            'not in the product catalogue, so this order cannot be edited here.'
+        );
+      }
+      setCartRows(
+        items
+          .filter((i) => byId.has(i.product_id))
+          .map((i) => {
+            const product = byId.get(i.product_id);
+            return { key: `${i.product_id}-${i.id}`, product, qtyByUom: qtyCellsFor(i, product) };
+          })
+      );
+    } catch (e) {
+      setEditProblem(e?.response?.data?.msg || e?.message || 'Could not load the order lines.');
+    } finally {
+      setEditLoading(false);
+    }
+  };
+
+  const closeOrderDialog = () => {
+    setAddOpen(false);
+    setEditOrder(null);
+    setEditProblem('');
   };
 
   // Product options for the cart picker, reloaded as the operator types. Narrowed to
@@ -266,10 +350,42 @@ const DownloadDmsInput = () => {
   const clearPendingDealer = () =>
     setNewOrder((o) => ({ ...o, pendingDealerName: '', pendingDealerTown: '' }));
 
-  const canCreate =
-    !!newOrder.companyId &&
-    (!!newOrder.dealerId || !!newOrder.pendingDealerName) &&
-    !creating && cartPayloadItems.length > 0;
+  const canCreate = editOrder
+    ? !creating && !editLoading && !editProblem && cartPayloadItems.length > 0
+    : !!newOrder.companyId &&
+      (!!newOrder.dealerId || !!newOrder.pendingDealerName) &&
+      !creating && cartPayloadItems.length > 0;
+
+  const saveEdit = async () => {
+    if (!canCreate) return;
+    setCreating(true);
+    try {
+      const data = await updateSubmittedOrderItems(editOrder.order_id, cartPayloadItems);
+      notify(`${editOrder.order_number || `#${editOrder.order_id}`} saved with ${data.item_count} part${data.item_count === 1 ? '' : 's'}`);
+      closeOrderDialog();
+      setCartRows([]);
+      await fetchOrders();
+    } catch (e) {
+      notify(e?.response?.data?.msg || 'Could not save the order.', 'error');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const submitAccept = async () => {
+    if (!acceptOrder) return;
+    setAccepting(true);
+    try {
+      await acceptSubmittedOrder(acceptOrder.order_id);
+      notify(`${acceptOrder.order_number || `#${acceptOrder.order_id}`} accepted`);
+      setAcceptOrder(null);
+      await fetchOrders();
+    } catch (e) {
+      notify(e?.response?.data?.msg || 'Could not accept the order.', 'error');
+    } finally {
+      setAccepting(false);
+    }
+  };
 
   const submitNewOrder = async () => {
     if (!canCreate) return;
@@ -287,7 +403,7 @@ const DownloadDmsInput = () => {
       });
       if (data.success) {
         notify(`${data.order_number} created with ${data.item_count} part${data.item_count === 1 ? '' : 's'}`);
-        setAddOpen(false);
+        closeOrderDialog();
         setCartRows([]);
         await fetchOrders();
       } else {
@@ -306,7 +422,7 @@ const DownloadDmsInput = () => {
     try {
       const wh = warehouseFilter !== 'all' ? warehouseFilter : null;
       const co = companyFilter !== 'all' ? companyFilter : null;
-      const data = await getSubmittedOrders(wh, co, 'download');
+      const data = await getSubmittedOrders(wh, co, 'download', stateFilter);
       if (data.success) {
         setOrders(data.orders || []);
       } else {
@@ -317,7 +433,7 @@ const DownloadDmsInput = () => {
     } finally {
       setLoading(false);
     }
-  }, [warehouseFilter, companyFilter]);
+  }, [warehouseFilter, companyFilter, stateFilter]);
 
   useEffect(() => {
     fetchOrders();
@@ -325,7 +441,7 @@ const DownloadDmsInput = () => {
 
   useEffect(() => {
     setPage(0);
-  }, [warehouseFilter, companyFilter, dealerFilter]);
+  }, [warehouseFilter, companyFilter, dealerFilter, stateFilter]);
 
   const dealerOptions = useMemo(() => {
     const seen = new Map();
@@ -434,6 +550,16 @@ const DownloadDmsInput = () => {
                   </Select>
                 </FormControl>
               </Grid>
+              <Grid item xs={12} sm={6} md={3}>
+                <FormControl fullWidth size="small">
+                  <InputLabel>Status</InputLabel>
+                  <Select value={stateFilter} label="Status" onChange={(e) => setStateFilter(e.target.value)}>
+                    <MenuItem value="pending">Pending</MenuItem>
+                    <MenuItem value="accepted">Accepted</MenuItem>
+                    <MenuItem value="all">All</MenuItem>
+                  </Select>
+                </FormControl>
+              </Grid>
             </Grid>
           </CardContent>
         </Card>
@@ -527,19 +653,41 @@ const DownloadDmsInput = () => {
                             </Typography>
                           )}
                         </TableCell>
-                        <TableCell>
-                          <Button
-                            size="small"
-                            variant="outlined"
-                            color="error"
-                            startIcon={<IconTrash size={16} />}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setDeleteOrder(o);
-                            }}
-                          >
-                            Delete
-                          </Button>
+                        <TableCell onClick={(e) => e.stopPropagation()}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
+                            {o.status === 'accepted' && (
+                              <Box>
+                                <Chip size="small" color="success" label="Accepted" />
+                                {(o.accepted_by || o.accepted_at) && (
+                                  <Typography variant="caption" color="textSecondary" component="div">
+                                    {o.accepted_by || ''}
+                                    {o.accepted_at ? ` · ${new Date(`${o.accepted_at}Z`).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}` : ''}
+                                  </Typography>
+                                )}
+                              </Box>
+                            )}
+                            {o.from_app && o.status === 'submitted' && (
+                              <>
+                                <Button size="small" variant="contained" color="success" disableElevation
+                                  startIcon={<IconCheck size={16} />} onClick={() => setAcceptOrder(o)}>
+                                  Accept
+                                </Button>
+                                <Button size="small" variant="outlined" startIcon={<IconPencil size={16} />}
+                                  onClick={() => openEdit(o)}>
+                                  Edit
+                                </Button>
+                              </>
+                            )}
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              color="error"
+                              startIcon={<IconTrash size={16} />}
+                              onClick={() => setDeleteOrder(o)}
+                            >
+                              Delete
+                            </Button>
+                          </Box>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -592,14 +740,30 @@ const DownloadDmsInput = () => {
 
       {/* Add Order — order details plus a hand-built cart. The order is created and
           appears in the list above as soon as it's submitted. */}
-      <Dialog open={addOpen} onClose={() => !creating && setAddOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Add Order</DialogTitle>
+      <Dialog open={addOpen} onClose={() => !creating && closeOrderDialog()} maxWidth="sm" fullWidth>
+        <DialogTitle>
+          {editOrder
+            ? `Edit ${editOrder.order_number || `#${editOrder.order_id}`} · ${dealerLabel(editOrder.dealer_name, editOrder.dealer_town)}`
+            : 'Add Order'}
+        </DialogTitle>
         <DialogContent dividers>
-          <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
-            For orders that came in outside the app — a phone or WhatsApp order the rep never
-            entered. Build it line by line from the catalogue below.
-          </Typography>
+          {editOrder ? (
+            <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
+              Raised in the app by {editOrder.sales_executive_name || 'a sales executive'}. Change the
+              products and quantities below; saving replaces the order&apos;s lines.
+            </Typography>
+          ) : (
+            <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
+              For orders that came in outside the app — a phone or WhatsApp order the rep never
+              entered. Build it line by line from the catalogue below.
+            </Typography>
+          )}
+          {editProblem && <Alert severity="error" sx={{ mb: 2 }}>{editProblem}</Alert>}
+          {editLoading && (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}><CircularProgress size={24} /></Box>
+          )}
           <Grid container spacing={2}>
+            {!editOrder && (<>
             <Grid item xs={12} sm={6}>
               <FormControl fullWidth size="small" required>
                 <InputLabel>Company</InputLabel>
@@ -766,6 +930,7 @@ const DownloadDmsInput = () => {
                 onChange={(e) => setNewOrder((o) => ({ ...o, notes: e.target.value }))}
               />
             </Grid>
+            </>)}
             <Grid item xs={12}>
               <Stack spacing={1.5}>
                 <Autocomplete
@@ -906,16 +1071,17 @@ const DownloadDmsInput = () => {
           </Grid>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setAddOpen(false)} disabled={creating}>
+          <Button onClick={closeOrderDialog} disabled={creating}>
             Cancel
           </Button>
           <Button
             variant="contained"
-            onClick={submitNewOrder}
+            onClick={editOrder ? saveEdit : submitNewOrder}
             disabled={!canCreate}
-            startIcon={creating ? <CircularProgress size={16} color="inherit" /> : <IconPlus size={16} />}
+            startIcon={creating ? <CircularProgress size={16} color="inherit" />
+              : editOrder ? <IconCheck size={16} /> : <IconPlus size={16} />}
           >
-            Create Order
+            {editOrder ? 'Save changes' : 'Create Order'}
           </Button>
         </DialogActions>
       </Dialog>
@@ -962,6 +1128,31 @@ const DownloadDmsInput = () => {
             startIcon={<IconPlus size={16} />}
           >
             Use This Dealer
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Accept confirmation — closes an app order: it leaves the Pending list and the
+          app can no longer edit it. */}
+      <Dialog open={!!acceptOrder} onClose={() => !accepting && setAcceptOrder(null)} maxWidth="sm" fullWidth>
+        <DialogTitle>
+          Accept {acceptOrder?.order_number || (acceptOrder && `#${acceptOrder.order_id}`)}?
+        </DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2">
+            {acceptOrder && dealerLabel(acceptOrder.dealer_name, acceptOrder.dealer_town)} · {acceptOrder?.item_count} part
+            {acceptOrder?.item_count === 1 ? '' : 's'}, raised by {acceptOrder?.sales_executive_name || 'the app'}.
+          </Typography>
+          <Typography variant="body2" color="textSecondary" sx={{ mt: 1 }}>
+            Accepting closes the order: it moves to Accepted, and it can no longer be edited here or
+            in the app. Check the lines first; use Edit to fix any mistakes.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setAcceptOrder(null)} disabled={accepting}>Cancel</Button>
+          <Button variant="contained" color="success" disableElevation onClick={submitAccept} disabled={accepting}
+            startIcon={accepting ? <CircularProgress size={16} color="inherit" /> : <IconCheck size={16} />}>
+            Accept
           </Button>
         </DialogActions>
       </Dialog>
