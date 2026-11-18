@@ -35,7 +35,7 @@ import {
   uploadTallyExport,
 } from '../../services/dealerPaymentsService';
 import PaymentForm from './PaymentForm';
-import DealerDetail, { ChequeStatusChip, CHEQUE_STATUS, pdcs } from './DealerDetail';
+import DealerDetail, { ChequeStatusChip, CHEQUE_STATUS, countedIn, OverdueList, pdcs, Received } from './DealerDetail';
 
 // The daily dealer screen (spec 4): who to chase, who to wait for (PDC), who is clear.
 // Tally O/S comes from the latest Outstanding export; Received, not in Tally from payments
@@ -295,7 +295,7 @@ const DealerPayments = () => {
                 PDCs held{cheque.connected === false ? ' *' : ''}
               </TableCell>
               <TableCell align="right" sx={{ fontWeight: 600 }}>Effective O/S</TableCell>
-              <TableCell align="right" sx={{ fontWeight: 600 }}>Oldest overdue (days)</TableCell>
+              <TableCell align="right" sx={{ fontWeight: 600 }}>Overdue (amount · days)</TableCell>
               <TableCell sx={{ fontWeight: 600 }}>Action</TableCell>
             </TableRow>
           </TableHead>
@@ -319,7 +319,7 @@ const DealerPayments = () => {
                   <Box component="span" sx={{ color: 'primary.main', fontWeight: 500 }}>{r.dealer}</Box>
                 </TableCell>
                 <TableCell align="right">{inr(r.tally_os)}</TableCell>
-                <TableCell align="right">{r.received_not_in_tally ? inr(r.received_not_in_tally) : '—'}</TableCell>
+                <TableCell align="right"><Received s={r} /></TableCell>
                 <TableCell align="right">
                   {r.pdc_count ? (
                     <>
@@ -329,7 +329,7 @@ const DealerPayments = () => {
                   ) : '—'}
                 </TableCell>
                 <TableCell align="right" sx={{ fontWeight: 600 }}>{inr(r.effective_os)}</TableCell>
-                <TableCell align="right">{r.oldest_overdue_days ?? '—'}</TableCell>
+                <TableCell align="right"><OverdueList overdue={r.overdue} /></TableCell>
                 <TableCell>
                   <Chip size="small" color={ACTION_COLOR[r.action]}
                     label={r.action === 'WAIT' ? `WAIT till ${fmtDate(r.wait_till)}` : r.action} />
@@ -426,7 +426,7 @@ const DealerPayments = () => {
             <Table size="small">
               <TableHead>
                 <TableRow>
-                  {['Cheque date', 'Dealer', 'Cheque no.', 'Bank', 'Amount', 'Status', 'Counted as held'].map((h) => (
+                  {['Cheque date', 'Dealer', 'Cheque no.', 'Bank', 'Amount', 'Status', 'Counted in'].map((h) => (
                     <TableCell key={h} align={h === 'Amount' ? 'right' : 'left'} sx={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</TableCell>
                   ))}
                 </TableRow>
@@ -442,7 +442,7 @@ const DealerPayments = () => {
                     <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>{inr(c.amount)}</TableCell>
                     <TableCell><ChequeStatusChip c={c} /></TableCell>
                     <TableCell>
-                      {c.counted ? 'Yes' : 'No'}
+                      {countedIn(c)}
                       {c.boo_ref && <Typography variant="caption" color="error" component="div">Reversed in Tally by {c.boo_ref}</Typography>}
                     </TableCell>
                   </TableRow>

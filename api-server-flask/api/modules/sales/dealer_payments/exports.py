@@ -51,9 +51,10 @@ def _title(ws, lines):
 
 
 def build_outstanding_xlsx(*, as_of, dealers, bills, payments, cheques, bounced_cheques, cheques_note, today,
-                           company=''):
+                           company='', cleared=()):
     """`bills` the snapshot of `as_of`; `cheques` mapped cheques (with dealer_id), any status;
-    `bounced_cheques` {(cheque_no, bank): boo_ref}; `cheques_note` says where/when they were read."""
+    `bounced_cheques` {(cheque_no, bank): boo_ref}; `cheques_note` says where/when they were read;
+    `cleared` the cleared cheques Tally has no receipt for yet (rules.cleared_not_in_tally)."""
     by_id = {d['dealer_id']: d for d in dealers}
     bills_by = defaultdict(list)
     for b in bills:
@@ -63,10 +64,11 @@ def build_outstanding_xlsx(*, as_of, dealers, bills, payments, cheques, bounced_
     open_ids = {p['dealer_id'] for p in payments if p['status'] == R.OPEN}
 
     # Dealers with anything to show, in ledger-name order as Tally lists them.
-    ids = set(bills_by) | {c['dealer_id'] for c in cheques if c['status'] in R.HELD} | open_ids
+    ids = (set(bills_by) | {c['dealer_id'] for c in cheques if c['status'] in R.HELD} | open_ids
+           | {c['dealer_id'] for c in cleared})
     shown = sorted((by_id[i] for i in ids if i in by_id), key=lambda d: d['tally_ledger_name'].lower())
     summaries = {d['dealer_id']: R.dealer_summary(d, bills_by.get(d['dealer_id'], []), payments, cheques,
-                                                  bounced_cheques.keys()) for d in shown}
+                                                  bounced_cheques.keys(), cleared) for d in shown}
     as_of_txt = as_of.strftime('%d-%b-%y') if as_of else 'no Outstanding upload yet'
     subtitle = f'Tally as of {as_of_txt} · PDCs: {cheques_note} · downloaded {today.strftime("%d-%b-%y")}'
 
@@ -108,6 +110,8 @@ def build_outstanding_xlsx(*, as_of, dealers, bills, payments, cheques, bounced_
         notes = []
         if s['open_payments']:
             notes.append(f"{s['open_payments']} payment{'s' if s['open_payments'] != 1 else ''} not in Tally")
+        if s['cleared_cheques']:
+            notes.append(f"{s['cleared_cheques']} cleared cheque{'s' if s['cleared_cheques'] != 1 else ''} not in Tally")
         if s['pdc_count']:
             notes.append(f"{s['pdc_count']} PDC{'s' if s['pdc_count'] != 1 else ''}, next "
                          f"{s['next_pdc_date'].strftime('%d-%b-%y')}")

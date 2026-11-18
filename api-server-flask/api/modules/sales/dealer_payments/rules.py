@@ -188,6 +188,40 @@ def match_payments(payments, receipts, matched_keys):
     return posted, ambiguous
 
 
+def cleared_not_in_tally(cheques, receipts, matched_keys, covered_from, bounced_cheque_keys=()):
+    """CLEARED cheques (passed in the bank) that Tally has no receipt for yet: the money is
+    in, so it counts in Received, not in Tally until Tally posts it.
+
+    A cheque is in Tally when a Receipt of the same dealer, amount within ±₹10, dated
+    cheque_date − 2 … + 20 days (the 3.2 window) is there and not already taken by a logged
+    payment (`matched_keys`) or an earlier cheque — oldest cheque first, the receipt nearest
+    its date. Only cheques dated on or after `covered_from` (the start of the Receipt Register
+    uploads) are checked; before that the receipts are not known, so none is counted, nor
+    when no register has been uploaded. A cheque a Boo bill reverses is left out."""
+    if covered_from is None:
+        return []
+    taken, bounced = set(matched_keys), set(bounced_cheque_keys)
+    by_dealer = defaultdict(list)
+    for r in receipts:
+        if r.get('vch_type', RECEIPT) == RECEIPT:
+            by_dealer[r['dealer_id']].append(r)
+    out = []
+    for c in sorted((c for c in cheques if c['status'] == CLEARED and c.get('dealer_id')
+                     and c['cheque_date'] >= covered_from and (c['cheque_no'], c['bank']) not in bounced),
+                    key=lambda c: (c['cheque_date'], c['cheque_no'])):
+        lo = c['cheque_date'] - timedelta(days=MATCH_DAYS_BEFORE)
+        hi = c['cheque_date'] + timedelta(days=MATCH_DAYS_AFTER)
+        cands = [r for r in by_dealer.get(c['dealer_id'], [])
+                 if receipt_key(r) not in taken and lo <= r['vch_date'] <= hi
+                 and abs(r['amount'] - c['amount']) <= MATCH_AMOUNT_TOLERANCE]
+        if cands:
+            best = min(cands, key=lambda r: (abs((r['vch_date'] - c['cheque_date']).days), r['vch_date'], str(r['vch_no'])))
+            taken.add(receipt_key(best))
+        else:
+            out.append(c)
+    return out
+
+
 def is_stale(payment, today):
     """An OPEN payment more than 5 days after its payment date (3.2)."""
     return payment['status'] == OPEN and (today - payment['payment_date']).days > STALE_AFTER_DAYS
@@ -329,6 +363,22 @@ def manual_check_flags(*, duplicates=(), credits=None, ambiguous=None, unmapped=
     return flags
 
 
+def overdue_days(due_on, today):
+    """Days past the due date, counted to `today` — not to the Tally export date, so the
+    figure keeps growing between uploads. None while the bill is not yet due (as Tally
+    leaves the column blank), or when the bill has no due date."""
+    if due_on is None or due_on > today:
+        return None
+    return (today - due_on).days
+
+
+def age_bills(bills, today):
+    """The bills with `overdue_days` counted to `today`. A bill with no due date keeps the
+    figure Tally exported."""
+    return [{**b, 'overdue_days': overdue_days(b['due_on'], today) if b.get('due_on') else b.get('overdue_days')}
+            for b in bills]
+
+
 # ── 4. the daily dealer screen ────────────────────────────────────────────────
 
 def action_for(effective, pdc_amount, next_pdc):
@@ -344,13 +394,16 @@ def action_for(effective, pdc_amount, next_pdc):
 _ACTION_ORDER = {ACTION_CHASE: 0, ACTION_WAIT: 1, ACTION_CLEAR: 2}
 
 
-def dealer_summary(d, dbills, payments, cheques, bounced_cheque_keys=()):
+def dealer_summary(d, dbills, payments, cheques, bounced_cheque_keys=(), cleared=()):
     """One dealer's line on the dealer screen (4): `dbills` its bills in the latest Export 1
-    snapshot; `payments` / `cheques` may be everyone's (filtered here)."""
+    snapshot; `payments` / `cheques` / `cleared` (cleared_not_in_tally) may be everyone's
+    (filtered here). Received, not in Tally is the OPEN payments plus the cleared cheques."""
     bounced = set(bounced_cheque_keys)
     tally = sum((b['pending_amt'] for b in dbills), ZERO)
     open_pays = [p for p in payments if p['dealer_id'] == d['dealer_id'] and p['status'] == OPEN]
-    received = sum((p['amount'] for p in open_pays), ZERO)
+    my_cleared = [c for c in cleared if c.get('dealer_id') == d['dealer_id']]
+    cleared_amt = sum((c['amount'] for c in my_cleared), ZERO)
+    received = sum((p['amount'] for p in open_pays), ZERO) + cleared_amt
     held = sorted((c for c in cheques if c.get('dealer_id') == d['dealer_id'] and c['status'] in HELD
                    and (c['cheque_no'], c['bank']) not in bounced),
                   key=lambda c: c['cheque_date'])
@@ -359,15 +412,23 @@ def dealer_summary(d, dbills, payments, cheques, bounced_cheque_keys=()):
     effective = tally - received
     action, wait_till = action_for(effective, pdc_amount, next_pdc)
     overdue = [b['overdue_days'] for b in dbills if b['pending_amt'] > 0 and b.get('overdue_days') is not None]
+    # How much is overdue by how many days: the pending amounts of the overdue bills, bills
+    # overdue by the same number of days added together, oldest first.
+    by_days = defaultdict(lambda: ZERO)
+    for b in dbills:
+        if b['pending_amt'] > 0 and b.get('overdue_days') is not None:
+            by_days[b['overdue_days']] += b['pending_amt']
     return {
         'dealer_id': d['dealer_id'],
         'dealer': f"{d['dealer_name']} ({d['town']})" if d.get('town') else d['dealer_name'],
         'tally_os': tally,
         'received_not_in_tally': received,
         'open_payments': len(open_pays),
+        'cleared_cheques': len(my_cleared), 'cleared_cheques_amount': cleared_amt,
         'pdc_count': len(held), 'pdc_amount': pdc_amount, 'next_pdc_date': next_pdc,
         'effective_os': effective,
         'oldest_overdue_days': max(overdue) if overdue else None,
+        'overdue': [{'days': days, 'amount': amt} for days, amt in sorted(by_days.items(), reverse=True)],
         'action': action, 'wait_till': wait_till,
         'bounces': [{'ref_no': b['ref_no'], 'bill_date': b['bill_date'], 'amount': bounce_amount(b),
                      'pending_amt': b['pending_amt'], 'label': BOUNCE_LABEL}
@@ -375,7 +436,7 @@ def dealer_summary(d, dbills, payments, cheques, bounced_cheque_keys=()):
     }
 
 
-def dealer_rows(dealers, bills, payments, cheques, today, bounced_cheque_keys=()):
+def dealer_rows(dealers, bills, payments, cheques, today, bounced_cheque_keys=(), cleared=()):
     """One row per active dealer not excluded from chasing (4), sorted CHASE first, each
     group by Effective O/S descending.
 
@@ -385,7 +446,8 @@ def dealer_rows(dealers, bills, payments, cheques, today, bounced_cheque_keys=()
     by_dealer_bills = defaultdict(list)
     for b in bills:
         by_dealer_bills[b['dealer_id']].append(b)
-    rows = [dealer_summary(d, by_dealer_bills.get(d['dealer_id'], []), payments, cheques, bounced_cheque_keys)
+    rows = [dealer_summary(d, by_dealer_bills.get(d['dealer_id'], []), payments, cheques, bounced_cheque_keys,
+                           cleared)
             for d in dealers if d.get('active', True) and not d.get('exclude_from_chase')]
     rows.sort(key=lambda r: (_ACTION_ORDER[r['action']], -r['effective_os'], r['dealer']))
     return rows

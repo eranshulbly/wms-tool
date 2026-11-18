@@ -91,8 +91,9 @@ def latest_as_of(company_id):
     return row[0]['d'] if row else None
 
 
-def snapshot(company_id, as_of):
-    """The Export 1 bills of `as_of`, in the shape rules.py takes."""
+def snapshot(company_id, as_of, today=None):
+    """The Export 1 bills of `as_of`, in the shape rules.py takes. With `today`, each bill's
+    overdue days are counted to today rather than to the export date."""
     if as_of is None:
         return []
     rows = mysql_manager.execute_query(
@@ -100,7 +101,7 @@ def snapshot(company_id, as_of):
                   due_on, overdue_days FROM dpt_outstanding
            WHERE company_id = %s AND as_of_date = %s ORDER BY dealer_id, bill_date, ref_no""",
         (company_id, as_of)) or []
-    return rows
+    return R.age_bills(rows, today) if today else rows
 
 
 def receipts(company_id):
@@ -479,13 +480,14 @@ def screen(company_id, today=None, include_reviewed=False, read_cheques=False):
     today = today or today_ist()
     dealer_list = dealers(company_id)
     as_of = latest_as_of(company_id)
-    bills = snapshot(company_id, as_of)
+    bills = snapshot(company_id, as_of, today)
     pays = payments(company_id)
     mapped, unmapped, other, cheque_error, cheques_read_at = fetch_cheques(company_id, dealer_list, today,
                                                                            read=read_cheques)
     if read_cheques and cheque_error is None:   # keep the old flags while the system is unreachable
         _sync_flags(company_id, R.manual_check_flags(unmapped=unmapped), {R.FLAG_UNMAPPED_CHEQUE})
     bounced_cheques = R.bounced_cheques(mapped, R.bounce_bills(bills))
+    cleared = _cleared_not_in_tally(company_id, mapped, bounced_cheques.keys(), pays)
     names = {d['dealer_id']: d for d in dealer_list}
     vouchers_to = mysql_manager.execute_query(
         'SELECT MAX(vch_date) AS d FROM dpt_receipt WHERE company_id = %s', (company_id,))
@@ -505,11 +507,11 @@ def screen(company_id, today=None, include_reviewed=False, read_cheques=False):
         'cheque_system': {'name': adapter.name, 'connected': bool(adapter.connected and not cheque_error),
                           'error': cheque_error, 'read_at': cheques_read_at, 'cheques': len(mapped),
                           'other_parties': len({c['party_name'] for c in other})},
-        'rows': R.dealer_rows(dealer_list, bills, pays, mapped, today, bounced_cheques.keys()),
+        'rows': R.dealer_rows(dealer_list, bills, pays, mapped, today, bounced_cheques.keys(), cleared),
         'pdcs_due': [{**c, 'dealer': dealer_label(c['dealer_id'])}
                      for c in R.pdcs_to_deposit(mapped, today, bounced_cheques.keys())],
         'bounced_cheques': [{'cheque_no': k[0], 'bank': k[1], 'boo_ref': v} for k, v in bounced_cheques.items()],
-        'cheques': _cheque_lines(mapped, bounced_cheques, dealer_label),
+        'cheques': _cheque_lines(mapped, bounced_cheques, dealer_label, cleared),
         'stale_payments': [{**p, 'dealer': dealer_label(p['dealer_id']),
                             'days_open': (today - p['payment_date']).days}
                            for p in R.stale_payments(pays, today)],
@@ -517,13 +519,26 @@ def screen(company_id, today=None, include_reviewed=False, read_cheques=False):
     }
 
 
-def _cheque_lines(mapped, bounced_cheques, dealer_label):
-    """Every mapped cheque, newest first, with whether it counts in PDCs held."""
+def _cleared_not_in_tally(company_id, mapped, bounced_keys, pays):
+    """The cleared cheques Tally has no receipt for yet (rules.cleared_not_in_tally)."""
+    got = mysql_manager.execute_query(
+        'SELECT MIN(period_from) AS d FROM dpt_upload WHERE company_id = %s AND kind = %s',
+        (company_id, KIND_RECEIPTS))
+    covered_from = got[0]['d'] if got else None
+    matched = {(str(p['matched_vch_no']), p['matched_vch_date']) for p in pays if p['matched_vch_no']}
+    return R.cleared_not_in_tally(mapped, receipts(company_id), matched, covered_from, bounced_keys)
+
+
+def _cheque_lines(mapped, bounced_cheques, dealer_label, cleared=()):
+    """Every mapped cheque, newest first, with whether it counts in PDCs held (`counted`) or,
+    cleared but not in Tally yet, in Received, not in Tally (`in_received`)."""
+    cleared_keys = {(c['cheque_no'], c['bank']) for c in cleared}
     out = []
     for c in sorted(mapped, key=lambda c: (c['cheque_date'], c['cheque_no']), reverse=True):
         boo = bounced_cheques.get((c['cheque_no'], c['bank']))
         out.append({**c, 'dealer': dealer_label(c['dealer_id']), 'boo_ref': boo,
-                    'counted': c['status'] in R.HELD and not boo})
+                    'counted': c['status'] in R.HELD and not boo,
+                    'in_received': (c['cheque_no'], c['bank']) in cleared_keys})
     return out
 
 
@@ -545,11 +560,12 @@ def dealer_detail(company_id, dealer_id, today=None):
     if d is None:
         raise DealerPaymentsError(f'No dealer {dealer_id}.')
     as_of = latest_as_of(company_id)
-    all_bills = snapshot(company_id, as_of)
+    all_bills = snapshot(company_id, as_of, today)
     bills = [b for b in all_bills if b['dealer_id'] == dealer_id]
     pays = payments(company_id)
     mapped, _u, _o, cheque_error, read_at = fetch_cheques(company_id, dealer_list, today)
     bounced = R.bounced_cheques(mapped, R.bounce_bills(all_bills))
+    cleared = _cleared_not_in_tally(company_id, mapped, bounced.keys(), pays)
     label = (f"{d['dealer_name']} ({d['town']})" if d['town'] else d['dealer_name'])
     adj = mysql_manager.execute_query(
         """SELECT ref_no, vch_type, vch_no, vch_date, amount FROM dpt_bill_adjustment
@@ -561,11 +577,12 @@ def dealer_detail(company_id, dealer_id, today=None):
     return {
         'dealer': {**d, 'label': label},
         'tally_as_of': as_of,
-        'summary': R.dealer_summary(d, bills, pays, mapped, bounced.keys()),
+        'summary': R.dealer_summary(d, bills, pays, mapped, bounced.keys(), cleared),
         'bills': [{**b, 'adjustments': adj_by.get(b['ref_no'], []),
                    'label': R.BOUNCE_LABEL if b['kind'] == P.KIND_BOUNCE else None} for b in bills],
         'payments': [p for p in pays if p['dealer_id'] == dealer_id],
-        'cheques': _cheque_lines([c for c in mapped if c['dealer_id'] == dealer_id], bounced, lambda _i: label),
+        'cheques': _cheque_lines([c for c in mapped if c['dealer_id'] == dealer_id], bounced, lambda _i: label,
+                                 cleared),
         'cheques_note': _cheques_note(read_at, cheque_error),
     }
 
@@ -578,11 +595,14 @@ def outstanding_export(company_id, today=None):
     today = today or today_ist()
     dealer_list = dealers(company_id)
     as_of = latest_as_of(company_id)
-    bills = snapshot(company_id, as_of)
+    bills = snapshot(company_id, as_of, today)
     mapped, _u, _o, cheque_error, read_at = fetch_cheques(company_id, dealer_list, today)
-    data = build_outstanding_xlsx(as_of=as_of, dealers=dealer_list, bills=bills, payments=payments(company_id),
-                                  cheques=mapped, bounced_cheques=R.bounced_cheques(mapped, R.bounce_bills(bills)),
+    pays = payments(company_id)
+    bounced = R.bounced_cheques(mapped, R.bounce_bills(bills))
+    data = build_outstanding_xlsx(as_of=as_of, dealers=dealer_list, bills=bills, payments=pays,
+                                  cheques=mapped, bounced_cheques=bounced,
                                   cheques_note=_cheques_note(read_at, cheque_error), today=today,
-                                  company=company_name(company_id))
+                                  company=company_name(company_id),
+                                  cleared=_cleared_not_in_tally(company_id, mapped, bounced.keys(), pays))
     stamp = (as_of or today).strftime('%d-%b-%y')
     return f'{company_name(company_id)} Dealer Outstanding {stamp}.xlsx', data

@@ -486,3 +486,55 @@ def test_ebco_bills_receivable_parses_and_matches_tally():
     dealers = R.new_dealers([], [b['party'] for b in out['bills']], 'EB-')
     assert len(dealers) == 17 and dealers[0]['dealer_id'] == 'EB-001'
     assert dealers[0]['dealer_name'] == dealers[0]['tally_ledger_name'] and dealers[0]['town'] == ''
+
+
+def test_overdue_days_counted_to_today():
+    due = date(2026, 11, 1)
+    assert R.overdue_days(due, date(2026, 11, 18)) == 17
+    assert R.overdue_days(due, due) == 0
+    assert R.overdue_days(due, date(2026, 10, 31)) is None          # not yet due
+    assert R.overdue_days(None, date(2026, 11, 18)) is None
+    bills = [{'due_on': due, 'overdue_days': 16},                    # Tally's figure, as of 17-Nov
+             {'due_on': date(2026, 12, 15), 'overdue_days': None},
+             {'due_on': None, 'overdue_days': 5}]                    # no due date: Tally's kept
+    assert [b['overdue_days'] for b in R.age_bills(bills, date(2026, 11, 18))] == [17, None, 5]
+
+
+def test_overdue_amounts_by_days():
+    d = {'dealer_id': 'D1', 'dealer_name': 'X'}
+    bills = [{'kind': 'invoice', 'ref_no': '1', 'pending_amt': D('10'), 'overdue_days': 2},
+             {'kind': 'invoice', 'ref_no': '2', 'pending_amt': D('30'), 'overdue_days': 4},
+             {'kind': 'invoice', 'ref_no': '3', 'pending_amt': D('5'), 'overdue_days': 4},
+             {'kind': 'invoice', 'ref_no': '4', 'pending_amt': D('50'), 'overdue_days': None},   # not yet due
+             {'kind': 'invoice', 'ref_no': '5', 'pending_amt': D('-7'), 'overdue_days': 9}]      # Cr: not owed
+    s = R.dealer_summary(d, bills, [], [])
+    assert s['overdue'] == [{'days': 4, 'amount': D('35')}, {'days': 2, 'amount': D('10')}]
+    assert R.dealer_summary(d, [], [], [])['overdue'] == []
+
+
+def test_cleared_cheques_not_in_tally():
+    day = date(2026, 11, 10)
+    start = date(2026, 4, 1)
+    c = lambda no, amt, d=day, dealer='D1', status=R.CLEARED: {**_chq(no, 'x', amt, d, status), 'dealer_id': dealer}
+    rcpt = lambda no, amt, d, dealer='D1': {'vch_no': no, 'vch_date': d, 'dealer_id': dealer,
+                                            'vch_type': R.RECEIPT, 'amount': D(str(amt))}
+    cheques = [c('1', 1000),                                   # receipt 2 days later: in Tally
+               c('2', 2000),                                   # no receipt: not in Tally
+               c('3', 1000, day + timedelta(days=1)),          # the one ₹1,000 receipt is taken by cheque 1
+               c('4', 500, status=R.DEPOSITED),                # not cleared: PDCs held, not here
+               c('5', 700, date(2026, 3, 30)),                 # before the register starts: not checked
+               c('6', 900),                                    # its receipt is a logged payment's
+               c('7', 300, dealer='D2')]                       # another dealer's receipt does not count
+    receipts = [rcpt('R1', 1005, day + timedelta(days=2)), rcpt('R6', 900, day),
+                rcpt('R7', 300, day, dealer='D1x')]
+    out = R.cleared_not_in_tally(cheques, receipts, {('R6', day)}, start)
+    assert sorted(x['cheque_no'] for x in out) == ['2', '3', '6', '7']
+    assert R.cleared_not_in_tally(cheques, receipts, set(), None) == []                  # no register yet
+    assert sorted(x['cheque_no'] for x in R.cleared_not_in_tally(cheques, receipts, set(), start, {('2', 'SBI')})) == ['3', '7']
+
+    s = R.dealer_summary({'dealer_id': 'D1', 'dealer_name': 'X'},
+                         [{'kind': 'invoice', 'ref_no': 'a', 'pending_amt': D('5000'), 'overdue_days': 3}],
+                         [_pay(1, 'D1', 100, day)], cheques, cleared=out)
+    assert (s['cleared_cheques'], s['cleared_cheques_amount']) == (3, D('3900'))
+    assert s['received_not_in_tally'] == D('4000')             # ₹100 logged + ₹3,900 cleared cheques
+    assert s['effective_os'] == D('1000')
