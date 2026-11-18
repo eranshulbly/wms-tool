@@ -36,7 +36,7 @@ import {
 } from '../../services/dealerPaymentsService';
 import PaymentForm from './PaymentForm';
 import DealerDetail, {
-  ACTION_COLOR, actionLabel, ChequeStatusChip, CHEQUE_STATUS, countedIn, OverdueList, pdcs, Received
+  ACTION_COLOR, actionLabel, RemindChip, ChequeStatusChip, CHEQUE_STATUS, countedIn, OverdueList, pdcs, Received
 } from './DealerDetail';
 
 // The daily dealer screen (spec 4): who to chase, who to wait for (PDC), who is not due yet,
@@ -262,7 +262,7 @@ const DealerPayments = () => {
           && numberMatches(filters.pdc, r.pdc_amount)
           && numberMatches(filters.effective, r.effective_os)
           && numberMatches(filters.overdue, r.oldest_overdue_days)
-          && (!filters.action || r.action === filters.action);
+          && (!filters.action || (filters.action === 'REMIND' ? r.remind : r.action === filters.action));
       })
     : allRows;
   const uploads = s.uploads || {};
@@ -363,6 +363,7 @@ const DealerPayments = () => {
                   {['CHASE', 'WAIT', 'NOT_DUE', 'CLEAR'].map((a) => (
                     <MenuItem key={a} value={a}>{a.replace('_', ' ')}</MenuItem>
                   ))}
+                  <MenuItem value="REMIND">REMIND (not due, bill 20+ days old)</MenuItem>
                 </TextField>
               </TableCell>
             </TableRow>
@@ -382,7 +383,7 @@ const DealerPayments = () => {
               </TableRow>
             )}
             {rows.map((r) => (
-              <TableRow key={r.dealer_id} hover sx={{ cursor: 'pointer' }}
+              <TableRow key={r.dealer_id} hover sx={{ cursor: 'pointer', ...(r.remind ? { bgcolor: '#fff7e6' } : {}) }}
                 onClick={() => setDetail({ id: r.dealer_id, label: r.dealer })}>
                 <TableCell>
                   <Box component="span" sx={{ color: 'primary.main', fontWeight: 500 }}>{r.dealer}</Box>
@@ -401,6 +402,7 @@ const DealerPayments = () => {
                 <TableCell align="right"><OverdueList overdue={r.overdue} /></TableCell>
                 <TableCell>
                   <Chip size="small" color={ACTION_COLOR[r.action]} label={actionLabel(r)} />
+                  <RemindChip r={r} />
                 </TableCell>
               </TableRow>
             ))}

@@ -590,3 +590,21 @@ def test_not_due_until_a_bill_is_past_due():
     assert (s['action'], s['overdue_os']) == (R.ACTION_CHASE, None)
     # Nothing owed: CLEAR.
     assert summ([bill('a', 0, date(2026, 11, 1))])['action'] == R.ACTION_CLEAR
+
+
+def test_remind_not_due_dealers_with_a_bill_20_days_old():
+    today = date(2026, 11, 18)
+    d = {'dealer_id': 'D1', 'dealer_name': 'X'}
+    bill = lambda billed, due, amt=1000: {'kind': 'invoice', 'ref_no': str(billed), 'pending_amt': D(str(amt)),
+                                          'bill_date': billed, 'due_on': due, 'overdue_days': None}
+    summ = lambda *bills: R.dealer_summary(d, R.age_bills(list(bills), today), [], [])
+    s = summ(bill(date(2026, 10, 25), date(2026, 12, 4)))            # 24 days old, due 4-Dec
+    assert (s['action'], s['remind'], s['oldest_bill_age_days']) == (R.ACTION_NOT_DUE, True, 24)
+    s = summ(bill(date(2026, 10, 30), date(2026, 12, 4)))            # 19 days old: not yet
+    assert (s['action'], s['remind']) == (R.ACTION_NOT_DUE, False)
+    s = summ(bill(date(2026, 10, 29), date(2026, 12, 4)))            # exactly 20 days
+    assert s['remind'] is True
+    s = summ(bill(date(2026, 9, 1), date(2026, 10, 1)))              # overdue: CHASE, not REMIND
+    assert (s['action'], s['remind']) == (R.ACTION_CHASE, False)
+    s = summ(bill(date(2026, 9, 1), date(2026, 12, 4), amt=-500), bill(date(2026, 11, 10), date(2026, 12, 20)))
+    assert (s['remind'], s['oldest_bill_age_days']) == (False, 8)      # a credit's age does not count

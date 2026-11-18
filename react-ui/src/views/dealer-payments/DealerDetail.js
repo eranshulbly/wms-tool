@@ -84,6 +84,12 @@ const KIND = {
 // The dealer's action (sales/dealer_payments/rules.py action_for). NOT DUE: money is owed but
 // no bill is past its due date yet; `wait_till` is then the next due date.
 export const ACTION_COLOR = { CHASE: 'error', WAIT: 'warning', NOT_DUE: 'info', CLEAR: 'success' };
+// REMIND (rules.py REMIND_AFTER_DAYS): NOT DUE, but the oldest unpaid bill is 20+ days old.
+export const RemindChip = ({ r }) =>
+  r.remind ? (
+    <Chip size="small" label={`REMIND · ${r.oldest_bill_age_days} days old`}
+      sx={{ ml: 0.5, bgcolor: '#f59e0b', color: '#fff', fontWeight: 600 }} />
+  ) : null;
 export const actionLabel = (r) => {
   if (r.action === 'WAIT') return `WAIT till ${fmtDate(r.wait_till)}`;
   if (r.action === 'NOT_DUE') return r.wait_till ? `NOT DUE till ${fmtDate(r.wait_till)}` : 'NOT DUE';
@@ -196,6 +202,7 @@ const DealerDetail = ({ dealerId }) => {
           <Grid item xs={6} sm={4} md={2}>
             <Typography variant="caption" color="textSecondary" component="div">Action</Typography>
             <Chip size="small" color={ACTION_COLOR[s.action]} label={actionLabel(s)} />
+            <RemindChip r={s} />
           </Grid>
         </Grid>
       </Paper>

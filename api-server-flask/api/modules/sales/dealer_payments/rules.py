@@ -374,10 +374,16 @@ def overdue_days(due_on, today):
 
 
 def age_bills(bills, today):
-    """The bills with `overdue_days` counted to `today`. A bill with no due date keeps the
-    figure Tally exported."""
-    return [{**b, 'overdue_days': overdue_days(b['due_on'], today) if b.get('due_on') else b.get('overdue_days')}
+    """The bills with `overdue_days` counted to `today` (a bill with no due date keeps the
+    figure Tally exported) and `age_days`, days since the bill date."""
+    return [{**b, 'overdue_days': overdue_days(b['due_on'], today) if b.get('due_on') else b.get('overdue_days'),
+             'age_days': (today - b['bill_date']).days if b.get('bill_date') else None}
             for b in bills]
+
+
+# A NOT DUE dealer whose oldest unpaid bill is this many days old (from the bill date) is
+# flagged REMIND: nothing is overdue yet, but it is time to remind them.
+REMIND_AFTER_DAYS = 20
 
 
 # ── 4. the daily dealer screen ────────────────────────────────────────────────
@@ -434,6 +440,9 @@ def dealer_summary(d, dbills, payments, cheques, bounced_cheque_keys=(), cleared
     effective = tally - received
     due_os, next_due = overdue_os(dbills, received)
     action, wait_till = action_for(effective, pdc_amount, next_pdc, due_os, next_due)
+    ages = [b['age_days'] for b in dbills if b['pending_amt'] > 0 and b.get('age_days') is not None]
+    oldest_age = max(ages) if ages else None
+    remind = action == ACTION_NOT_DUE and oldest_age is not None and oldest_age >= REMIND_AFTER_DAYS
     overdue = [b['overdue_days'] for b in dbills if b['pending_amt'] > 0 and b.get('overdue_days') is not None]
     # How much is overdue by how many days: the pending amounts of the overdue bills, bills
     # overdue by the same number of days added together, oldest first.
@@ -451,6 +460,7 @@ def dealer_summary(d, dbills, payments, cheques, bounced_cheque_keys=(), cleared
         'pdc_count': len(held), 'pdc_amount': pdc_amount, 'next_pdc_date': next_pdc,
         'effective_os': effective,
         'overdue_os': due_os, 'next_due_date': next_due,
+        'oldest_bill_age_days': oldest_age, 'remind': remind,
         'oldest_overdue_days': max(overdue) if overdue else None,
         'overdue': [{'days': days, 'amount': amt} for days, amt in sorted(by_days.items(), reverse=True)],
         'action': action, 'wait_till': wait_till,
