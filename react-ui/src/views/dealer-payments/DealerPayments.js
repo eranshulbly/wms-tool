@@ -317,13 +317,6 @@ const DealerPayments = () => {
                 onClick={() => setDetail({ id: r.dealer_id, label: r.dealer })}>
                 <TableCell>
                   <Box component="span" sx={{ color: 'primary.main', fontWeight: 500 }}>{r.dealer}</Box>
-                  {r.bounces.map((b) => (
-                    <Box key={b.ref_no} sx={{ mt: 0.5 }}>
-                      <Chip size="small" color="error" variant="outlined"
-                        label={`${b.ref_no} · ${inr(b.amount)} · ${fmtDate(b.bill_date)} — ${b.label}`}
-                        sx={{ height: 'auto', '& .MuiChip-label': { whiteSpace: 'normal', py: 0.25 } }} />
-                    </Box>
-                  ))}
                 </TableCell>
                 <TableCell align="right">{inr(r.tally_os)}</TableCell>
                 <TableCell align="right">{r.received_not_in_tally ? inr(r.received_not_in_tally) : '—'}</TableCell>
