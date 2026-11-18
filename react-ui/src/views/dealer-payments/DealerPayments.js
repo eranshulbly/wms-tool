@@ -25,7 +25,7 @@ import {
   useMediaQuery,
   useTheme,
 } from '@material-ui/core';
-import { IconDownload, IconFileInvoice, IconPlus, IconRefresh, IconUpload, IconX } from '@tabler/icons';
+import { IconDownload, IconFileInvoice, IconPlus, IconRefresh, IconSearch, IconUpload, IconX } from '@tabler/icons';
 import {
   downloadOutstanding,
   errMsg,
@@ -180,6 +180,7 @@ const DealerPayments = () => {
   const [chequesOpen, setChequesOpen] = useState(false);
   const [chequeStatus, setChequeStatus] = useState('');
   const [downloading, setDownloading] = useState(false);
+  const [search, setSearch] = useState('');
 
   const download = async () => {
     setDownloading(true);
@@ -226,6 +227,15 @@ const DealerPayments = () => {
 
   const s = screen || {};
   const rows = s.rows || [];
+  // Search the dealer table: every word typed must appear in the dealer's name (town), ID or
+  // action — so "moradabad chase" finds Moradabad dealers to chase.
+  const words = search.toLowerCase().split(/\s+/).filter(Boolean);
+  const shownRows = words.length
+    ? rows.filter((r) => {
+        const text = `${r.dealer} ${r.dealer_id} ${actionLabel(r)}`.toLowerCase();
+        return words.every((w) => text.includes(w));
+      })
+    : rows;
   const uploads = s.uploads || {};
   const cheque = s.cheque_system || {};
 
@@ -286,6 +296,20 @@ const DealerPayments = () => {
       </Grid>
       {cheque.error && <Alert severity="warning" sx={{ mb: 1 }}>{cheque.error}</Alert>}
 
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 1, flexWrap: 'wrap' }}>
+        <TextField size="small" value={search} onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search dealer, town, ID or action" sx={{ width: { xs: '100%', sm: 340 } }}
+          InputProps={{
+            startAdornment: <IconSearch size={16} style={{ marginRight: 8, opacity: 0.6 }} />,
+            endAdornment: search ? (
+              <IconButton size="small" onClick={() => setSearch('')} aria-label="Clear search"><IconX size={14} /></IconButton>
+            ) : null
+          }} />
+        {words.length > 0 && (
+          <Typography variant="body2" color="textSecondary">{shownRows.length} of {rows.length} dealers</Typography>
+        )}
+      </Box>
+
       <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 2, mb: 2 }}>
         <Table size="small">
           <TableHead>
@@ -314,7 +338,14 @@ const DealerPayments = () => {
                 </TableCell>
               </TableRow>
             )}
-            {rows.map((r) => (
+            {screen && rows.length > 0 && !shownRows.length && (
+              <TableRow>
+                <TableCell colSpan={7} align="center" sx={{ py: 4, color: 'text.secondary' }}>
+                  No dealer matches "{search}".
+                </TableCell>
+              </TableRow>
+            )}
+            {shownRows.map((r) => (
               <TableRow key={r.dealer_id} hover sx={{ cursor: 'pointer' }}
                 onClick={() => setDetail({ id: r.dealer_id, label: r.dealer })}>
                 <TableCell>
