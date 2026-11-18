@@ -32,7 +32,7 @@ DUPLICATE_AMOUNT_TOLERANCE = Decimal('1')   # 3.3: ±₹1
 DUPLICATE_DAYS = 7                           # 3.3
 
 RECEIPT = 'Receipt'
-BOUNCE_LABEL = 'Bounced / reversed receipt: dealer owes again'
+BOUNCE_LABEL = 'Bounced / reversed receipt'
 
 # Manual check types (4).
 FLAG_DUPLICATE = 'possible_duplicate'
