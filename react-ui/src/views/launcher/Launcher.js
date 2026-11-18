@@ -19,7 +19,8 @@ import {
     IconArrowRight,
     IconReceipt2,
     IconUpload,
-    IconCashBanknote
+    IconCashBanknote,
+    IconCurrencyRupee
 } from '@tabler/icons';
 
 import { scopeForRole } from '../../utils/roleScope';
@@ -139,6 +140,17 @@ const Launcher = () => {
             tint: theme.palette.info.light,
             path: '/beat-outstanding',
             // Same access as Margin Check, see sales/beat_outstanding/router.py.
+            show: isAdmin || isManager
+        },
+        {
+            key: 'dealer-payments',
+            title: 'Dealer Payments',
+            description: 'Log payments as they arrive; see who to chase, who to wait for (PDC) and who is clear.',
+            icon: IconCurrencyRupee,
+            color: theme.palette.success.dark,
+            tint: theme.palette.success.light,
+            path: '/dealer-payments',
+            // Same access as Beat Outstanding, see sales/dealer_payments/router.py.
             show: isAdmin || isManager
         }
     ];

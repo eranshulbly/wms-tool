@@ -105,6 +105,11 @@ const MenuList = () => {
     if (sectionGroup && sectionGroup.id === 'beat-outstanding' && !(isAdmin || isManager)) {
         sectionGroup = null;
     }
+    // Dealer Payments: same access as Beat Outstanding (backend:
+    // sales/dealer_payments/router.py ALLOWED_ROLES).
+    if (sectionGroup && sectionGroup.id === 'dealer-payments' && !(isAdmin || isManager)) {
+        sectionGroup = null;
+    }
 
     // Inventory Ingestion: matches its route guard (MainRoutes.js: UploadPermissionGuard
     // 'ingestion') — admin, a manager-type role, or anyone granted the permission.

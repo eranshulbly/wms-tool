@@ -168,6 +168,12 @@ def save_dealer_location_photo(file_storage, dealer_id):
     return _save(file_storage, os.path.join('dealer_locations', str(dealer_id)))
 
 
+def save_payment_proof(file_storage, payment_id):
+    """Persist a logged dealer payment's proof image (Dealer Payment Tracker); returns
+    (key, mime, size)."""
+    return _save(file_storage, os.path.join('dealer_payments', str(payment_id)))
+
+
 def delete_media(relative_path):
     """Delete a stored file. Missing files are fine — deletion is idempotent, so
     a retried review can't fail on an already-removed photo."""

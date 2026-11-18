@@ -46,6 +46,12 @@ const MarginCheck = Loadable(lazy(() => import('../views/margin/MarginCheck')));
 const BeatOutstanding = Loadable(lazy(() => import('../views/beat-outstanding/BeatOutstanding')));
 const ExecutiveBeats = Loadable(lazy(() => import('../views/beat-outstanding/ExecutiveBeats')));
 
+// dealer payment tracker — Tally outstanding + receipts, payments logged here, PDCs
+const DealerPayments = Loadable(lazy(() => import('../views/dealer-payments/DealerPayments')));
+const PaymentLog = Loadable(lazy(() => import('../views/dealer-payments/PaymentLog')));
+const LogPaymentPage = Loadable(lazy(() =>
+    import('../views/dealer-payments/PaymentLog').then((m) => ({ default: m.LogPaymentPage }))));
+
 //-----------------------|| MAIN ROUTING ||-----------------------//
 
 const MainRoutes = () => {
@@ -77,6 +83,9 @@ const MainRoutes = () => {
                 '/margin-check',
                 '/beat-outstanding',
                 '/beat-outstanding/executive-beats',
+                '/dealer-payments',
+                '/dealer-payments/log',
+                '/dealer-payments/payments',
             ]}
         >
             <MainLayout>
@@ -199,6 +208,38 @@ const MainRoutes = () => {
                             <AuthGuard>
                                 <AdminGuard allowManager>
                                     <BeatOutstanding />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+
+                    {/* Dealer Payment Tracker — same access as Beat Outstanding. */}
+                    <Route
+                        path="/dealer-payments/log"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard allowManager>
+                                    <LogPaymentPage />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+                    <Route
+                        path="/dealer-payments/payments"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard allowManager>
+                                    <PaymentLog />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+                    <Route
+                        path="/dealer-payments"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard allowManager>
+                                    <DealerPayments />
                                 </AdminGuard>
                             </AuthGuard>
                         )}
