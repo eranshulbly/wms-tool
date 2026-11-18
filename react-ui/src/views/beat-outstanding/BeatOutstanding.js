@@ -25,6 +25,7 @@ import { IconChevronDown, IconChevronRight, IconDownload, IconFileZip, IconUploa
 import { downloadAll, downloadExecutive, downloadUnassigned, getBeatReport, setDayBeats } from '../../services/beatOutstandingService';
 import { readBlobError } from '../../services/orderService';
 import { BEAT_FEEDS, UploadRow } from '../dms-uploads/DmsFeedUpload';
+import DmsReportLink, { DMS_REPORTS } from '../../ui-component/DmsReportLink';
 
 // Beat Outstanding — a distributor's Tally outstanding split by the beats each sales
 // executive covers on a day, to hand to them as an Excel file. Built from three uploads:
@@ -140,7 +141,7 @@ const FilesPanel = ({ feeds, onUploaded, outstandingFile, outstanding, onPickOut
             <span style={{ color: '#b91c1c', fontWeight: 600 }}>
               Last Updated: {fmtDateTime(last.uploaded_on)}
             </span>
-            <span className={classes.muted}> · DMS → Analytics → New Outlets Addition Master Report (uploaded in Admin → Outlet Master Upload)</span>
+            <span className={classes.muted}> · <DmsReportLink report={DMS_REPORTS.outlets} /> · uploaded in Admin → Outlet Master Upload</span>
           </Typography>
         ) : (
           <Typography variant="caption" className={classes.red} component="div">

@@ -4,6 +4,7 @@ import { makeStyles } from '@material-ui/styles';
 import { IconUpload } from '@tabler/icons';
 import { getFeedStatus, uploadFeed } from '../../services/tatCheckService';
 import { getBeatFeedStatus, uploadBeatFeed } from '../../services/beatOutstandingService';
+import DmsReportLink, { DMS_REPORTS } from '../../ui-component/DmsReportLink';
 
 // The DMS / Tally uploads. Each upload replaces the previous one of the same kind.
 //   FEEDS       read by TAT Check (views/tat-check/TatCheck.js) — Admin pages, one per file
@@ -15,13 +16,14 @@ import { getBeatFeedStatus, uploadBeatFeed } from '../../services/beatOutstandin
 const TAT_API = { getStatus: getFeedStatus, upload: uploadFeed, usedBy: 'TAT Check' };
 const BEAT_API = { getStatus: getBeatFeedStatus, upload: uploadBeatFeed, usedBy: 'Beat Outstanding' };
 
-// `hint` is where each file comes from — the menu path in the system that exports it.
+// Where each file comes from: `report` is a DMS report (path, link, date range — see
+// DMS_REPORTS); `hint` the plain source when there is no report to link to.
 export const FEEDS = [
   {
     feed: 'inventory',
     label: 'DMS Inventory',
     title: 'DMS Inventory Upload',
-    hint: 'DMS → Analytics → Inventory Report',
+    report: DMS_REPORTS.inventory,
     accept: '.csv,.xlsx',
     ...TAT_API,
   },
@@ -37,7 +39,7 @@ export const FEEDS = [
     feed: 'grn',
     label: 'GRN',
     title: 'GRN Upload',
-    hint: 'DMS → Analytics → GRN Approved Status Report Sku-wise',
+    report: DMS_REPORTS.grn,
     accept: '.csv,.xlsx',
     ...TAT_API,
   },
@@ -48,7 +50,7 @@ export const BEAT_FEEDS = [
     feed: 'outlets',
     label: 'Outlet Master',
     title: 'Outlet Master Upload',
-    hint: 'DMS → Analytics → New Outlets Addition Master Report',
+    report: DMS_REPORTS.outlets,
     accept: '.csv,.xlsx',
     ...BEAT_API,
   },
@@ -56,7 +58,7 @@ export const BEAT_FEEDS = [
     feed: 'beat_plan',
     label: 'Beat Plan',
     title: 'Beat Plan Upload',
-    hint: 'DMS → Analytics → User Beat Details',
+    report: DMS_REPORTS.beat_plan,
     accept: '.csv,.xlsx',
     ...BEAT_API,
   },
@@ -121,7 +123,7 @@ export const UploadRow = ({ def, statuses, onUploaded }) => {
         <Grid item xs={12} sm={5}>
           <Typography variant="subtitle2">{def.label}</Typography>
           <Typography variant="caption" className={classes.muted} component="div">
-            {def.hint}
+            {def.report ? <DmsReportLink report={def.report} /> : def.hint}
           </Typography>
           {(statuses.length ? statuses : [null]).map((st, i) => (
             <Typography key={i} variant="caption" component="div" style={{ color: '#b91c1c', fontWeight: 600 }}>

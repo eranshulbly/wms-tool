@@ -32,6 +32,7 @@ import { IconFileSpreadsheet, IconX } from '@tabler/icons';
 
 import poBuilderService, { errorMessage } from '../../services/poBuilderService';
 import { money, num, pct } from './pricing';
+import DmsReportLink, { DMS_REPORTS } from '../../ui-component/DmsReportLink';
 
 // PO Builder master data: SKU master versions, quarterly schemes, the SKU → scheme
 // group mapping (read-only), and the settings.
@@ -133,7 +134,8 @@ const Stat = ({ label, value, warn }) => (
 // --------------------------------------------------------------------------- upload formats
 
 const SKU_MASTER_FORMAT = {
-  intro: 'DMS → Analytics → “Category Wise SKU Master”, exported as CSV or Excel, uploaded as it is. One row per SKU; the header row can sit below a title block.',
+  report: DMS_REPORTS.sku_master,
+  intro: 'Exported as CSV or Excel, uploaded as it is. One row per SKU; the header row can sit below a title block.',
   note: 'A file missing a required column is rejected. A row with a required value blank is skipped and listed in the preview — it is not loaded with a guessed value.',
   columns: [
     ['SKU_Code', 'Required', 'HTD1-SC-NP', 'The full code including the finish. Finish is read from the end of the code.'],
@@ -168,6 +170,7 @@ const FormatGuide = ({ format }) => (
       File format
     </Typography>
     <Typography variant="body2" color="textSecondary" paragraph>
+      {format.report && <><DmsReportLink report={format.report} />. </>}
       {format.intro}
     </Typography>
     <Table size="small">

@@ -22,6 +22,7 @@ import { makeStyles } from '@material-ui/styles';
 import { IconSearch } from '@tabler/icons';
 import { lookupSku, suggestSkus, getFeedStatus } from '../../services/tatCheckService';
 import { FEEDS, UploadRow } from '../dms-uploads/DmsFeedUpload';
+import DmsReportLink, { DMS_REPORTS } from '../../ui-component/DmsReportLink';
 
 // TAT Check — paste a SKU and see how much is in stock, in transit (dispatched by the
 // supplier, GRN not yet approved) and on PO (not yet dispatched), and the TAT that
@@ -266,7 +267,7 @@ const FilesPanel = ({ sources, feeds, onUploaded }) => {
             <span style={{ color: '#b91c1c', fontWeight: 600 }}>
               Last Updated: {fmtDateTime(master.uploaded_on)}
             </span>
-            <span className={classes.muted}> · DMS → Analytics → Category Wise SKU Master (uploaded in Admin → SKU Master Upload)</span>
+            <span className={classes.muted}> · <DmsReportLink report={DMS_REPORTS.sku_master} /> · uploaded in Admin → SKU Master Upload</span>
           </Typography>
         ) : (
           <Typography variant="caption" component="div" style={{ color: '#b91c1c' }}>
