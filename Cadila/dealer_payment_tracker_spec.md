@@ -104,11 +104,11 @@ One row per active dealer (exclude `Exclude From Chase = Y`):
 |---|---|
 | Dealer | Dealer Name (Town) |
 | Tally O/S | Sum of signed pending amounts from the latest Export 1 |
-| Received, not in Tally | Sum of my OPEN payments for the dealer |
+| Received, not in Tally | Sum of my OPEN payments for the dealer, plus its CLEARED cheques that Tally has no receipt for yet (same dealer, amount ±₹10, receipt dated cheque date − 2 … + 20 days, not already matched to a payment or an earlier cheque; only cheques dated from the start of the Receipt Register uploads) |
 | PDCs held | Count, amount and next cheque date of HOLDING/DEPOSITED cheques |
 | Effective O/S | Tally O/S − Received not in Tally |
-| Oldest overdue (days) | Max overdue days among the dealer's positive pending bills |
-| Action | `CHASE` if Effective O/S > 0 and PDCs held < Effective O/S · `WAIT till <next PDC date>` if PDCs ≥ Effective O/S · `CLEAR` if Effective O/S ≤ 0 |
+| Overdue (amount · days) | The dealer's positive pending bills that are past due, as amount · days overdue (counted to today), bills overdue by the same days added together, oldest first |
+| Action | `CLEAR` if Effective O/S ≤ 0 · otherwise, taking only the overdue part (overdue bills less payments not in Tally and credit balances, which settle the oldest first): `NOT DUE till <next due date>` if none is overdue · `WAIT till <next PDC date>` if PDCs held ≥ the overdue part · `CHASE` otherwise. If a bill that is not overdue has no due date, all of Effective O/S counts as overdue |
 
 Sort: CHASE first, by Effective O/S descending.
 

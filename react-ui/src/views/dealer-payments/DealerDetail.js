@@ -38,6 +38,39 @@ export const fmtDate = (iso) =>
 
 export const pdcs = (n) => `${n} PDC${n === 1 ? '' : 's'}`;
 
+// How much is overdue by how many days, one line each, oldest first: "₹30 · 4 days".
+export const OverdueList = ({ overdue }) =>
+  overdue?.length ? (
+    <Box sx={{ display: 'inline-block', textAlign: 'right' }}>
+      {overdue.map((o) => (
+        <Box key={o.days} sx={{ whiteSpace: 'nowrap' }}>
+          {inr(o.amount)} · {o.days} day{o.days === 1 ? '' : 's'}
+        </Box>
+      ))}
+    </Box>
+  ) : (
+    '—'
+  );
+
+// Where a cheque is counted on the dealer line: held / deposited in PDCs held; passed in the
+// bank but not in Tally yet in Received, not in Tally (sales/dealer_payments/rules.py).
+export const countedIn = (c) => (c.counted ? 'PDCs held' : c.in_received ? 'Received, not in Tally' : 'No');
+
+// Received, not in Tally, and how much of it is cleared cheques Tally has not posted yet.
+export const Received = ({ s }) =>
+  s.received_not_in_tally ? (
+    <>
+      {inr(s.received_not_in_tally)}
+      {s.cleared_cheques > 0 && (
+        <Typography variant="caption" color="textSecondary" component="div" sx={{ whiteSpace: 'nowrap' }}>
+          incl. {s.cleared_cheques} cleared cheque{s.cleared_cheques === 1 ? '' : 's'} · {inr(s.cleared_cheques_amount)}
+        </Typography>
+      )}
+    </>
+  ) : (
+    '—'
+  );
+
 export const CHEQUE_STATUS = {
   HOLDING: { label: 'Held', color: 'warning' },
   DEPOSITED: { label: 'Deposited', color: 'info' },
@@ -46,7 +79,14 @@ export const CHEQUE_STATUS = {
 };
 const PAY_COLOR = { OPEN: 'warning', POSTED: 'success', CANCELLED: 'default', BOUNCED: 'error' };
 const KIND = { invoice: 'Invoice', bounce: 'Bounced receipt', credit_note: 'Credit note', other: 'Other' };
-const ACTION_COLOR = { CHASE: 'error', WAIT: 'warning', CLEAR: 'success' };
+// The dealer's action (sales/dealer_payments/rules.py action_for). NOT DUE: money is owed but
+// no bill is past its due date yet; `wait_till` is then the next due date.
+export const ACTION_COLOR = { CHASE: 'error', WAIT: 'warning', NOT_DUE: 'info', CLEAR: 'success' };
+export const actionLabel = (r) => {
+  if (r.action === 'WAIT') return `WAIT till ${fmtDate(r.wait_till)}`;
+  if (r.action === 'NOT_DUE') return r.wait_till ? `NOT DUE till ${fmtDate(r.wait_till)}` : 'NOT DUE';
+  return r.action;
+};
 const H = { fontWeight: 600, whiteSpace: 'nowrap' };
 
 const Section = ({ title, count, children }) => (
@@ -61,7 +101,7 @@ const Section = ({ title, count, children }) => (
 const Stat = ({ label, value, strong }) => (
   <Grid item xs={6} sm={4} md={2}>
     <Typography variant="caption" color="textSecondary" component="div">{label}</Typography>
-    <Typography variant="body1" sx={{ fontWeight: strong ? 700 : 500 }}>{value}</Typography>
+    <Typography variant="body1" component="div" sx={{ fontWeight: strong ? 700 : 500 }}>{value}</Typography>
   </Grid>
 );
 
@@ -147,14 +187,13 @@ const DealerDetail = ({ dealerId }) => {
       <Paper variant="outlined" sx={{ p: 1.5, mt: 1, borderRadius: 2 }}>
         <Grid container spacing={1}>
           <Stat label={`Tally O/S (as of ${fmtDate(d.tally_as_of)})`} value={drcr(s.tally_os)} />
-          <Stat label="Received, not in Tally" value={s.received_not_in_tally ? inr(s.received_not_in_tally) : '—'} />
+          <Stat label="Received, not in Tally" value={<Received s={s} />} />
           <Stat label="Effective O/S" value={drcr(s.effective_os)} strong />
           <Stat label="PDCs held" value={s.pdc_count ? `${pdcs(s.pdc_count)} · ${inr(s.pdc_amount)}` : '—'} />
-          <Stat label="Oldest overdue (days)" value={s.oldest_overdue_days ?? '—'} />
+          <Stat label="Overdue (amount · days)" value={<OverdueList overdue={s.overdue} />} />
           <Grid item xs={6} sm={4} md={2}>
             <Typography variant="caption" color="textSecondary" component="div">Action</Typography>
-            <Chip size="small" color={ACTION_COLOR[s.action]}
-              label={s.action === 'WAIT' ? `WAIT till ${fmtDate(s.wait_till)}` : s.action} />
+            <Chip size="small" color={ACTION_COLOR[s.action]} label={actionLabel(s)} />
           </Grid>
         </Grid>
       </Paper>
@@ -207,7 +246,7 @@ const DealerDetail = ({ dealerId }) => {
                 <TableCell sx={H}>Bank</TableCell>
                 <TableCell sx={H} align="right">Amount</TableCell>
                 <TableCell sx={H}>Status</TableCell>
-                <TableCell sx={H}>Counted as held</TableCell>
+                <TableCell sx={H}>Counted in</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -219,7 +258,7 @@ const DealerDetail = ({ dealerId }) => {
                   <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>{inr(c.amount)}</TableCell>
                   <TableCell><ChequeStatusChip c={c} /></TableCell>
                   <TableCell>
-                    {c.counted ? 'Yes' : 'No'}
+                    {countedIn(c)}
                     {c.boo_ref && <Typography variant="caption" color="error" component="div">Reversed in Tally by {c.boo_ref}</Typography>}
                   </TableCell>
                 </TableRow>

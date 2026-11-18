@@ -427,7 +427,7 @@ def test_dealer_screen_rows(master, ids, export1):
     assert by[akansh]['effective_os'] == D('15436') and by[akansh]['pdc_count'] == 0   # CLEARED is not held
     assert by[akansh]['oldest_overdue_days'] == 91
     actions = [r['action'] for r in rows]
-    assert actions == sorted(actions, key={'CHASE': 0, 'WAIT': 1, 'CLEAR': 2}.get)
+    assert actions == sorted(actions, key={'CHASE': 0, 'WAIT': 1, 'NOT_DUE': 2, 'CLEAR': 3}.get)
     chase = [r['effective_os'] for r in rows if r['action'] == R.ACTION_CHASE]
     assert chase == sorted(chase, reverse=True)
     katyayani = [r for r in rows if r['dealer'].startswith('Katyayani')][0]
@@ -467,3 +467,86 @@ def test_outstanding_download_matches_tally_and_lists_every_bill(export1, master
     assert total[6] == 1000 and total[7] == 500 and 'PDC' in total[10]
     first_bill = next(r for r in ws.iter_rows(min_row=5) if r[1].value and r[1].value != 'Ref. No.')
     assert first_bill[5].number_format == '#,##0.00 "Dr";#,##0.00 "Cr";0.00'
+
+
+def test_overdue_days_counted_to_today():
+    due = date(2026, 11, 1)
+    assert R.overdue_days(due, date(2026, 11, 18)) == 17
+    assert R.overdue_days(due, due) == 0
+    assert R.overdue_days(due, date(2026, 10, 31)) is None          # not yet due
+    assert R.overdue_days(None, date(2026, 11, 18)) is None
+    bills = [{'due_on': due, 'overdue_days': 16},                    # Tally's figure, as of 17-Nov
+             {'due_on': date(2026, 12, 15), 'overdue_days': None},
+             {'due_on': None, 'overdue_days': 5}]                    # no due date: Tally's kept
+    assert [b['overdue_days'] for b in R.age_bills(bills, date(2026, 11, 18))] == [17, None, 5]
+
+
+def test_overdue_amounts_by_days():
+    d = {'dealer_id': 'D1', 'dealer_name': 'X'}
+    bills = [{'kind': 'invoice', 'ref_no': '1', 'pending_amt': D('10'), 'overdue_days': 2},
+             {'kind': 'invoice', 'ref_no': '2', 'pending_amt': D('30'), 'overdue_days': 4},
+             {'kind': 'invoice', 'ref_no': '3', 'pending_amt': D('5'), 'overdue_days': 4},
+             {'kind': 'invoice', 'ref_no': '4', 'pending_amt': D('50'), 'overdue_days': None},   # not yet due
+             {'kind': 'invoice', 'ref_no': '5', 'pending_amt': D('-7'), 'overdue_days': 9}]      # Cr: not owed
+    s = R.dealer_summary(d, bills, [], [])
+    assert s['overdue'] == [{'days': 4, 'amount': D('35')}, {'days': 2, 'amount': D('10')}]
+    assert R.dealer_summary(d, [], [], [])['overdue'] == []
+
+
+def test_cleared_cheques_not_in_tally():
+    day = date(2026, 11, 10)
+    start = date(2026, 4, 1)
+    c = lambda no, amt, d=day, dealer='D1', status=R.CLEARED: {**_chq(no, 'x', amt, d, status), 'dealer_id': dealer}
+    rcpt = lambda no, amt, d, dealer='D1': {'vch_no': no, 'vch_date': d, 'dealer_id': dealer,
+                                            'vch_type': R.RECEIPT, 'amount': D(str(amt))}
+    cheques = [c('1', 1000),                                   # receipt 2 days later: in Tally
+               c('2', 2000),                                   # no receipt: not in Tally
+               c('3', 1000, day + timedelta(days=1)),          # the one ₹1,000 receipt is taken by cheque 1
+               c('4', 500, status=R.DEPOSITED),                # not cleared: PDCs held, not here
+               c('5', 700, date(2026, 3, 30)),                 # before the register starts: not checked
+               c('6', 900),                                    # its receipt is a logged payment's
+               c('7', 300, dealer='D2')]                       # another dealer's receipt does not count
+    receipts = [rcpt('R1', 1005, day + timedelta(days=2)), rcpt('R6', 900, day),
+                rcpt('R7', 300, day, dealer='D1x')]
+    out = R.cleared_not_in_tally(cheques, receipts, {('R6', day)}, start)
+    assert sorted(x['cheque_no'] for x in out) == ['2', '3', '6', '7']
+    assert R.cleared_not_in_tally(cheques, receipts, set(), None) == []                  # no register yet
+    assert sorted(x['cheque_no'] for x in R.cleared_not_in_tally(cheques, receipts, set(), start, {('2', 'SBI')})) == ['3', '7']
+
+    s = R.dealer_summary({'dealer_id': 'D1', 'dealer_name': 'X'},
+                         [{'kind': 'invoice', 'ref_no': 'a', 'pending_amt': D('5000'), 'overdue_days': 3}],
+                         [_pay(1, 'D1', 100, day)], cheques, cleared=out)
+    assert (s['cleared_cheques'], s['cleared_cheques_amount']) == (3, D('3900'))
+    assert s['received_not_in_tally'] == D('4000')             # ₹100 logged + ₹3,900 cleared cheques
+    assert s['effective_os'] == D('1000')
+
+
+def test_not_due_until_a_bill_is_past_due():
+    today = date(2026, 11, 18)
+    bill = lambda ref, amt, due: {'kind': 'invoice', 'ref_no': ref, 'pending_amt': D(str(amt)), 'due_on': due,
+                                  'overdue_days': R.overdue_days(due, today) if due else None}
+    d = {'dealer_id': 'D1', 'dealer_name': 'X'}
+    summ = lambda bills, pays=(), cheques=(): R.dealer_summary(d, bills, list(pays), list(cheques))
+
+    # S.A.S: one bill, due 15-Dec, nothing paid — owed but not due.
+    s = summ([bill('a', 132587, date(2026, 12, 15))])
+    assert (s['action'], s['wait_till'], s['overdue_os']) == (R.ACTION_NOT_DUE, date(2026, 12, 15), D('0'))
+
+    # Overdue ₹1,000 plus ₹5,000 not due: chase the ₹1,000 ...
+    bills = [bill('a', 1000, date(2026, 11, 1)), bill('b', 5000, date(2026, 12, 1))]
+    s = summ(bills)
+    assert (s['action'], s['overdue_os'], s['effective_os']) == (R.ACTION_CHASE, D('1000'), D('6000'))
+    # ... a payment settles the overdue bill first, so the rest is not due till 1-Dec ...
+    s = summ(bills, [_pay(1, 'D1', 1000, today)])
+    assert (s['action'], s['wait_till']) == (R.ACTION_NOT_DUE, date(2026, 12, 1))
+    # ... and a credit balance does the same.
+    s = summ(bills + [{'kind': 'invoice', 'ref_no': 'cr', 'pending_amt': D('-1000'), 'due_on': None, 'overdue_days': None}])
+    assert s['action'] == R.ACTION_NOT_DUE
+    # PDCs that cover the overdue part: WAIT.
+    s = summ(bills, cheques=[{**_chq('9', 'x', 1000, today + timedelta(days=3)), 'dealer_id': 'D1'}])
+    assert (s['action'], s['wait_till']) == (R.ACTION_WAIT, today + timedelta(days=3))
+    # A bill not overdue with no due date: cannot tell, so all of it counts as due.
+    s = summ([bill('a', 500, None)])
+    assert (s['action'], s['overdue_os']) == (R.ACTION_CHASE, None)
+    # Nothing owed: CLEAR.
+    assert summ([bill('a', 0, date(2026, 11, 1))])['action'] == R.ACTION_CLEAR
