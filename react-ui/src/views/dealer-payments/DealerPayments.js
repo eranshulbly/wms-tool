@@ -35,7 +35,7 @@ import {
   uploadTallyExport,
 } from '../../services/dealerPaymentsService';
 import PaymentForm from './PaymentForm';
-import DealerDetail, { ChequeStatusChip, CHEQUE_STATUS } from './DealerDetail';
+import DealerDetail, { ChequeStatusChip, CHEQUE_STATUS, pdcs } from './DealerDetail';
 
 // The daily dealer screen (spec 4): who to chase, who to wait for (PDC), who is clear.
 // Tally O/S comes from the latest Outstanding export; Received, not in Tally from payments
@@ -328,7 +328,12 @@ const DealerPayments = () => {
                 <TableCell align="right">{inr(r.tally_os)}</TableCell>
                 <TableCell align="right">{r.received_not_in_tally ? inr(r.received_not_in_tally) : '—'}</TableCell>
                 <TableCell align="right">
-                  {r.pdc_count ? `${r.pdc_count} · ${inr(r.pdc_amount)} · next ${fmtDate(r.next_pdc_date)}` : '—'}
+                  {r.pdc_count ? (
+                    <>
+                      <Box component="span" sx={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{pdcs(r.pdc_count)} · {inr(r.pdc_amount)}</Box>
+                      <Typography variant="caption" color="textSecondary" component="div">next {fmtDate(r.next_pdc_date)}</Typography>
+                    </>
+                  ) : '—'}
                 </TableCell>
                 <TableCell align="right" sx={{ fontWeight: 600 }}>{inr(r.effective_os)}</TableCell>
                 <TableCell align="right">{r.oldest_overdue_days ?? '—'}</TableCell>

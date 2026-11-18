@@ -21,7 +21,7 @@ import { errMsg, getDealerDetail } from '../../services/dealerPaymentsService';
 
 // One dealer in detail (opened from a row of the dealer screen): the screen line's numbers,
 // every pending bill in Tally with the voucher lines under it, PDC cheques of any status,
-// payments logged in the app and recent Tally receipts. Cheques are the ones read when the
+// and payments logged in the app. Cheques are the ones read when the
 // tile was opened — this never reads the cheque system itself.
 
 export const inr = (v) =>
@@ -35,6 +35,8 @@ export const drcr = (v) => {
 };
 export const fmtDate = (iso) =>
   iso ? new Date(`${String(iso).slice(0, 10)}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' }) : '—';
+
+export const pdcs = (n) => `${n} PDC${n === 1 ? '' : 's'}`;
 
 export const CHEQUE_STATUS = {
   HOLDING: { label: 'Held', color: 'warning' },
@@ -147,7 +149,7 @@ const DealerDetail = ({ dealerId }) => {
           <Stat label={`Tally O/S (as of ${fmtDate(d.tally_as_of)})`} value={drcr(s.tally_os)} />
           <Stat label="Received, not in Tally" value={s.received_not_in_tally ? inr(s.received_not_in_tally) : '—'} />
           <Stat label="Effective O/S" value={drcr(s.effective_os)} strong />
-          <Stat label="PDCs held" value={s.pdc_count ? `${s.pdc_count} · ${inr(s.pdc_amount)}` : '—'} />
+          <Stat label="PDCs held" value={s.pdc_count ? `${pdcs(s.pdc_count)} · ${inr(s.pdc_amount)}` : '—'} />
           <Stat label="Oldest overdue (days)" value={s.oldest_overdue_days ?? '—'} />
           <Grid item xs={6} sm={4} md={2}>
             <Typography variant="caption" color="textSecondary" component="div">Action</Typography>
@@ -190,8 +192,11 @@ const DealerDetail = ({ dealerId }) => {
       </Section>
 
       <Section title="PDC cheques" count={d.cheques.length}>
+        <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
+          PDCs held: {held.length ? `${pdcs(held.length)} · ${inr(s.pdc_amount)}` : 'none'}
+        </Typography>
         <Typography variant="caption" color="textSecondary" component="div" sx={{ mb: 0.5 }}>
-          Cheques {d.cheques_note}. {held.length ? `${held.length} counted in PDCs held.` : ''}
+          Cheques {d.cheques_note}.
         </Typography>
         <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 2 }}>
           <Table size="small">
@@ -261,31 +266,6 @@ const DealerDetail = ({ dealerId }) => {
         </TableContainer>
       </Section>
 
-      <Section title="Recent Tally receipts" count={d.receipts.length}>
-        <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 2 }}>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell sx={H}>Date</TableCell>
-                <TableCell sx={H}>Voucher</TableCell>
-                <TableCell sx={H} align="right">Amount</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {d.receipts.map((r) => (
-                <TableRow key={`${r.vch_no}-${r.vch_date}`} hover>
-                  <TableCell sx={{ whiteSpace: 'nowrap' }}>{fmtDate(r.vch_date)}</TableCell>
-                  <TableCell>{r.vch_type} {r.vch_no}</TableCell>
-                  <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>{inr(r.amount)}</TableCell>
-                </TableRow>
-              ))}
-              {!d.receipts.length && (
-                <TableRow><TableCell colSpan={3} sx={{ color: 'text.secondary' }}>No receipts in the loaded Receipt Register.</TableCell></TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </TableContainer>
-      </Section>
     </Box>
   );
 };

@@ -522,8 +522,8 @@ def _cheques_note(read_at, error):
 
 def dealer_detail(company_id, dealer_id, today=None):
     """Everything about one dealer: the line on the dealer screen, its pending bills (with the
-    Tally voucher lines under each), payments logged, PDC cheques of any status, and recent
-    Tally receipts. Cheques come from the last read (the tile open); wareops is not read."""
+    Tally voucher lines under each), payments logged and PDC cheques of any status. Cheques
+    come from the last read (the tile open); wareops is not read."""
     today = today or today_ist()
     dealer_list = dealers(company_id)
     d = next((x for x in dealer_list if x['dealer_id'] == dealer_id), None)
@@ -543,9 +543,6 @@ def dealer_detail(company_id, dealer_id, today=None):
     adj_by = {}
     for a in adj:
         adj_by.setdefault(a['ref_no'], []).append(a)
-    recent = mysql_manager.execute_query(
-        """SELECT vch_no, vch_date, vch_type, amount FROM dpt_receipt WHERE company_id = %s AND dealer_id = %s
-           ORDER BY vch_date DESC, vch_no DESC LIMIT 30""", (company_id, dealer_id)) or []
     return {
         'dealer': {**d, 'label': label},
         'tally_as_of': as_of,
@@ -555,7 +552,6 @@ def dealer_detail(company_id, dealer_id, today=None):
         'payments': [p for p in pays if p['dealer_id'] == dealer_id],
         'cheques': _cheque_lines([c for c in mapped if c['dealer_id'] == dealer_id], bounced, lambda _i: label),
         'cheques_note': _cheques_note(read_at, cheque_error),
-        'receipts': recent,
     }
 
 
