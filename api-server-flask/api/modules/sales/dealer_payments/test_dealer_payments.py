@@ -453,18 +453,17 @@ def test_outstanding_download_matches_tally_and_lists_every_bill(export1, master
     data = build_outstanding_xlsx(as_of=export1['as_of'], dealers=master, bills=bills, payments=pays, cheques=chq,
                                   bounced_cheques={}, cheques_note='test', today=AS_OF)
     wb = openpyxl.load_workbook(io.BytesIO(data))
-    assert wb.sheetnames == ['Outstanding', 'Dealer summary', 'PDC cheques', 'Received, not in Tally']
+    assert wb.sheetnames == ['Outstanding']
     ws = wb['Outstanding']
     rows = list(ws.iter_rows(values_only=True))
-    grand = next(r for r in rows if r[2] == 'Grand Total (Tally O/S)')
-    assert round(grand[5], 2) == 5195763
+    grand = next(r for r in rows if r[2] == 'Grand Total')
+    assert round(grand[5], 2) == 5195763 and grand[6] == 1000 and grand[7] == 500
     bill_rows = [r for r in rows if r[1] and r[1] != 'Ref. No.']
-    assert len(bill_rows) == len(bills)
+    assert len(bill_rows) == len(bills) and all(r[6] is None and r[7] is None for r in bill_rows)
     assert round(sum(r[5] for r in bill_rows), 2) == 5195763
-    # Kunj: Tally total, the payment not yet in Tally, Effective O/S, and the PDC
-    labels = [r[2] for r in rows if r[2]]
-    i = labels.index(kunj['tally_ledger_name'])
-    assert labels[i + 1].endswith('Tally O/S') and labels[i + 2].startswith('Less: received')
-    assert labels[i + 3] == 'Effective O/S' and labels[i + 4] == 'PDCs held (1)'
+    # Kunj: received and PDC sit beside Tally O/S on the party's total row
+    i = next(n for n, r in enumerate(rows) if r[2] == kunj['tally_ledger_name'])
+    total = next(r for r in rows[i + 1:] if r[2] and r[2].startswith('Total ('))
+    assert total[6] == 1000 and total[7] == 500 and 'PDC' in total[10]
     first_bill = next(r for r in ws.iter_rows(min_row=5) if r[1].value and r[1].value != 'Ref. No.')
     assert first_bill[5].number_format == '#,##0.00 "Dr";#,##0.00 "Cr";0.00'
