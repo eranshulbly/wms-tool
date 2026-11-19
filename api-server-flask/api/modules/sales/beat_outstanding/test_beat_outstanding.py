@@ -205,3 +205,56 @@ def test_cd_sheet_sets_credits_against_the_oldest_bills():
     big[-1]['name_key'] = bills[0]['name_key']
     dealers = R.dealers_on({'1318'}, big, placed, today)
     assert R.cd_lapsed(dealers, today) == [] and dealers[0]['max_days_overdue'] is None
+
+
+_OUTLET_HEAD = '"S No","Outlet Id","Outlet Name","Outlet Status","Warehouse","GST NO","Beat Id","Beat Name","City"\n'
+
+
+def test_outlet_master_reads_the_dms_outlet_report_and_drops_inactive():
+    csv = (_OUTLET_HEAD
+           + '"1","5249","Agarwal Kitchenwares (Aligarh)","Active","Anmol Associates","\'09AOLPA4280M2ZL"," 1376 ","Anmol_Aligarh","Aligarh"\n'
+           + '"2","5893","M/S AGARWAL KITCHENWARES","Inactive","Anmol Associates","","1318","Anmol_BAREILLY","Bareilly"\n'
+           + '"3","7000","No Beat Store","Active","Anmol Associates","","0","","Agra"\n').encode()
+    tables, warnings, _ = P.parse(P.FEED_OUTLETS, io.BytesIO(csv), 'outlets.csv')
+    assert [(o['outlet_id'], o['beat_id'], o['beat_name'], o['city'], o['distributor']) for o in tables['outlets']] == \
+        [('5249', '1376', 'Anmol_Aligarh', 'Aligarh', 'Anmol Associates'), ('7000', '', '', 'Agra', 'Anmol Associates')]
+    assert [o['outlet_id'] for o in tables['inactive']] == ['5893']
+    assert any('No Beat Store is on no beat' in w for w in warnings)
+    assert any('1 Inactive outlet(s) not kept' in w for w in warnings)
+
+
+def test_old_outlet_master_layout_is_refused():
+    csv = b'"Outlet_Id","Outlet_Name","Beat_Name","Beat_ID","city"\n"5249","A","Anmol_Aligarh","1376","Aligarh"\n'
+    with pytest.raises(P.ParseError, match='missing column'):
+        P.parse(P.FEED_OUTLETS, io.BytesIO(csv), 'old.csv')
+
+
+class _Cur:
+    def __init__(self, stored):
+        self.stored, self.deleted = stored, []
+
+    def execute(self, sql, args=()):
+        if sql.startswith('DELETE'):
+            self.deleted += list(args)
+
+    def fetchall(self):
+        return self.stored
+
+
+def test_outlet_merge_removes_outlets_now_inactive():
+    from api.modules.sales.beat_outstanding import service as S
+    stored = [{'id': 1, 'outlet_id': '10', 'name_key': 'A'}, {'id': 2, 'outlet_id': '11', 'name_key': 'B'},
+              {'id': 3, 'outlet_id': '12', 'name_key': 'C'}]
+    cur = _Cur(stored)
+    merge = S._merge_outlets(cur, 1, [{'outlet_id': '10', 'name_key': 'A'}, {'outlet_id': '20', 'name_key': 'N'}],
+                             [{'outlet_id': '11', 'name_key': 'B'}, {'outlet_id': '99', 'name_key': 'Z'}])
+    assert sorted(cur.deleted) == [1, 2]
+    assert merge == {'added': 1, 'updated': 1, 'removed': 1, 'kept': 1}
+
+
+def test_outlet_master_keeps_the_gstin_without_the_dms_quote():
+    csv = (_OUTLET_HEAD
+           + '"1","5249","Agarwal Kitchenwares","Active","Anmol Associates","\'09aolpa4280m2zl "," 1376 ","Anmol_Aligarh","Aligarh"\n'
+           + '"2","5250","No GST Store","Active","Anmol Associates","","1376","Anmol_Aligarh","Aligarh"\n').encode()
+    tables, _, _ = P.parse(P.FEED_OUTLETS, io.BytesIO(csv), 'outlets.csv')
+    assert [o['gstin'] for o in tables['outlets']] == ['09AOLPA4280M2ZL', '']

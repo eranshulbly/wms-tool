@@ -165,11 +165,50 @@ def _lines(order_ids):
     return grouped
 
 
+def _city_by_gstin(orders):
+    """The City printed on each order's sheet: the order's GSTIN (the upload's "Purchaser
+    SAP Code" column) looked up in the DMS Outlet Master (bo_outlet, Active outlets only —
+    Inactive ones are never stored). Exactly one outlet with that GSTIN gives its city; no
+    GSTIN, no outlet, or several outlets on it leaves City blank — never a guess.
+    {potential_order_id: city}."""
+    from api.modules.sales.beat_outstanding.parser import gstin_key
+    from api.modules.sales.beat_outstanding.schema import ensure_outlet_gstin
+    wanted = {}                                    # (company_id, gstin) -> [order ids]
+    for o in orders:
+        g = gstin_key(o.get('purchaser_sap_code'))
+        if g:
+            wanted.setdefault((o.get('company_id'), g), []).append(o['potential_order_id'])
+    if not wanted:
+        return {}
+    try:
+        ensure_outlet_gstin()
+        out = {}
+        for company_id in {c for c, _ in wanted}:
+            gstins = sorted(g for c, g in wanted if c == company_id)
+            ph = ','.join(['%s'] * len(gstins))
+            rows = mysql_manager.execute_query(
+                f"""SELECT gstin, MIN(city) AS city FROM bo_outlet
+                    WHERE company_id = %s AND gstin IN ({ph})
+                    GROUP BY gstin HAVING COUNT(*) = 1""",
+                (company_id, *gstins)) or []
+            for r in rows:
+                for oid in wanted.get((company_id, r['gstin']), []):
+                    out[oid] = r['city'] or ''
+        return out
+    except Exception:
+        # No Outlet Master on this database: City stays blank rather than failing the sheet.
+        logger.exception("picklist: city lookup by GSTIN failed")
+        return {}
+
+
 def build(order_ids, company_ids=None):
     """[{header, lines}] for the requested orders. Orders not pickable are omitted."""
     orders = _orders(order_ids, company_ids)
     if not orders:
         return []
+    cities = _city_by_gstin(orders)
+    for order in orders:
+        order['town'] = cities.get(order['potential_order_id'], '')
     lines = _lines([o['potential_order_id'] for o in orders])
     out = []
     for order in orders:

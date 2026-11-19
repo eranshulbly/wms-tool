@@ -1,7 +1,9 @@
 # -*- encoding: utf-8 -*-
 """Parsers for the three Beat Outstanding uploads. Pure functions — no database.
 
-  outlets      DMS Outlet Master (.csv/.xlsx)         -> outlet rows (outlet -> beat, city)
+  outlets      DMS Outlet Master (.csv/.xlsx)         -> outlet rows (outlet -> beat, city);
+               the outlet report with "Outlet Id", "Outlet Name", "Outlet Status", "Beat Id",
+               "Beat Name", "City" (and "GST NO") — Inactive outlets are not kept
   beat_plan    DMS User Beat Details (.csv/.xlsx)     -> plan rows (executive x date x beat)
   outstanding  Tally Bills Receivable export (.xlsx)  -> bill rows, plus whose report it is
 
@@ -31,7 +33,7 @@ FEED_LABELS = {
 }
 
 # Only the columns read here are required, so an export that gains a column still loads.
-OUTLET_COLS = ['Outlet_Name', 'Beat_ID', 'Beat_Name']
+OUTLET_COLS = ['Outlet Id', 'Outlet Name', 'Outlet Status', 'Beat Id', 'Beat Name', 'City']
 BEAT_PLAN_COLS = ['SEName', 'Date', 'BeatId', 'BeatName']
 
 
@@ -81,6 +83,12 @@ def name_key(name):
     return ' '.join(s.split())
 
 
+def gstin_key(v):
+    """A GSTIN as compared: the DMS export's leading quote ("'09AOLPA4280M2ZL"), spaces
+    and case dropped. '' when there is none."""
+    return re.sub(r'[^0-9A-Z]', '', _s(v).upper())
+
+
 def _table(data, filename):
     """Header and rows of a single-table export (.csv, or the first sheet of an .xlsx)."""
     name = (filename or '').lower()
@@ -115,28 +123,38 @@ def _require(header, cols, label):
 # ── DMS feeds ────────────────────────────────────────────────────────────────
 
 def parse_outlets(data, filename):
+    """Active outlets go in 'outlets'; an Inactive one goes in 'inactive', so a copy stored
+    from an earlier upload is removed (service._merge_outlets) rather than kept."""
     header, rows = _table(data, filename)
     _require(header, OUTLET_COLS, FEED_LABELS[FEED_OUTLETS])
-    out, warnings = [], []
+    out, inactive, warnings = [], [], []
     for i, r in enumerate(rows, start=2):
-        name = _s(r.get('Outlet_Name'))
+        name = _s(r.get('Outlet Name'))
         if not name:
-            warnings.append(f'Row {i}: no Outlet_Name — skipped')
+            warnings.append(f'Row {i}: no Outlet Name — skipped')
             continue
-        beat_id = _s(r.get('Beat_ID'))
-        if not beat_id or beat_id == '0':
-            warnings.append(f'Row {i}: {name} is on no beat')
-            beat_id = ''
-        out.append({
-            'outlet_id': _s(r.get('Outlet_Id')),
+        beat_id = _s(r.get('Beat Id'))
+        row = {
+            'outlet_id': _s(r.get('Outlet Id')),
             'outlet_name': name,
             'name_key': name_key(name),
-            'beat_id': beat_id,
-            'beat_name': _s(r.get('Beat_Name')),
-            'city': _s(r.get('city') or r.get('City')),
-            'distributor': _s(r.get('Distributor')),
-        })
-    return {'outlets': out}, warnings, {}
+            'beat_id': '' if beat_id == '0' else beat_id,
+            'beat_name': _s(r.get('Beat Name')),
+            'city': _s(r.get('City')),
+            'distributor': _s(r.get('Warehouse')),
+            'gstin': gstin_key(r.get('GST NO')),
+        }
+        if _s(r.get('Outlet Status')).lower() == 'inactive':
+            inactive.append(row)
+            continue
+        if not row['beat_id']:
+            warnings.append(f'Row {i}: {name} is on no beat')
+        out.append(row)
+    if inactive:
+        warnings.append(f'{len(inactive)} Inactive outlet(s) not kept: '
+                        + ', '.join(f"{o['outlet_name']} ({o['outlet_id']})" for o in inactive[:20])
+                        + (' …' if len(inactive) > 20 else ''))
+    return {'outlets': out, 'inactive': inactive}, warnings, {}
 
 
 def parse_beat_plan(data, filename):

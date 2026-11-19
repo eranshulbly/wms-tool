@@ -3,7 +3,8 @@
 Beat Plan is a snapshot (an upload REPLACES its rows); the Outlet Master is incremental (an
 upload adds new outlets and updates the ones in the file, by Outlet_Id; the rest are kept).
 
-  bo_outlet        DMS Outlet Master — which beat (and city) each outlet is on (incremental)
+  bo_outlet        DMS Outlet Master — which beat (and city) each outlet is on, and its
+                   GSTIN, which gives a picklist its City (incremental)
   bo_beat_plan     DMS User Beat Details — which beats each executive covers on a date
   bo_bill          no longer written: the Tally outstanding report is never stored —
                    the page sends it with each request (service.read_outstanding)
@@ -31,8 +32,10 @@ CREATE TABLE IF NOT EXISTS bo_outlet (
     beat_name     VARCHAR(255) NOT NULL DEFAULT '',
     city          VARCHAR(128) NOT NULL DEFAULT '',
     distributor   VARCHAR(255) NOT NULL DEFAULT '',
+    gstin         VARCHAR(20)  NOT NULL DEFAULT '',
     PRIMARY KEY (id),
     KEY idx_bo_outlet_name (company_id, name_key),
+    KEY idx_bo_outlet_gstin (company_id, gstin),
     KEY idx_bo_outlet_beat (company_id, beat_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 """, order=110)
@@ -106,3 +109,24 @@ CREATE TABLE IF NOT EXISTS bo_exec_beat (
     UNIQUE KEY uq_bo_exec_beat (company_id, se_name, beat_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 """, order=114)
+
+
+_GSTIN_READY = False
+
+
+def ensure_outlet_gstin():
+    """bo_outlet.gstin — the registry only creates tables, so a database that already had
+    bo_outlet gets the column (and its index) here. Once per process; idempotent."""
+    global _GSTIN_READY
+    if _GSTIN_READY:
+        return
+    from api.shared.db_manager import mysql_manager
+    has_col = mysql_manager.execute_query(
+        """SELECT 1 FROM information_schema.COLUMNS
+           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bo_outlet'
+             AND COLUMN_NAME = 'gstin'""")
+    if not has_col:
+        mysql_manager.execute_query(
+            "ALTER TABLE bo_outlet ADD COLUMN gstin VARCHAR(20) NOT NULL DEFAULT '' AFTER distributor, "
+            "ADD KEY idx_bo_outlet_gstin (company_id, gstin)", fetch=False)
+    _GSTIN_READY = True

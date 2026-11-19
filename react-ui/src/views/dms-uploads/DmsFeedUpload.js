@@ -108,7 +108,7 @@ export const UploadRow = ({ def, statuses, onUploaded }) => {
       setMsg({
         type: 'success',
         text: mg
-          ? `Loaded ${counts}${warn}: ${nf.format(mg.added)} new, ${nf.format(mg.updated)} updated; ${nf.format(mg.kept)} not in this file kept — ${nf.format(mg.total)} outlets stored.`
+          ? `Loaded ${counts}${warn}: ${nf.format(mg.added)} new, ${nf.format(mg.updated)} updated${mg.removed ? `, ${nf.format(mg.removed)} Inactive removed` : ''}; ${nf.format(mg.kept)} not in this file kept — ${nf.format(mg.total)} outlets stored.`
           : `Loaded ${counts}${whose}${warn}. Previous upload replaced.`,
         warnings: res.result.warnings || [],
       });

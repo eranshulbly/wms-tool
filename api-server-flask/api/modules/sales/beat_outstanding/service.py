@@ -19,6 +19,7 @@ from decimal import Decimal
 from api.shared.db_manager import mysql_manager
 from api.modules.sales.beat_outstanding import parser as P
 from api.modules.sales.beat_outstanding import rules as R
+from api.modules.sales.beat_outstanding.schema import ensure_outlet_gstin
 
 
 class BeatOutstandingError(Exception):
@@ -42,7 +43,7 @@ def today_ist():
 # table key (from the parser) -> (table, columns)
 _TABLES = {
     'outlets': ('bo_outlet', ['outlet_id', 'outlet_name', 'name_key', 'beat_id', 'beat_name',
-                              'city', 'distributor']),
+                              'city', 'distributor', 'gstin']),
     'beat_plan': ('bo_beat_plan', ['user_id', 'se_name', 'plan_date', 'beat_id', 'beat_name',
                                    'total_outlets']),
 }
@@ -64,6 +65,8 @@ def ingest(feed, stream, filename, company_id, user):
         raise BeatOutstandingError('The Tally outstanding report is not stored — pick it on the '
                                    'Beat Outstanding page.')
     tables, warnings, meta = P.parse(feed, stream, filename)
+    if feed == P.FEED_OUTLETS:
+        ensure_outlet_gstin()
     key = _FEED_TABLE[feed]
     table, cols = _TABLES[key]
     rows = tables[key]
@@ -78,7 +81,7 @@ def ingest(feed, stream, filename, company_id, user):
         upload_id = cur.lastrowid
         merge = None
         if feed == P.FEED_OUTLETS:
-            merge = _merge_outlets(cur, company_id, rows)
+            merge = _merge_outlets(cur, company_id, rows, tables.get('inactive') or [])
         else:
             cur.execute(f'DELETE FROM {table} WHERE company_id = %s', (company_id,))
         all_cols = ['company_id', 'upload_id'] + cols
@@ -103,22 +106,25 @@ def _outlet_key(r):
     return ('id', r['outlet_id']) if r['outlet_id'] else ('name', r['name_key'])
 
 
-def _merge_outlets(cur, company_id, rows):
+def _merge_outlets(cur, company_id, rows, inactive=()):
     """The Outlet Master is incremental: the outlets in the file replace their stored rows
-    (a changed beat, name or city is updated), new ones are added, and outlets not in the
-    file are kept. Deletes the rows being replaced; the caller inserts the file's rows.
-    {'added', 'updated', 'kept'}."""
+    (a changed beat, name or city is updated), new ones are added, outlets the file marks
+    Inactive are removed, and outlets not in the file are kept. Deletes the rows being
+    replaced or removed; the caller inserts the file's rows.
+    {'added', 'updated', 'removed', 'kept'}."""
     cur.execute('SELECT id, outlet_id, name_key FROM bo_outlet WHERE company_id = %s FOR UPDATE',
                 (company_id,))
     stored = list(cur.fetchall())
     incoming = {_outlet_key(r) for r in rows}
-    drop = [s['id'] for s in stored if _outlet_key(s) in incoming]
+    gone = {_outlet_key(r) for r in inactive} - incoming
+    drop = [s['id'] for s in stored if _outlet_key(s) in incoming | gone]
     for i in range(0, len(drop), 1000):
         chunk = drop[i:i + 1000]
         cur.execute(f'DELETE FROM bo_outlet WHERE id IN ({", ".join(["%s"] * len(chunk))})', chunk)
-    updated = len(incoming & {_outlet_key(s) for s in stored})
-    return {'added': len(incoming) - updated, 'updated': updated,
-            'kept': len({_outlet_key(s) for s in stored} - incoming)}
+    had = {_outlet_key(s) for s in stored}
+    updated = len(incoming & had)
+    return {'added': len(incoming) - updated, 'updated': updated, 'removed': len(gone & had),
+            'kept': len(had - incoming - gone)}
 
 
 def feed_status(company_id):
