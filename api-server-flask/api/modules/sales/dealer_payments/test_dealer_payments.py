@@ -608,3 +608,72 @@ def test_remind_not_due_dealers_with_a_bill_20_days_old():
     assert (s['action'], s['remind']) == (R.ACTION_CHASE, False)
     s = summ(bill(date(2026, 9, 1), date(2026, 12, 4), amt=-500), bill(date(2026, 11, 10), date(2026, 12, 20)))
     assert (s['remind'], s['oldest_bill_age_days']) == (False, 8)      # a credit's age does not count
+
+
+# ── beat-wise files (beats.py) ────────────────────────────────────────────────
+
+def _beat_fixture():
+    outlets = [
+        {'outlet_name': 'M/S BANSAL HARDWARE AND PLYWOOD', 'beat_id': 'b1', 'beat_name': 'Anmol_Mathura', 'city': 'Mathura'},
+        {'outlet_name': 'Ankit Traders', 'beat_id': 'b2', 'beat_name': 'Anmol_BULANDSHAHR', 'city': 'Bulandshahr'},
+        {'outlet_name': 'Ankit Traders', 'beat_id': 'b3', 'beat_name': 'Anmol_PILIBHIT', 'city': 'Nawabganj'},
+        {'outlet_name': 'Rudra Ply', 'beat_id': 'b4', 'beat_name': 'Anmol_UDHAM SINGH NAGAR', 'city': 'Rudrapur'},
+        {'outlet_name': 'Agra One', 'beat_id': 'b5', 'beat_name': 'Anmol_Agra', 'city': 'Agra'},
+        {'outlet_name': 'Agra Two', 'beat_id': 'b6', 'beat_name': 'Anmol_BAREILLY', 'city': 'Agra'},
+        {'outlet_name': 'Orphan Store', 'beat_id': 'b7', 'beat_name': 'Anmol_Nowhere', 'city': 'Ramnagar'},
+    ]
+    exec_beats = [{'se_name': 'Arun Dixit', 'beat_name': 'Anmol_Mathura'},
+                  {'se_name': 'Arun Dixit', 'beat_name': 'Anmol_Agra'},
+                  {'se_name': 'Nitesh Massey', 'beat_name': 'Anmol_BULANDSHAHR'},
+                  {'se_name': 'Nitesh Massey', 'beat_name': 'anmol_udham singh nagar '},
+                  {'se_name': 'Kamlesh Kumar', 'beat_name': 'Anmol_PILIBHIT'},
+                  {'se_name': 'Kamlesh Kumar', 'beat_name': 'Anmol_BAREILLY'}]
+    dealers = [
+        {'dealer_id': 'EB-1', 'dealer_name': 'Bansal Hardware And Plywood', 'town': 'Mathura',
+         'tally_ledger_name': 'Bansal Hardware And Plywood | Ebco | Mathura'},
+        {'dealer_id': 'EB-2', 'dealer_name': 'Ankit Traders', 'town': 'Bulandshahr', 'tally_ledger_name': 'x'},
+        {'dealer_id': 'EB-3', 'dealer_name': 'Taneja Glass Store', 'town': 'Rudrapur', 'tally_ledger_name': 'x'},
+        {'dealer_id': 'EB-4', 'dealer_name': 'Shri Din Dayal & Sons', 'town': 'Agra', 'tally_ledger_name': 'x'},
+        {'dealer_id': 'EB-5', 'dealer_name': 'Anand Enterprises', 'town': 'Lucknow', 'tally_ledger_name': 'x'},
+        {'dealer_id': 'EB-6', 'dealer_name': 'Orphan Store', 'town': 'Ramnagar', 'tally_ledger_name': 'x'},
+        {'dealer_id': 'EB-7', 'dealer_name': 'Ankit Traders', 'town': 'Lucknow', 'tally_ledger_name': 'x'},
+    ]
+    return dealers, outlets, exec_beats
+
+
+def test_beats_assign_by_name_town_and_unassigned():
+    from api.modules.sales.dealer_payments import beats as B
+    placed, unassigned = B.assign(*_beat_fixture())
+    # by name, ignoring M/S, & and case
+    assert placed['EB-1'] == {'executives': ['Arun Dixit'], 'beat_name': 'Anmol_Mathura', 'how': B.BY_NAME}
+    # an outlet on two beats, settled by the dealer's town
+    assert placed['EB-2']['executives'] == ['Nitesh Massey'] and placed['EB-2']['beat_name'] == 'Anmol_BULANDSHAHR'
+    # not in the master by name; Rudrapur's outlets are all Nitesh's (beat names compared loosely)
+    assert placed['EB-3'] == {'executives': ['Nitesh Massey'], 'beat_name': '', 'how': B.BY_TOWN}
+    # Agra is split between Arun and Kamlesh: not guessed
+    assert unassigned['EB-4'] == B.WHY_TOWN_SPLIT
+    assert unassigned['EB-5'] == B.WHY_NOT_IN_MASTER
+    assert unassigned['EB-6'].startswith(B.WHY_BEAT_UNOWNED)
+    # on two beats and the town settles neither
+    assert unassigned['EB-7'].startswith(B.WHY_TWO_BEATS)
+    assert B.executives(_beat_fixture()[2])['Nitesh Massey'] == ['Anmol_BULANDSHAHR', 'anmol_udham singh nagar ']
+
+
+def test_outstanding_xlsx_only_ids_heading_and_notes():
+    from api.modules.sales.dealer_payments.exports import build_outstanding_xlsx
+    dealers = [{'dealer_id': 'EB-1', 'tally_ledger_name': 'Alpha | Ebco | X', 'dealer_name': 'Alpha', 'town': 'X'},
+               {'dealer_id': 'EB-2', 'tally_ledger_name': 'Beta | Ebco | Y', 'dealer_name': 'Beta', 'town': 'Y'}]
+    bill = dict(ref_no='A000001', kind='invoice', bill_date=date(2026, 11, 1), opening_amt=D('100'),
+                pending_amt=D('100'), due_on=date(2026, 11, 20), overdue_days=None)
+    bills = [{**bill, 'dealer_id': 'EB-1'}, {**bill, 'dealer_id': 'EB-2', 'ref_no': 'A000002'}]
+    data = build_outstanding_xlsx(as_of=date(2026, 11, 18), dealers=dealers, bills=bills, payments=[], cheques=[],
+                                  bounced_cheques={}, cheques_note='n', today=date(2026, 11, 19), company='Ebco',
+                                  only_ids={'EB-2'}, heading='Nitesh · beats: B', party_notes={'EB-2': 'Beat: B'})
+    ws = openpyxl.load_workbook(io.BytesIO(data)).active
+    cells = [c for r in ws.iter_rows(values_only=True) for c in r if c is not None]
+    assert 'Nitesh · beats: B' in cells and 'Beat: B' in cells and 'Beta | Ebco | Y' in cells
+    assert 'Alpha | Ebco | X' not in cells
+    empty = build_outstanding_xlsx(as_of=date(2026, 11, 18), dealers=dealers, bills=bills, payments=[], cheques=[],
+                                   bounced_cheques={}, cheques_note='n', today=date(2026, 11, 19), only_ids=set())
+    cells = [c for r in openpyxl.load_workbook(io.BytesIO(empty)).active.iter_rows(values_only=True) for c in r if c]
+    assert 'No dealer with outstanding.' in cells

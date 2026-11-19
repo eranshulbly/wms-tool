@@ -51,23 +51,35 @@ def _title(ws, lines):
     return len(lines) + 2
 
 
+def dealers_in_file(*, dealers, bills, payments, cheques, cleared=()):
+    """The dealer ids the Outstanding file lists: pending bills, PDCs held, payments not in
+    Tally or cleared cheques not in Tally."""
+    known = {d['dealer_id'] for d in dealers}
+    ids = ({b['dealer_id'] for b in bills} | {c['dealer_id'] for c in cheques if c['status'] in R.HELD}
+           | {p['dealer_id'] for p in payments if p['status'] == R.OPEN} | {c['dealer_id'] for c in cleared})
+    return ids & known
+
+
 def build_outstanding_xlsx(*, as_of, dealers, bills, payments, cheques, bounced_cheques, cheques_note, today,
-                           company='', cleared=()):
+                           company='', cleared=(), only_ids=None, heading=None, party_notes=None):
     """`bills` the snapshot of `as_of`; `cheques` mapped cheques (with dealer_id), any status;
     `bounced_cheques` {(cheque_no, bank): boo_ref}; `cheques_note` says where/when they were read;
-    `cleared` the cleared cheques Tally has no receipt for yet (rules.cleared_not_in_tally)."""
+    `cleared` the cleared cheques Tally has no receipt for yet (rules.cleared_not_in_tally).
+
+    For one executive's file: `only_ids` the dealers to show, `heading` a line under the title
+    (whose list this is), `party_notes` {dealer_id: text} beside each party's name."""
     by_id = {d['dealer_id']: d for d in dealers}
     bills_by = defaultdict(list)
     for b in bills:
         bills_by[b['dealer_id']].append(b)
     for v in bills_by.values():
         v.sort(key=lambda b: (b['bill_date'] or as_of, b['ref_no']))
-    open_ids = {p['dealer_id'] for p in payments if p['status'] == R.OPEN}
 
     # Dealers with anything to show, in ledger-name order as Tally lists them.
-    ids = (set(bills_by) | {c['dealer_id'] for c in cheques if c['status'] in R.HELD} | open_ids
-           | {c['dealer_id'] for c in cleared})
-    shown = sorted((by_id[i] for i in ids if i in by_id), key=lambda d: d['tally_ledger_name'].lower())
+    ids = dealers_in_file(dealers=dealers, bills=bills, payments=payments, cheques=cheques, cleared=cleared)
+    if only_ids is not None:
+        ids &= set(only_ids)
+    shown = sorted((by_id[i] for i in ids), key=lambda d: d['tally_ledger_name'].lower())
     summaries = {d['dealer_id']: R.dealer_summary(d, bills_by.get(d['dealer_id'], []), payments, cheques,
                                                   bounced_cheques.keys(), cleared) for d in shown}
     as_of_txt = as_of.strftime('%d-%b-%y') if as_of else 'no Outstanding upload yet'
@@ -76,7 +88,8 @@ def build_outstanding_xlsx(*, as_of, dealers, bills, payments, cheques, bounced_
     wb = Workbook()
     ws = wb.active
     ws.title = 'Outstanding'
-    row = _title(ws, [f'{company} — Bills outstanding (dealer-wise)'.lstrip(' —'), subtitle])
+    row = _title(ws, [f'{company} — Bills outstanding (dealer-wise)'.lstrip(' —')]
+                 + ([heading] if heading else []) + [subtitle])
     titles = ['Date', 'Ref. No.', "Party's Name", 'Type', 'Opening Amount', 'Pending Amount',
               'Received, not in Tally', 'PDCs held', 'Due on', 'Overdue by days', 'Note']
     ncol = len(titles)
@@ -87,6 +100,8 @@ def build_outstanding_xlsx(*, as_of, dealers, bills, payments, cheques, bounced_
         s = summaries[d['dealer_id']]
         dbills = bills_by.get(d['dealer_id'], [])
         ws.cell(row=row, column=3, value=d['tally_ledger_name']).font = BOLD
+        if party_notes and party_notes.get(d['dealer_id']):
+            ws.cell(row=row, column=11, value=party_notes[d['dealer_id']]).font = Font(italic=True, color='7A869A')
         for col in range(1, ncol + 1):
             ws.cell(row=row, column=col).fill = PARTY_FILL
         row += 1
@@ -127,6 +142,9 @@ def build_outstanding_xlsx(*, as_of, dealers, bills, payments, cheques, bounced_
         grand['pdc'] += s['pdc_amount']
         row += 2
 
+    if not shown:
+        ws.cell(row=row, column=3, value='No dealer with outstanding.').font = Font(italic=True)
+        row += 2
     ws.cell(row=row, column=3, value='Grand Total').font = BOLD
     for col, v, fmt in ((6, grand['pending'], DRCR), (7, grand['received'], MONEY), (8, grand['pdc'], MONEY)):
         c = ws.cell(row=row, column=col, value=_f(v))

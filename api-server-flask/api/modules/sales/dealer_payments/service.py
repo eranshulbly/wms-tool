@@ -589,20 +589,190 @@ def dealer_detail(company_id, dealer_id, today=None):
 
 # ── the Outstanding download ──────────────────────────────────────────────────
 
-def outstanding_export(company_id, today=None):
-    """(filename, xlsx bytes). Cheques from the last read; wareops is not read."""
-    from api.modules.sales.dealer_payments.exports import build_outstanding_xlsx
-    today = today or today_ist()
+def _export_inputs(company_id, today):
+    """What build_outstanding_xlsx takes, from the stored Tally files, the payment log and the
+    last cheque read (wareops is not read)."""
     dealer_list = dealers(company_id)
     as_of = latest_as_of(company_id)
     bills = snapshot(company_id, as_of, today)
     mapped, _u, _o, cheque_error, read_at = fetch_cheques(company_id, dealer_list, today)
     pays = payments(company_id)
     bounced = R.bounced_cheques(mapped, R.bounce_bills(bills))
-    data = build_outstanding_xlsx(as_of=as_of, dealers=dealer_list, bills=bills, payments=pays,
-                                  cheques=mapped, bounced_cheques=bounced,
-                                  cheques_note=_cheques_note(read_at, cheque_error), today=today,
-                                  company=company_name(company_id),
-                                  cleared=_cleared_not_in_tally(company_id, mapped, bounced.keys(), pays))
-    stamp = (as_of or today).strftime('%d-%b-%y')
-    return f'{company_name(company_id)} Dealer Outstanding {stamp}.xlsx', data
+    return dict(as_of=as_of, dealers=dealer_list, bills=bills, payments=pays, cheques=mapped,
+                bounced_cheques=bounced, cheques_note=_cheques_note(read_at, cheque_error), today=today,
+                company=company_name(company_id),
+                cleared=_cleared_not_in_tally(company_id, mapped, bounced.keys(), pays))
+
+
+def _stamp(inputs):
+    return (inputs['as_of'] or inputs['today']).strftime('%d-%b-%y')
+
+
+def outstanding_export(company_id, today=None):
+    """(filename, xlsx bytes). Cheques from the last read; wareops is not read."""
+    from api.modules.sales.dealer_payments.exports import build_outstanding_xlsx
+    inputs = _export_inputs(company_id, today or today_ist())
+    return f"{inputs['company']} Dealer Outstanding {_stamp(inputs)}.xlsx", build_outstanding_xlsx(**inputs)
+
+
+# ── beat-wise downloads: one file per sales executive ─────────────────────────
+
+UNASSIGNED = 'Unassigned'
+
+
+# ── Executive Beats: this module's own executive -> beat table ────────────────
+
+def exec_beats(company_id):
+    return mysql_manager.execute_query(
+        'SELECT se_name, beat_name FROM dpt_exec_beat WHERE company_id = %s ORDER BY id',
+        (company_id,)) or []
+
+
+def _outlets(company_id):
+    """The DMS Outlet Master, as Beat Outstanding stores it (read only)."""
+    return mysql_manager.execute_query(
+        'SELECT outlet_name, beat_id, beat_name, city FROM bo_outlet WHERE company_id = %s',
+        (company_id,)) or []
+
+
+def exec_beats_page(company_id):
+    """The table, and what its boxes offer as they are typed: the executives already in it
+    and the Outlet Master's beats."""
+    rows = exec_beats(company_id)
+    return {'exec_beats': rows,
+            'executive_names': sorted({r['se_name'] for r in rows}, key=str.casefold),
+            'beat_names': sorted({o['beat_name'] for o in _outlets(company_id) if o['beat_name']},
+                                 key=str.casefold)}
+
+
+def parse_exec_beats_file(data, filename):
+    """[{se_name, beat_name}] and warnings from a User / Beat file — nothing is stored."""
+    from api.modules.sales.beat_outstanding.parser import ParseError as BeatParseError, parse_exec_beats
+    _check_size(data)
+    try:
+        rows, warnings = parse_exec_beats(data, filename)
+    except BeatParseError as e:
+        raise DealerPaymentsError(str(e))
+    return {'rows': rows, 'warnings': warnings[:50], 'warning_count': len(warnings)}
+
+
+def save_exec_beats(company_id, rows, user):
+    """Replace the whole executive -> beat table with `rows` ([{se_name, beat_name}])."""
+    from api.modules.sales.dealer_payments.beats import name_key
+    clean, seen = [], set()
+    for i, r in enumerate(rows or [], start=1):
+        se = ' '.join(str(r.get('se_name') or '').split())[:255]
+        beat = ' '.join(str(r.get('beat_name') or '').split())[:255]
+        if not se and not beat:
+            continue
+        if not se or not beat:
+            raise DealerPaymentsError(f'Row {i}: give both the user and the beat.')
+        key = (se.casefold(), beat.casefold())
+        if key not in seen:
+            seen.add(key)
+            clean.append((se, beat))
+    with mysql_manager.get_cursor() as cur:
+        cur.execute('DELETE FROM dpt_exec_beat WHERE company_id = %s', (company_id,))
+        if clean:
+            cur.executemany(
+                'INSERT INTO dpt_exec_beat (company_id, se_name, beat_name, updated_by) VALUES (%s, %s, %s, %s)',
+                [(company_id, se, beat, (user or 'system')[:100]) for se, beat in clean])
+    known = {name_key(o['beat_name']) for o in _outlets(company_id)}
+    unknown = sorted({beat for _, beat in clean if name_key(beat) not in known})
+    return {'saved': len(clean), **exec_beats_page(company_id),
+            'warnings': [f'{b}: not a beat in the Outlet Master — no dealers will be found on it' for b in unknown]}
+
+
+def _beats(company_id, inputs):
+    """(executives {se_name: [beat]}, placed, unassigned) for the dealers in the Outstanding
+    file (see beats.assign). Refused until both Tally files are uploaded."""
+    from api.modules.sales.dealer_payments import beats as B
+    from api.modules.sales.dealer_payments.exports import dealers_in_file
+    uploads = last_uploads(company_id)
+    missing = [label for kind, label in ((KIND_OUTSTANDING, 'Outstanding'), (KIND_RECEIPTS, 'Receipt Register'))
+               if kind not in uploads]
+    if missing:
+        raise DealerPaymentsError('Upload the Tally ' + ' and '.join(missing) + ' first.')
+    rows = exec_beats(company_id)
+    if not rows:
+        raise DealerPaymentsError('No executive has beats yet — upload the User Beats file under '
+                                  'Dealer Payments → Executive Beats.')
+    outlets = _outlets(company_id)
+    if not outlets:
+        raise DealerPaymentsError('No DMS Outlet Master yet — it is uploaded under Beat Outstanding.')
+    ids = dealers_in_file(**{k: inputs[k] for k in ('dealers', 'bills', 'payments', 'cheques', 'cleared')})
+    shown = [d for d in inputs['dealers'] if d['dealer_id'] in ids]
+    placed, unassigned = B.assign(shown, outlets, rows)
+    return B.executives(rows), placed, unassigned
+
+
+def beat_summary(company_id, today=None):
+    """Per executive: their beats, the dealers in their file (how many placed by town) and the
+    totals; and the dealers no executive gets, each with why."""
+    inputs = _export_inputs(company_id, today or today_ist())
+    execs, placed, unassigned = _beats(company_id, inputs)
+    rows = {r['dealer_id']: r for r in R.dealer_rows(
+        [{**d, 'active': True, 'exclude_from_chase': False} for d in inputs['dealers']], inputs['bills'],
+        inputs['payments'], inputs['cheques'], inputs['today'], inputs['bounced_cheques'].keys(),
+        inputs['cleared'])}
+
+    def totals(ids):
+        mine = [rows[i] for i in ids if i in rows]
+        return {'dealers': len(ids),
+                'tally_os': sum((r['tally_os'] for r in mine), R.ZERO),
+                'effective_os': sum((r['effective_os'] for r in mine), R.ZERO),
+                'chase': sum(1 for r in mine if r['action'] == R.ACTION_CHASE),
+                'remind': sum(1 for r in mine if r.get('remind'))}
+
+    out = []
+    for se, beat_names in execs.items():
+        ids = [i for i, p in placed.items() if se in p['executives']]
+        out.append({'se_name': se, 'beats': beat_names, **totals(ids),
+                    'by_town': sum(1 for i in ids if placed[i]['how'] == 'town')})
+    return {
+        'tally_as_of': inputs['as_of'],
+        'executives': out,
+        'unassigned': {**totals(list(unassigned)),
+                       'items': sorted(({'dealer_id': i, 'dealer': rows[i]['dealer'] if i in rows else i,
+                                         'tally_os': rows[i]['tally_os'] if i in rows else R.ZERO,
+                                         'reason': why} for i, why in unassigned.items()),
+                                       key=lambda x: -x['tally_os'])},
+    }
+
+
+def _beat_file(inputs, execs, placed, unassigned, se_name):
+    from api.modules.sales.dealer_payments import beats as B
+    from api.modules.sales.dealer_payments.exports import build_outstanding_xlsx
+    if se_name == UNASSIGNED:
+        return build_outstanding_xlsx(**inputs, only_ids=set(unassigned), party_notes=unassigned,
+                                      heading='Unassigned — dealers no executive\'s beats cover')
+    ids = {i for i, p in placed.items() if se_name in p['executives']}
+    return build_outstanding_xlsx(**inputs, only_ids=ids,
+                                  party_notes={i: B.note_for(placed[i]) for i in ids},
+                                  heading=f"{se_name} · beats: {', '.join(execs[se_name])}")
+
+
+def _beat_filename(inputs, se_name):
+    return f"{se_name} - {inputs['company']} Outstanding {_stamp(inputs)}.xlsx"
+
+
+def beat_export(company_id, se_name, today=None):
+    """(filename, xlsx bytes): one executive's file, or the Unassigned one."""
+    inputs = _export_inputs(company_id, today or today_ist())
+    execs, placed, unassigned = _beats(company_id, inputs)
+    if se_name != UNASSIGNED and se_name not in execs:
+        raise DealerPaymentsError(f'{se_name} is not in Executive Beats.')
+    return _beat_filename(inputs, se_name), _beat_file(inputs, execs, placed, unassigned, se_name)
+
+
+def beat_export_all(company_id, today=None):
+    """(filename, zip bytes): every executive's file, and the Unassigned one when any dealer is."""
+    import io
+    import zipfile
+    inputs = _export_inputs(company_id, today or today_ist())
+    execs, placed, unassigned = _beats(company_id, inputs)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        for se in list(execs) + ([UNASSIGNED] if unassigned else []):
+            z.writestr(_beat_filename(inputs, se), _beat_file(inputs, execs, placed, unassigned, se))
+    return f"{inputs['company']} Beat-wise Outstanding {_stamp(inputs)}.zip", buf.getvalue()

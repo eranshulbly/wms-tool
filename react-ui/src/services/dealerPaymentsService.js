@@ -45,12 +45,24 @@ export const errMsg = (e, fallback) => e?.response?.data?.msg || e?.message || f
 // One dealer in detail: summary, pending bills (with Tally voucher lines), payments, cheques.
 export const getDealerDetail = (dealerId) => data(api.get(`dealer-payments/dealers/${encodeURIComponent(dealerId)}`));
 
-// The Tally-style Outstanding workbook; saves it in the browser.
-export const downloadOutstanding = async () => {
-  const res = await api.get('dealer-payments/export/outstanding', { responseType: 'blob' });
+// Saves a download from the API in the browser, under the name the server gives it.
+const saveFrom = async (path, params, fallback) => {
+  let res;
+  try {
+    res = await api.get(path, { params, responseType: 'blob' });
+  } catch (e) {
+    // An error comes back as a blob too: read its JSON message.
+    const blob = e?.response?.data;
+    if (blob instanceof Blob) {
+      try {
+        e.response.data = JSON.parse(await blob.text());
+      } catch (_) { /* not JSON */ }
+    }
+    throw e;
+  }
   const cd = res.headers['content-disposition'] || '';
   const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
-  const name = m ? decodeURIComponent(m[1]) : 'Dealer Outstanding.xlsx';
+  const name = m ? decodeURIComponent(m[1]) : fallback;
   const url = URL.createObjectURL(res.data);
   const a = document.createElement('a');
   a.href = url;
@@ -59,4 +71,24 @@ export const downloadOutstanding = async () => {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+// The Tally-style Outstanding workbook.
+export const downloadOutstanding = () => saveFrom('dealer-payments/export/outstanding', {}, 'Dealer Outstanding.xlsx');
+
+// Beat-wise: each sales executive's dealers (Beat Outstanding's Executive Beats).
+export const getBeats = () => data(api.get('dealer-payments/beats'));
+// One executive's file (se = name, or 'Unassigned'); without se, all of them as a .zip.
+export const downloadBeatFile = (se) =>
+  saveFrom('dealer-payments/export/beats', se ? { se } : {}, se ? `${se} Outstanding.xlsx` : 'Beat-wise Outstanding.zip');
+
+// Executive Beats (Dealer Payments' own executive -> beat table, the User Beats list).
+export const getExecBeats = () => data(api.get('dealer-payments/exec-beats'));
+// Replaces the whole table.
+export const saveExecBeats = (rows) => data(api.put('dealer-payments/exec-beats', { rows }));
+// Reads a User / Beat file into rows for the table — nothing is saved until saveExecBeats.
+export const parseExecBeatsFile = (file) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return data(api.post('dealer-payments/exec-beats/parse', fd, { headers: { 'Content-Type': 'multipart/form-data' } }));
 };

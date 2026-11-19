@@ -1,6 +1,6 @@
 // Dealer Payment Tracker menu group (views/dealer-payments/).
 
-import { IconCurrencyRupee, IconPlus, IconReceipt2 } from '@tabler/icons';
+import { IconCurrencyRupee, IconPlus, IconReceipt2, IconUsers } from '@tabler/icons';
 
 // ==============================|| DEALER PAYMENTS MENU ITEMS ||============================== //
 
@@ -31,6 +31,14 @@ const dealerPayments = {
             type: 'item',
             url: '/dealer-payments/payments',
             icon: IconReceipt2,
+            breadcrumbs: false
+        },
+        {
+            id: 'dealer-payments-executive-beats',
+            title: 'Executive Beats',
+            type: 'item',
+            url: '/dealer-payments/executive-beats',
+            icon: IconUsers,
             breadcrumbs: false
         }
     ]

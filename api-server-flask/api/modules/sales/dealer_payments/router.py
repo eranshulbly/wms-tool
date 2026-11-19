@@ -18,6 +18,14 @@ out itself. Admin only on Ebco.
   POST /api/dealer-payments/process             re-run processing (Refresh)
   GET  /api/dealer-payments/dealers/<id>        one dealer in detail: bills, payments, cheques
   GET  /api/dealer-payments/export/outstanding  the Tally-style Outstanding workbook (.xlsx)
+  GET  /api/dealer-payments/exec-beats          this module's executive -> beats table
+  PUT  /api/dealer-payments/exec-beats          {rows: [{se_name, beat_name}]} replaces it
+  POST /api/dealer-payments/exec-beats/parse    form field file (User, Beat columns) -> rows,
+                                                not stored
+  GET  /api/dealer-payments/beats               per sales executive (Beat Outstanding's
+                                                Executive Beats): dealers and totals
+  GET  /api/dealer-payments/export/beats        all executives' files (.zip); ?se=<name> one
+                                                executive's (.xlsx), ?se=Unassigned the rest
 """
 
 import io
@@ -176,3 +184,46 @@ class DptExportOutstanding(Resource):
         name, data = svc.outstanding_export(svc.company_id())
         return send_file(io.BytesIO(data), as_attachment=True, download_name=name,
                          mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
+@rest_api.route(f'{BASE}/beats')
+class DptBeats(Resource):
+    @_guard
+    def get(self, current_user):
+        return {'success': True, **svc.beat_summary(svc.company_id())}, 200
+
+
+@rest_api.route(f'{BASE}/export/beats')
+class DptExportBeats(Resource):
+    @_guard
+    def get(self, current_user):
+        se = (request.args.get('se') or '').strip()
+        if se:
+            name, data = svc.beat_export(svc.company_id(), se)
+            mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        else:
+            name, data = svc.beat_export_all(svc.company_id())
+            mime = 'application/zip'
+        return send_file(io.BytesIO(data), as_attachment=True, download_name=name, mimetype=mime)
+
+
+@rest_api.route(f'{BASE}/exec-beats')
+class DptExecBeats(Resource):
+    @_guard
+    def get(self, current_user):
+        return {'success': True, **svc.exec_beats_page(svc.company_id())}, 200
+
+    @_guard
+    def put(self, current_user):
+        rows = (request.get_json(silent=True) or {}).get('rows')
+        if not isinstance(rows, list):
+            raise svc.DealerPaymentsError('Send the rows to save.')
+        return {'success': True, **svc.save_exec_beats(svc.company_id(), rows, _user(current_user))}, 200
+
+
+@rest_api.route(f'{BASE}/exec-beats/parse')
+class DptExecBeatsParse(Resource):
+    @_guard
+    def post(self, current_user):
+        filename, data = _file()
+        return {'success': True, **svc.parse_exec_beats_file(data, filename)}, 200

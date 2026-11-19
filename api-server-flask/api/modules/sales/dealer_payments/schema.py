@@ -158,3 +158,19 @@ CREATE TABLE IF NOT EXISTS dpt_manual_check (
     UNIQUE KEY uq_dpt_manual_check (company_id, fingerprint)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 """, order=126)
+
+
+# Dealer Payments' own executive -> beat table (the User Beats list), kept on its Executive
+# Beats page; separate from Beat Outstanding's bo_exec_beat, which this module never writes.
+register_table("dpt_exec_beat", """
+CREATE TABLE IF NOT EXISTS dpt_exec_beat (
+    id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    company_id    INT NOT NULL,
+    se_name       VARCHAR(255) NOT NULL,
+    beat_name     VARCHAR(255) NOT NULL,
+    updated_by    VARCHAR(100) NOT NULL DEFAULT '',
+    updated_on    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_dpt_exec_beat (company_id, se_name, beat_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+""", order=127)

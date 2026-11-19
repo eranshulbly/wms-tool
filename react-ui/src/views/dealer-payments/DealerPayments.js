@@ -35,6 +35,7 @@ import {
   uploadTallyExport,
 } from '../../services/dealerPaymentsService';
 import PaymentForm from './PaymentForm';
+import BeatDownloads from './BeatDownloads';
 import DealerDetail, {
   ACTION_COLOR, actionLabel, RemindChip, ChequeStatusChip, CHEQUE_STATUS, countedIn, OverdueList, pdcs, Received
 } from './DealerDetail';
@@ -202,6 +203,7 @@ const DealerPayments = () => {
   const [chequesOpen, setChequesOpen] = useState(false);
   const [chequeStatus, setChequeStatus] = useState('');
   const [downloading, setDownloading] = useState(false);
+  const [beatsOpen, setBeatsOpen] = useState(false);
   const [filters, setFilters] = useState(NO_FILTERS);
   const setFilter = (key) => (e) => setFilters((f) => ({ ...f, [key]: e.target.value }));
 
@@ -286,6 +288,11 @@ const DealerPayments = () => {
         <Button variant="outlined" startIcon={downloading ? <CircularProgress size={14} /> : <IconDownload size={16} />}
           onClick={download} disabled={downloading || !s.tally_as_of}>
           Download outstanding
+        </Button>
+        <Button variant="outlined" startIcon={<IconDownload size={16} />} onClick={() => setBeatsOpen(true)}
+          disabled={!uploads.outstanding || !uploads.receipts}
+          title={!uploads.outstanding || !uploads.receipts ? 'Upload both Tally files first' : ''}>
+          Beat-wise downloads
         </Button>
         <Button variant="outlined" startIcon={loading ? <CircularProgress size={14} /> : <IconRefresh size={16} />}
           onClick={refresh} disabled={loading}>
@@ -475,6 +482,14 @@ const DealerPayments = () => {
           <IconButton onClick={() => setDetail(null)} size="small"><IconX size={18} /></IconButton>
         </DialogTitle>
         <DialogContent>{detail && <DealerDetail dealerId={detail.id} />}</DialogContent>
+      </Dialog>
+
+      <Dialog open={beatsOpen} onClose={() => setBeatsOpen(false)} fullScreen={phone} fullWidth maxWidth="lg">
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center' }}>
+          <Box flexGrow={1}>Beat-wise downloads · Tally as of {fmtDate(s.tally_as_of)}</Box>
+          <IconButton onClick={() => setBeatsOpen(false)}><IconX size={18} /></IconButton>
+        </DialogTitle>
+        <DialogContent>{beatsOpen && <BeatDownloads />}</DialogContent>
       </Dialog>
 
       <Dialog open={chequesOpen} onClose={() => setChequesOpen(false)} fullScreen={phone} fullWidth maxWidth="lg">
