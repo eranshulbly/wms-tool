@@ -229,29 +229,6 @@ def test_old_outlet_master_layout_is_refused():
         P.parse(P.FEED_OUTLETS, io.BytesIO(csv), 'old.csv')
 
 
-class _Cur:
-    def __init__(self, stored):
-        self.stored, self.deleted = stored, []
-
-    def execute(self, sql, args=()):
-        if sql.startswith('DELETE'):
-            self.deleted += list(args)
-
-    def fetchall(self):
-        return self.stored
-
-
-def test_outlet_merge_removes_outlets_now_inactive():
-    from api.modules.sales.beat_outstanding import service as S
-    stored = [{'id': 1, 'outlet_id': '10', 'name_key': 'A'}, {'id': 2, 'outlet_id': '11', 'name_key': 'B'},
-              {'id': 3, 'outlet_id': '12', 'name_key': 'C'}]
-    cur = _Cur(stored)
-    merge = S._merge_outlets(cur, 1, [{'outlet_id': '10', 'name_key': 'A'}, {'outlet_id': '20', 'name_key': 'N'}],
-                             [{'outlet_id': '11', 'name_key': 'B'}, {'outlet_id': '99', 'name_key': 'Z'}])
-    assert sorted(cur.deleted) == [1, 2]
-    assert merge == {'added': 1, 'updated': 1, 'removed': 1, 'kept': 1}
-
-
 def test_outlet_master_keeps_the_gstin_without_the_dms_quote():
     csv = (_OUTLET_HEAD
            + '"1","5249","Agarwal Kitchenwares","Active","Anmol Associates","\'09aolpa4280m2zl "," 1376 ","Anmol_Aligarh","Aligarh"\n'

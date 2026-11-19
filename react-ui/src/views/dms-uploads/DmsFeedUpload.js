@@ -6,8 +6,7 @@ import { getFeedStatus, uploadFeed } from '../../services/tatCheckService';
 import { getBeatFeedStatus, uploadBeatFeed } from '../../services/beatOutstandingService';
 import DmsReportLink, { DMS_REPORTS } from '../../ui-component/DmsReportLink';
 
-// The DMS / Tally uploads. Each replaces the previous one of the same kind, except the
-// Outlet Master, which is incremental (new outlets added, those in the file updated).
+// The DMS / Tally uploads. Each replaces the previous one of the same kind.
 //   FEEDS       read by TAT Check (views/tat-check/TatCheck.js) — Admin pages, one per file
 //   BEAT_FEEDS  read by Beat Outstanding (views/beat-outstanding/BeatOutstanding.js) — both
 //               uploaded on the Beat Outstanding page (UploadRow below), the Outlet Master
@@ -51,7 +50,6 @@ export const BEAT_FEEDS = [
     feed: 'outlets',
     label: 'Outlet Master',
     title: 'Outlet Master Upload',
-    report: DMS_REPORTS.outlets,
     accept: '.csv,.xlsx',
     ...BEAT_API,
   },
@@ -84,7 +82,7 @@ const lastText = (s) => {
   const last = s?.last_upload;
   if (!last) return 'Not uploaded yet';
   const who = s.distributor ? `${s.distributor}${s.report_to ? ` (up to ${s.report_to})` : ''}: ` : '';
-  return `${who}${fmtDateTime(last.uploaded_on)}`;
+  return `${who}${fmtDateTime(last.uploaded_on)}${last.uploaded_by ? ` by ${last.uploaded_by}` : ''}`;
 };
 
 export const UploadRow = ({ def, statuses, onUploaded }) => {
@@ -104,12 +102,9 @@ export const UploadRow = ({ def, statuses, onUploaded }) => {
         .join(', ');
       const warn = res.result.warning_count ? ` · ${res.result.warning_count} warning(s)` : '';
       const whose = res.result.distributor ? ` for ${res.result.distributor}` : '';
-      const mg = res.result.merge;
       setMsg({
         type: 'success',
-        text: mg
-          ? `Loaded ${counts}${warn}: ${nf.format(mg.added)} new, ${nf.format(mg.updated)} updated${mg.removed ? `, ${nf.format(mg.removed)} Inactive removed` : ''}; ${nf.format(mg.kept)} not in this file kept — ${nf.format(mg.total)} outlets stored.`
-          : `Loaded ${counts}${whose}${warn}. Previous upload replaced.`,
+        text: `Loaded ${counts}${whose}${warn}. Previous upload replaced.`,
         warnings: res.result.warnings || [],
       });
       setFile(null);

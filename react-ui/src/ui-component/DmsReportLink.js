@@ -15,11 +15,6 @@ export const DMS_REPORTS = {
     url: 'https://reports.bizom.in/reports/view/4073',
     range: 'Last 30 Days',
   },
-  outlets: {
-    path: 'DMS → Analytics → New Outlets Addition Master Report',
-    url: 'https://reports.bizom.in/reports/view/10623',
-    range: 'Last 30 Days',
-  },
   beat_plan: {
     path: 'DMS → Analytics → User Beat Details',
     url: 'https://reports.bizom.in/reports/view/20362',

@@ -1,10 +1,10 @@
 # -*- encoding: utf-8 -*-
 """Tables owned by sales.beat_outstanding. Each upload is loaded in one transaction. The
-Beat Plan is a snapshot (an upload REPLACES its rows); the Outlet Master is incremental (an
-upload adds new outlets and updates the ones in the file, by Outlet_Id; the rest are kept).
+Beat Plan and Outlet Master are snapshots: an upload REPLACES their rows (the Outlet Master
+with the file's Active outlets).
 
   bo_outlet        DMS Outlet Master — which beat (and city) each outlet is on, and its
-                   GSTIN, which gives a picklist its City (incremental)
+                   GSTIN, which gives a picklist its City
   bo_beat_plan     DMS User Beat Details — which beats each executive covers on a date
   bo_bill          no longer written: the Tally outstanding report is never stored —
                    the page sends it with each request (service.read_outstanding)

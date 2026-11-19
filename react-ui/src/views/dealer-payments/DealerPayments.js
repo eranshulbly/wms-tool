@@ -98,22 +98,24 @@ export const FILES = [
   },
 ];
 
+// Laid out as the DMS uploads' UploadRow (dms-uploads/DmsFeedUpload.js): name, where the
+// file comes from, the red Last Updated line, then Choose file and Upload.
 export const FileRow = ({ def, last, onDone }) => {
+  const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
-  const pick = async (e) => {
-    const f = e.target.files?.[0];
-    e.target.value = '';
-    if (!f) return;
+  const inputId = `tally-upload-${def.key}`;
+  const upload = async () => {
     setBusy(true);
     setMsg(null);
     try {
-      const res = await def.upload(f);
+      const res = await def.upload(file);
       const r = res.result || {};
       const extra = [];
       if (r.new_dealers?.length) extra.push(`New dealers added from this file: ${r.new_dealers.join(', ')}.`);
       (r.warnings || []).forEach((w) => extra.push(w));
       setMsg({ severity: extra.length ? 'warning' : 'success', text: def.done(r), extra });
+      setFile(null);
       onDone();
     } catch (err) {
       setMsg({ severity: 'error', text: errMsg(err, 'Upload failed — nothing was changed.'), extra: [] });
@@ -122,29 +124,37 @@ export const FileRow = ({ def, last, onDone }) => {
     }
   };
   return (
-    <Box py={1.25} sx={{ borderBottom: '1px solid #eef0f3' }}>
-      <Box display="flex" alignItems="center" flexWrap="wrap" sx={{ gap: 1 }}>
-        <Box flexGrow={1} minWidth={220}>
+    <Box py={1.5} sx={{ borderBottom: '1px solid #eef0f3' }}>
+      <Grid container spacing={1} alignItems="center">
+        <Grid item xs={12} sm={5}>
           <Typography variant="subtitle2">{def.title}</Typography>
-          <Typography variant="caption" color="textSecondary" component="div">
-            {last ? (
-              <>
-                <span style={{ color: '#b91c1c', fontWeight: 600 }}>Last: {def.describe(last)}</span> · {fmtWhen(last.uploaded_on)} by{' '}
-                {last.uploaded_by}
-              </>
-            ) : (
-              'Not uploaded yet'
-            )}
-            {' · '}
-            {def.hint}
+          <Typography variant="caption" component="div" sx={{ color: '#7a869a' }}>{def.hint}</Typography>
+          <Typography variant="caption" component="div" sx={{ color: '#b91c1c', fontWeight: 600 }}>
+            Last Updated:{' '}
+            {last
+              ? `${fmtWhen(last.uploaded_on)}${last.uploaded_by ? ` by ${last.uploaded_by}` : ''} · ${def.describe(last)}`
+              : 'Not uploaded yet'}
           </Typography>
-        </Box>
-        <Button component="label" size="small" variant="outlined" disabled={busy}
-          startIcon={busy ? <CircularProgress size={14} /> : <IconUpload size={16} />}>
-          {busy ? 'Loading…' : 'Upload'}
-          <input hidden type="file" accept={def.accept} onChange={pick} />
-        </Button>
-      </Box>
+        </Grid>
+        <Grid item xs={12} sm={7}>
+          <Box display="flex" alignItems="center" flexWrap="wrap" sx={{ gap: 1 }}>
+            <label htmlFor={inputId}>
+              <input id={inputId} type="file" accept={def.accept} style={{ display: 'none' }}
+                onChange={(e) => {
+                  setFile(e.target.files?.[0] || null);
+                  setMsg(null);
+                  e.target.value = '';
+                }} />
+              <Button component="span" size="small" variant="outlined">Choose file</Button>
+            </label>
+            {file && <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.85rem' }}>{file.name}</Typography>}
+            <Button size="small" variant="contained" disabled={!file || busy} onClick={upload}
+              startIcon={busy ? <CircularProgress size={14} /> : <IconUpload size={14} />}>
+              {busy ? 'Uploading…' : 'Upload'}
+            </Button>
+          </Box>
+        </Grid>
+      </Grid>
       {msg && (
         <Alert severity={msg.severity} onClose={() => setMsg(null)} sx={{ mt: 1 }}>
           {msg.text}

@@ -58,18 +58,20 @@ _FEED_TABLE = {
 
 def ingest(feed, stream, filename, company_id, user):
     """Parse and load one upload in one transaction — a failure part-way leaves the
-    previous upload in place, never half of this one. The Beat Plan replaces all its rows;
-    the Outlet Master is merged into what is stored (_merge_outlets). The
+    previous upload in place, never half of this one. Each feed replaces all its stored
+    rows (the Outlet Master: its Active outlets; an export with none is refused). The
     Tally outstanding report is refused: it is never stored (see read_outstanding)."""
     if feed == P.FEED_OUTSTANDING:
         raise BeatOutstandingError('The Tally outstanding report is not stored — pick it on the '
                                    'Beat Outstanding page.')
     tables, warnings, meta = P.parse(feed, stream, filename)
-    if feed == P.FEED_OUTLETS:
-        ensure_outlet_gstin()
     key = _FEED_TABLE[feed]
     table, cols = _TABLES[key]
     rows = tables[key]
+    if feed == P.FEED_OUTLETS:
+        if not rows:
+            raise BeatOutstandingError('No Active outlet in this file — nothing was changed.')
+        ensure_outlet_gstin()
     distributor = (meta.get('distributor') or '')[:255]
     with mysql_manager.get_cursor() as cur:
         cur.execute(
@@ -79,52 +81,16 @@ def ingest(feed, stream, filename, company_id, user):
             (company_id, feed, distributor, meta.get('report_to'), (filename or '')[:255],
              len(rows), (user or 'system')[:100]))
         upload_id = cur.lastrowid
-        merge = None
-        if feed == P.FEED_OUTLETS:
-            merge = _merge_outlets(cur, company_id, rows, tables.get('inactive') or [])
-        else:
-            cur.execute(f'DELETE FROM {table} WHERE company_id = %s', (company_id,))
+        cur.execute(f'DELETE FROM {table} WHERE company_id = %s', (company_id,))
         all_cols = ['company_id', 'upload_id'] + cols
         cur.executemany(
             f'INSERT INTO {table} ({", ".join(all_cols)}) '
             f'VALUES ({", ".join(["%s"] * len(all_cols))})',
             [(company_id, upload_id, *[r[c] for c in cols]) for r in rows])
-        if merge is not None:
-            cur.execute(f'SELECT COUNT(*) AS n FROM {table} WHERE company_id = %s', (company_id,))
-            merge['total'] = cur.fetchone()['n']
     out = {'feed': feed, 'label': P.FEED_LABELS[feed], 'filename': filename,
            'counts': {key: len(rows)}, 'warnings': warnings[:50],
            'warning_count': len(warnings)}
-    if merge is not None:
-        out['merge'] = merge
     return out
-
-
-def _outlet_key(r):
-    """An outlet is the same outlet across uploads by its DMS Outlet_Id; one without an id
-    by its name."""
-    return ('id', r['outlet_id']) if r['outlet_id'] else ('name', r['name_key'])
-
-
-def _merge_outlets(cur, company_id, rows, inactive=()):
-    """The Outlet Master is incremental: the outlets in the file replace their stored rows
-    (a changed beat, name or city is updated), new ones are added, outlets the file marks
-    Inactive are removed, and outlets not in the file are kept. Deletes the rows being
-    replaced or removed; the caller inserts the file's rows.
-    {'added', 'updated', 'removed', 'kept'}."""
-    cur.execute('SELECT id, outlet_id, name_key FROM bo_outlet WHERE company_id = %s FOR UPDATE',
-                (company_id,))
-    stored = list(cur.fetchall())
-    incoming = {_outlet_key(r) for r in rows}
-    gone = {_outlet_key(r) for r in inactive} - incoming
-    drop = [s['id'] for s in stored if _outlet_key(s) in incoming | gone]
-    for i in range(0, len(drop), 1000):
-        chunk = drop[i:i + 1000]
-        cur.execute(f'DELETE FROM bo_outlet WHERE id IN ({", ".join(["%s"] * len(chunk))})', chunk)
-    had = {_outlet_key(s) for s in stored}
-    updated = len(incoming & had)
-    return {'added': len(incoming) - updated, 'updated': updated, 'removed': len(gone & had),
-            'kept': len(had - incoming - gone)}
 
 
 def feed_status(company_id):

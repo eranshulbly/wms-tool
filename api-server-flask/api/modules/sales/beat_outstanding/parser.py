@@ -123,8 +123,8 @@ def _require(header, cols, label):
 # ── DMS feeds ────────────────────────────────────────────────────────────────
 
 def parse_outlets(data, filename):
-    """Active outlets go in 'outlets'; an Inactive one goes in 'inactive', so a copy stored
-    from an earlier upload is removed (service._merge_outlets) rather than kept."""
+    """Active outlets go in 'outlets' (what is stored); Inactive ones in 'inactive', only
+    to be named in the warnings."""
     header, rows = _table(data, filename)
     _require(header, OUTLET_COLS, FEED_LABELS[FEED_OUTLETS])
     out, inactive, warnings = [], [], []

@@ -26,11 +26,10 @@ import { IconChevronDown, IconChevronRight, IconDownload, IconFileZip, IconUploa
 import { downloadAll, downloadExecutive, downloadUnassigned, getBeatReport, setDayBeats } from '../../services/beatOutstandingService';
 import { readBlobError } from '../../services/orderService';
 import { BEAT_FEEDS, UploadRow } from '../dms-uploads/DmsFeedUpload';
-import DmsReportLink, { DMS_REPORTS } from '../../ui-component/DmsReportLink';
 
 // Beat Outstanding — a distributor's Tally outstanding split by the beats each sales
 // executive covers on a day, to hand to them as an Excel file. Built from three uploads:
-// the Outlet Master (outlet -> beat; uploaded on this page by admins, incremental) and,
+// the Outlet Master (outlet -> beat; uploaded on this page by admins, replaces the last) and,
 // the day's Beat Plan (executive x day -> beats) and the Tally Outstanding Report. Parties the Outlet Master cannot place on one beat are
 // listed separately so none of the outstanding goes unseen.
 
@@ -76,8 +75,8 @@ const Days = ({ days }) => {
   return <span className={days > OVER_30_DAYS ? classes.red : undefined}>{days}</span>;
 };
 
-// The feeds uploaded on this page. The Outlet Master is incremental (new outlets added,
-// those in the file updated, the rest kept) and uploaded by admins only; others see when.
+// The feeds uploaded on this page. The Outlet Master replaces the last one and is uploaded
+// by admins only; others see when.
 const OUTLETS_FEED = BEAT_FEEDS.find((f) => f.feed === 'outlets');
 const PAGE_FEEDS = BEAT_FEEDS.filter((f) => f.feed !== 'outlets');
 
@@ -152,7 +151,7 @@ const FilesPanel = ({ feeds, onUploaded, outstandingFile, outstanding, onPickOut
               <span style={{ color: '#b91c1c', fontWeight: 600 }}>
                 Last Updated: {fmtDateTime(last.uploaded_on)}
               </span>
-              <span className={classes.muted}> · <DmsReportLink report={DMS_REPORTS.outlets} /> · uploaded here by an admin</span>
+              <span className={classes.muted}> · uploaded here by an admin</span>
             </Typography>
           ) : (
             <Typography variant="caption" className={classes.red} component="div">
