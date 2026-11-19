@@ -160,8 +160,8 @@ CREATE TABLE IF NOT EXISTS dpt_manual_check (
 """, order=126)
 
 
-# Dealer Payments' own executive -> beat table (the User Beats list), kept on its Executive
-# Beats page; separate from Beat Outstanding's bo_exec_beat, which this module never writes.
+# No longer used: Executive Beats is one list for both tabs, Beat Outstanding's bo_exec_beat
+# (service.exec_beats). Kept registered so an existing table is left as it is.
 register_table("dpt_exec_beat", """
 CREATE TABLE IF NOT EXISTS dpt_exec_beat (
     id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

@@ -10,19 +10,19 @@ const dealerPayments = {
     type: 'group',
     children: [
         {
-            id: 'dealer-payments-screen',
-            title: 'Dealer screen',
-            type: 'item',
-            url: '/dealer-payments',
-            icon: IconCurrencyRupee,
-            breadcrumbs: false
-        },
-        {
             id: 'dealer-payments-outstanding',
             title: 'Outstanding',
             type: 'item',
             url: '/dealer-payments/outstanding',
             icon: IconRoute,
+            breadcrumbs: false
+        },
+        {
+            id: 'dealer-payments-screen',
+            title: 'Dealer screen',
+            type: 'item',
+            url: '/dealer-payments',
+            icon: IconCurrencyRupee,
             breadcrumbs: false
         },
         {

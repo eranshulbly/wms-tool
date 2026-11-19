@@ -21,7 +21,7 @@ import { ACTION_COLOR, actionLabel, RemindChip } from './DealerDetail';
 // Beat-wise: the Outstanding file cut per sales executive, by the beats each owns in
 // Dealer Payments → Executive Beats. A dealer is placed on a beat by its name in the DMS
 // Outlet Master, else by its town when that town is wholly one executive's; the rest are in
-// Unassigned, each with why. Used on the Outstanding page and in the dealer screen's dialog.
+// Unassigned, each with why. Shown on the Outstanding page.
 
 const inr = (v) =>
   v === null || v === undefined ? '—' : `₹${Number(v).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;

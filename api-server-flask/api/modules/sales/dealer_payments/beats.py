@@ -2,8 +2,8 @@
 """Which sales executive each dealer belongs to (pure: data in, data out).
 
 The beats come from Beat Outstanding: the Outlet Master (`bo_outlet`, outlet -> beat and
-city, read only) and Executive Beats (`dpt_exec_beat`, this module's executive -> beats, the User Beats
-list). A dealer is placed on a beat, then handed to whoever owns that beat:
+city) and Executive Beats (`bo_exec_beat`, executive -> beats, the User Beats list — one
+list, edited from either tab). A dealer is placed on a beat, then handed to whoever owns that beat:
 
   1. by name — the dealer's name (Tally's ledger name without " | Ebco | Town") is an
      outlet's name, compared as Beat Outstanding compares them (parser.name_key). An outlet

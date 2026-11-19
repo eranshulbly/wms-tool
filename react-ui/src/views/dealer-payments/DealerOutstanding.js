@@ -9,7 +9,8 @@ import BeatDownloads from './BeatDownloads';
 // Dealer Payments → Outstanding: each sales executive's dealers, on all the beats they own
 // (Executive Beats), with the dealer screen's amounts and a file each to hand them. The
 // Outlet Master and Beat Plan uploads are Beat Outstanding's own (one copy, shared by both
-// pages; the Outlet Master is incremental); the two Tally files are the dealer screen's.
+// pages; the Outlet Master is incremental). The two Tally files are uploaded only here; the
+// dealer screen reads them (FILES and FileRow live in DealerPayments.js).
 
 const OutstandingPage = () => {
   const [beatFeeds, setBeatFeeds] = useState([]);

@@ -371,8 +371,9 @@ const ExecutiveBeats = () => {
       </Typography>
       <Typography variant="body2" className={classes.muted} style={{ marginBottom: 16 }}>
         Every beat that belongs to each executive — upload the User Beats file (User and Beat columns) or edit the rows.
-        Beat-wise downloads on the dealer screen give each executive a file with the dealers on these beats. Beats are
-        matched to dealers through the DMS Outlet Master uploaded under Beat Outstanding.
+        The Outstanding page gives each executive a file with the dealers on these beats. Beats are
+        matched to dealers through the DMS Outlet Master uploaded under Beat Outstanding. This is the same list as
+        Beat Outstanding → Executive Beats: a change here changes it there too.
       </Typography>
       {error && (
         <Alert severity="error" style={{ marginBottom: 16 }}>

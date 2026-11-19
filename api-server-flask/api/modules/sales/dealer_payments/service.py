@@ -620,12 +620,13 @@ def outstanding_export(company_id, today=None):
 UNASSIGNED = 'Unassigned'
 
 
-# ── Executive Beats: this module's own executive -> beat table ────────────────
+# ── Executive Beats: one list, shared with Beat Outstanding ──────────────────
+# The executive -> beat table is Beat Outstanding's bo_exec_beat: this tab's Executive Beats
+# page and Beat Outstanding's edit the same rows, and both tabs' downloads use them.
 
 def exec_beats(company_id):
-    return mysql_manager.execute_query(
-        'SELECT se_name, beat_name FROM dpt_exec_beat WHERE company_id = %s ORDER BY id',
-        (company_id,)) or []
+    from api.modules.sales.beat_outstanding import service as bo
+    return bo.exec_beats(company_id)
 
 
 def _outlets(company_id):
@@ -636,13 +637,9 @@ def _outlets(company_id):
 
 
 def exec_beats_page(company_id):
-    """The table, and what its boxes offer as they are typed: the executives already in it
-    and the Outlet Master's beats."""
-    rows = exec_beats(company_id)
-    return {'exec_beats': rows,
-            'executive_names': sorted({r['se_name'] for r in rows}, key=str.casefold),
-            'beat_names': sorted({o['beat_name'] for o in _outlets(company_id) if o['beat_name']},
-                                 key=str.casefold)}
+    """The table, and what its boxes offer as they are typed (Beat Outstanding's page)."""
+    from api.modules.sales.beat_outstanding import service as bo
+    return bo.exec_beats_page(company_id)
 
 
 def parse_exec_beats_file(data, filename):
@@ -657,30 +654,14 @@ def parse_exec_beats_file(data, filename):
 
 
 def save_exec_beats(company_id, rows, user):
-    """Replace the whole executive -> beat table with `rows` ([{se_name, beat_name}])."""
-    from api.modules.sales.dealer_payments.beats import name_key
-    clean, seen = [], set()
-    for i, r in enumerate(rows or [], start=1):
-        se = ' '.join(str(r.get('se_name') or '').split())[:255]
-        beat = ' '.join(str(r.get('beat_name') or '').split())[:255]
-        if not se and not beat:
-            continue
-        if not se or not beat:
-            raise DealerPaymentsError(f'Row {i}: give both the user and the beat.')
-        key = (se.casefold(), beat.casefold())
-        if key not in seen:
-            seen.add(key)
-            clean.append((se, beat))
-    with mysql_manager.get_cursor() as cur:
-        cur.execute('DELETE FROM dpt_exec_beat WHERE company_id = %s', (company_id,))
-        if clean:
-            cur.executemany(
-                'INSERT INTO dpt_exec_beat (company_id, se_name, beat_name, updated_by) VALUES (%s, %s, %s, %s)',
-                [(company_id, se, beat, (user or 'system')[:100]) for se, beat in clean])
-    known = {name_key(o['beat_name']) for o in _outlets(company_id)}
-    unknown = sorted({beat for _, beat in clean if name_key(beat) not in known})
-    return {'saved': len(clean), **exec_beats_page(company_id),
-            'warnings': [f'{b}: not a beat in the Outlet Master — no dealers will be found on it' for b in unknown]}
+    """Replace the whole executive -> beat table with `rows` ([{se_name, beat_name}]) — the
+    one Beat Outstanding uses too (beat_outstanding.service.save_exec_beats)."""
+    from api.modules.sales.beat_outstanding import service as bo
+    try:
+        out = bo.save_exec_beats(company_id, rows, user)
+    except bo.BeatOutstandingError as e:
+        raise DealerPaymentsError(str(e))
+    return {'saved': out['saved'], **exec_beats_page(company_id), 'warnings': out['warnings']}
 
 
 def _beats(company_id, inputs):
