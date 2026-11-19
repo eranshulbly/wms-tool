@@ -1,6 +1,6 @@
 // Dealer Payment Tracker menu group (views/dealer-payments/).
 
-import { IconCurrencyRupee, IconPlus, IconReceipt2, IconUsers } from '@tabler/icons';
+import { IconCurrencyRupee, IconPlus, IconReceipt2, IconRoute, IconUsers } from '@tabler/icons';
 
 // ==============================|| DEALER PAYMENTS MENU ITEMS ||============================== //
 
@@ -15,6 +15,14 @@ const dealerPayments = {
             type: 'item',
             url: '/dealer-payments',
             icon: IconCurrencyRupee,
+            breadcrumbs: false
+        },
+        {
+            id: 'dealer-payments-outstanding',
+            title: 'Outstanding',
+            type: 'item',
+            url: '/dealer-payments/outstanding',
+            icon: IconRoute,
             breadcrumbs: false
         },
         {

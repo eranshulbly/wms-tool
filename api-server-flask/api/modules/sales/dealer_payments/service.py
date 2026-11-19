@@ -706,15 +706,41 @@ def _beats(company_id, inputs):
     return B.executives(rows), placed, unassigned
 
 
+def _todays_beats(company_id, today):
+    """{executive name (casefolded): [beat]} on the Beat Plan for today (Beat Outstanding's
+    upload, read only), and the plan's latest date."""
+    rows = mysql_manager.execute_query(
+        'SELECT se_name, beat_name FROM bo_beat_plan WHERE company_id = %s AND plan_date = %s ORDER BY id',
+        (company_id, today)) or []
+    latest = mysql_manager.execute_query(
+        'SELECT MAX(plan_date) AS d FROM bo_beat_plan WHERE company_id = %s', (company_id,))
+    out = {}
+    for r in rows:
+        beats = out.setdefault(' '.join(r['se_name'].split()).casefold(), [])
+        if r['beat_name'] and r['beat_name'] not in beats:
+            beats.append(r['beat_name'])
+    return out, (latest[0]['d'] if latest else None)
+
+
 def beat_summary(company_id, today=None):
-    """Per executive: their beats, the dealers in their file (how many placed by town) and the
-    totals; and the dealers no executive gets, each with why."""
+    """Per executive: their beats, today's beats on the Beat Plan, the dealers in their file
+    (each with its line from the dealer screen; how many placed by town) and the totals; and
+    the dealers no executive gets, each with why."""
+    from api.modules.sales.dealer_payments import beats as B
     inputs = _export_inputs(company_id, today or today_ist())
     execs, placed, unassigned = _beats(company_id, inputs)
     rows = {r['dealer_id']: r for r in R.dealer_rows(
         [{**d, 'active': True, 'exclude_from_chase': False} for d in inputs['dealers']], inputs['bills'],
         inputs['payments'], inputs['cheques'], inputs['today'], inputs['bounced_cheques'].keys(),
         inputs['cleared'])}
+    todays, plan_latest = _todays_beats(company_id, inputs['today'])
+
+    def item(i, note):
+        r = rows.get(i) or {}
+        return {'dealer_id': i, 'dealer': r.get('dealer', i), 'note': note,
+                **{k: r.get(k) for k in ('tally_os', 'received_not_in_tally', 'pdc_amount', 'effective_os',
+                                         'oldest_overdue_days', 'oldest_bill_age_days', 'action', 'remind',
+                                         'wait_till')}}
 
     def totals(ids):
         mine = [rows[i] for i in ids if i in rows]
@@ -724,19 +750,24 @@ def beat_summary(company_id, today=None):
                 'chase': sum(1 for r in mine if r['action'] == R.ACTION_CHASE),
                 'remind': sum(1 for r in mine if r.get('remind'))}
 
+    def worst_first(items):
+        return sorted(items, key=lambda x: (-(x['effective_os'] or 0), x['dealer']))
+
     out = []
     for se, beat_names in execs.items():
         ids = [i for i, p in placed.items() if se in p['executives']]
         out.append({'se_name': se, 'beats': beat_names, **totals(ids),
-                    'by_town': sum(1 for i in ids if placed[i]['how'] == 'town')})
+                    'todays_beats': todays.get(' '.join(se.split()).casefold(), []),
+                    'by_town': sum(1 for i in ids if placed[i]['how'] == B.BY_TOWN),
+                    'items': worst_first(item(i, B.note_for(placed[i])) for i in ids)})
     return {
         'tally_as_of': inputs['as_of'],
+        'today': inputs['today'],
+        'plan_latest': plan_latest,
+        'cheques_note': inputs['cheques_note'],
         'executives': out,
         'unassigned': {**totals(list(unassigned)),
-                       'items': sorted(({'dealer_id': i, 'dealer': rows[i]['dealer'] if i in rows else i,
-                                         'tally_os': rows[i]['tally_os'] if i in rows else R.ZERO,
-                                         'reason': why} for i, why in unassigned.items()),
-                                       key=lambda x: -x['tally_os'])},
+                       'items': worst_first(item(i, why) for i, why in unassigned.items())},
     }
 
 

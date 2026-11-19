@@ -92,3 +92,6 @@ export const parseExecBeatsFile = (file) => {
   fd.append('file', file);
   return data(api.post('dealer-payments/exec-beats/parse', fd, { headers: { 'Content-Type': 'multipart/form-data' } }));
 };
+
+// The last upload of each Tally file (Outstanding page).
+export const getUploads = () => data(api.get('dealer-payments/uploads'));

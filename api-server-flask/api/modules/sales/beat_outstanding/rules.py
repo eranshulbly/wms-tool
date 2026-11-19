@@ -74,6 +74,28 @@ def _parties(bills):
     return out
 
 
+def settle_oldest_first(bills):
+    """`bills` (one party's) with `left`: what is still unpaid of each Dr bill once the Cr
+    lines (on-account receipts, credit notes) are set against the bills oldest first, by
+    bill date then reference — as Tally would show them had each credit been allocated
+    Agst Ref. The credits' own dates do not matter. Cr lines get `left` 0."""
+    pool = -sum(b['amount'] for b in bills if b['amount'] < 0)
+    out = [{**b, 'left': 0.0} for b in bills]
+    for b in sorted((b for b in out if b['amount'] > 0), key=lambda b: (b['bill_date'], str(b['ref_no']))):
+        used = min(pool, b['amount']) if pool > 0 else 0.0
+        pool -= used
+        b['left'] = round(b['amount'] - used, 2)
+    return out
+
+
+def _max_days_overdue(bills):
+    """Days overdue of the oldest bill still unpaid once credits are set against the oldest
+    bills (settle_oldest_first); None when nothing is left to pay. A credit's own age is not
+    something to chase a dealer over."""
+    days = [b['days_overdue'] for b in settle_oldest_first(bills) if b['left'] > 0]
+    return max(0, max(days)) if days else None
+
+
 def dealers_on(beat_ids, bills, placed, today):
     """Dealers on `beat_ids` that owe something, each with its bills — worst first:
     the oldest overdue money, then the largest amount."""
@@ -96,13 +118,11 @@ def dealers_on(beat_ids, bills, placed, today):
                            # no Opening column in the report: it is the pending amount
                            'opening': float(opening) if opening is not None else float(b['amount'])})
         d['amount'] = round(d['amount'] + float(b['amount']), 2)
-        # A credit's own age is not something to chase a dealer over.
-        if float(b['amount']) > 0:
-            d['max_days_overdue'] = max(d['max_days_overdue'] or 0, days)
     out = list(dealers.values())
     for d in out:
         d['bills'].sort(key=lambda x: x['due_on'])
         d['bill_count'] = len(d['bills'])
+        d['max_days_overdue'] = _max_days_overdue(d['bills'])
     out.sort(key=lambda d: (-(d['max_days_overdue'] if d['max_days_overdue'] is not None else -1),
                             -d['amount']))
     return out
@@ -134,14 +154,17 @@ def beat_ids_named(beat_names, outlets):
 def cd_lapsed(dealers, today, cd_days=CD_DAYS):
     """`dealers` (from dealers_on) cut to the unpaid bills `cd_days` or more old from
     the bill date, each bill with its `days_since_bill`; dealers left with none dropped.
-    Oldest first."""
+    Oldest first. The dealer's credits (Cr lines) are first set against its oldest bills
+    (settle_oldest_first), so each bill shows only what is still unpaid of it and a bill
+    paid off by a credit is not listed."""
     out = []
     for d in dealers:
         bills = []
-        for b in d['bills']:
+        for b in settle_oldest_first(d['bills']):
             age = (today - b['bill_date']).days
-            if b['amount'] > 0 and age >= cd_days:
-                bills.append({**b, 'days_since_bill': age})
+            if b['left'] > 0 and age >= cd_days:
+                left = b.pop('left')
+                bills.append({**b, 'amount': left, 'days_since_bill': age})
         if bills:
             out.append({**d, 'bills': bills, 'bill_count': len(bills),
                         'amount': round(sum(b['amount'] for b in bills), 2),
@@ -173,11 +196,10 @@ def unassigned_dealers(bills, placed, unplaced, owned_beat_ids, today):
                            'days_overdue': (today - b['due_on']).days, 'amount': float(b['amount']),
                            'opening': float(opening) if opening is not None else float(b['amount'])})
         d['amount'] = round(d['amount'] + float(b['amount']), 2)
-        if float(b['amount']) > 0:
-            d['max_days_overdue'] = max(d['max_days_overdue'] or 0, (today - b['due_on']).days)
     out = list(dealers.values())
     for d in out:
         d['bills'].sort(key=lambda x: x['due_on'])
         d['bill_count'] = len(d['bills'])
+        d['max_days_overdue'] = _max_days_overdue(d['bills'])
     out.sort(key=lambda d: d['party_name'].lower())
     return out

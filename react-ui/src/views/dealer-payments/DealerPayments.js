@@ -77,7 +77,7 @@ export const numberMatches = (expr, value) => {
   return String(Math.round(v * 100) / 100).includes(e);
 };
 
-const FILES = [
+export const FILES = [
   {
     key: 'outstanding',
     title: 'Tally Outstanding (Export 1)',
@@ -99,7 +99,7 @@ const FILES = [
   },
 ];
 
-const FileRow = ({ def, last, onDone }) => {
+export const FileRow = ({ def, last, onDone }) => {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
   const pick = async (e) => {

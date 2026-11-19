@@ -45,6 +45,7 @@ const ExecutiveBeats = Loadable(lazy(() => import('../views/beat-outstanding/Exe
 const DealerPayments = Loadable(lazy(() => import('../views/dealer-payments/DealerPayments')));
 const PaymentLog = Loadable(lazy(() => import('../views/dealer-payments/PaymentLog')));
 const DptExecutiveBeats = Loadable(lazy(() => import('../views/dealer-payments/ExecutiveBeats')));
+const DptOutstanding = Loadable(lazy(() => import('../views/dealer-payments/DealerOutstanding')));
 const LogPaymentPage = Loadable(lazy(() =>
     import('../views/dealer-payments/PaymentLog').then((m) => ({ default: m.LogPaymentPage }))));
 
@@ -80,6 +81,7 @@ const MainRoutes = () => {
                 '/dealer-payments/log',
                 '/dealer-payments/payments',
                 '/dealer-payments/executive-beats',
+                '/dealer-payments/outstanding',
                 '/po-builder',
                 '/tat-check',
             ]}
@@ -174,6 +176,16 @@ const MainRoutes = () => {
                             <AuthGuard>
                                 <AdminGuard>
                                     <LogPaymentPage />
+                                </AdminGuard>
+                            </AuthGuard>
+                        )}
+                    />
+                    <Route
+                        path="/dealer-payments/outstanding"
+                        render={() => (
+                            <AuthGuard>
+                                <AdminGuard>
+                                    <DptOutstanding />
                                 </AdminGuard>
                             </AuthGuard>
                         )}

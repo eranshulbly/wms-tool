@@ -7,7 +7,7 @@ Amounts are Decimal, signed the Tally way: Dr (the dealer owes) positive, Cr neg
 
 import re
 from collections import defaultdict
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 from api.modules.sales.dealer_payments.parser import KIND_BOUNCE, KIND_CREDIT_NOTE
@@ -404,19 +404,34 @@ def action_for(effective, pdc_amount, next_pdc, overdue=None, next_due=None):
     return ACTION_CHASE, None
 
 
+def settle_oldest_first(dbills, received=ZERO):
+    """Each Dr bill with `left`: what is still unpaid once the credits — Cr lines (on-account
+    receipts, credit notes) and `received` (payments not in Tally yet) — are set against the
+    bills oldest first, by bill date then reference, as Tally would show them had each credit
+    been allocated Agst Ref. The credits' own dates do not matter. Cr lines are not returned."""
+    pool = -sum((b['pending_amt'] for b in dbills if b['pending_amt'] < 0), ZERO) + (received or ZERO)
+    out = []
+    for b in sorted((b for b in dbills if b['pending_amt'] > 0),
+                    key=lambda b: (b.get('bill_date') or date.max, str(b.get('ref_no') or ''))):
+        used = min(pool, b['pending_amt']) if pool > 0 else ZERO
+        pool -= used
+        out.append({**b, 'left': b['pending_amt'] - used})
+    return out
+
+
 def overdue_os(dbills, received):
     """(overdue part of Effective O/S, next due date) for one dealer's bills, due dates counted
     to today (age_bills). Payments not in Tally and credit balances (Cr bills: on-account
-    receipts, credit notes) settle the overdue bills first. (None, None) when a bill that is
-    not overdue has no due date, so whether it is due cannot be told."""
-    overdue = sum((b['pending_amt'] for b in dbills
-                   if b['pending_amt'] > 0 and b.get('overdue_days') is not None), ZERO)
-    credits = -sum((b['pending_amt'] for b in dbills if b['pending_amt'] < 0), ZERO)
-    not_due = [b for b in dbills if b['pending_amt'] > 0 and b.get('overdue_days') is None]
+    receipts, credit notes) settle the oldest bills first (settle_oldest_first). (None, None)
+    when a bill still unpaid and not overdue has no due date, so whether it is due cannot be
+    told."""
+    unpaid = [b for b in settle_oldest_first(dbills, received) if b['left'] > 0]
+    overdue = sum((b['left'] for b in unpaid if b.get('overdue_days') is not None), ZERO)
+    not_due = [b for b in unpaid if b.get('overdue_days') is None]
     if any(b.get('due_on') is None for b in not_due):
         return None, None
     next_due = min((b['due_on'] for b in not_due), default=None)
-    return max(ZERO, overdue - credits - received), next_due
+    return overdue, next_due
 
 
 _ACTION_ORDER = {ACTION_CHASE: 0, ACTION_WAIT: 1, ACTION_NOT_DUE: 2, ACTION_CLEAR: 3}
@@ -440,16 +455,19 @@ def dealer_summary(d, dbills, payments, cheques, bounced_cheque_keys=(), cleared
     effective = tally - received
     due_os, next_due = overdue_os(dbills, received)
     action, wait_till = action_for(effective, pdc_amount, next_pdc, due_os, next_due)
-    ages = [b['age_days'] for b in dbills if b['pending_amt'] > 0 and b.get('age_days') is not None]
+    # Ages and overdue days count only what is still unpaid once credits and payments not in
+    # Tally are set against the oldest bills (settle_oldest_first).
+    unpaid = [b for b in settle_oldest_first(dbills, received) if b['left'] > 0]
+    ages = [b['age_days'] for b in unpaid if b.get('age_days') is not None]
     oldest_age = max(ages) if ages else None
     remind = action == ACTION_NOT_DUE and oldest_age is not None and oldest_age >= REMIND_AFTER_DAYS
-    overdue = [b['overdue_days'] for b in dbills if b['pending_amt'] > 0 and b.get('overdue_days') is not None]
-    # How much is overdue by how many days: the pending amounts of the overdue bills, bills
+    overdue = [b['overdue_days'] for b in unpaid if b.get('overdue_days') is not None]
+    # How much is overdue by how many days: what is left unpaid of the overdue bills, bills
     # overdue by the same number of days added together, oldest first.
     by_days = defaultdict(lambda: ZERO)
-    for b in dbills:
-        if b['pending_amt'] > 0 and b.get('overdue_days') is not None:
-            by_days[b['overdue_days']] += b['pending_amt']
+    for b in unpaid:
+        if b.get('overdue_days') is not None:
+            by_days[b['overdue_days']] += b['left']
     return {
         'dealer_id': d['dealer_id'],
         'dealer': f"{d['dealer_name']} ({d['town']})" if d.get('town') else d['dealer_name'],

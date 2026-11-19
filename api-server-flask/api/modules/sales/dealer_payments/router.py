@@ -22,6 +22,7 @@ out itself. Admin only on Ebco.
   PUT  /api/dealer-payments/exec-beats          {rows: [{se_name, beat_name}]} replaces it
   POST /api/dealer-payments/exec-beats/parse    form field file (User, Beat columns) -> rows,
                                                 not stored
+  GET  /api/dealer-payments/uploads             the last upload of each Tally file
   GET  /api/dealer-payments/beats               per sales executive (Beat Outstanding's
                                                 Executive Beats): dealers and totals
   GET  /api/dealer-payments/export/beats        all executives' files (.zip); ?se=<name> one
@@ -227,3 +228,10 @@ class DptExecBeatsParse(Resource):
     def post(self, current_user):
         filename, data = _file()
         return {'success': True, **svc.parse_exec_beats_file(data, filename)}, 200
+
+
+@rest_api.route(f'{BASE}/uploads')
+class DptUploads(Resource):
+    @_guard
+    def get(self, current_user):
+        return {'success': True, 'uploads': svc.last_uploads(svc.company_id())}, 200

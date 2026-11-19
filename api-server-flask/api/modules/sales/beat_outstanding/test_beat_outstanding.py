@@ -124,11 +124,11 @@ def test_cd_sheet_keeps_unpaid_bills_20_days_or_more_old():
     bills = [_b('SASTHI PLYWOOD', 100, date(2026, 10, 17), 'INV-21'),   # 21 days — lapsed
              _b('SASTHI PLYWOOD', 50, date(2026, 10, 18), 'INV-20'),    # 20 days — lapsed
              _b('SASTHI PLYWOOD', 40, date(2026, 10, 19), 'INV-19'),    # 19 days — still in CD
-             _b('SASTHI PLYWOOD', -30, date(2026, 9, 1), 'CR-1')]       # a credit, not chased
+             _b('SASTHI PLYWOOD', -30, date(2026, 9, 1), 'CR-1')]       # a credit: pays the oldest bill
     placed, _ = R.place_parties(bills, outlets)
     cd = R.cd_lapsed(R.dealers_on({'1318'}, bills, placed, today), today)
-    assert [b['ref_no'] for b in cd[0]['bills']] == ['INV-21', 'INV-20']
-    assert cd[0]['amount'] == 150 and cd[0]['max_days_since_bill'] == 21
+    assert [(b['ref_no'], b['amount']) for b in cd[0]['bills']] == [('INV-21', 70), ('INV-20', 50)]
+    assert cd[0]['amount'] == 120 and cd[0]['max_days_since_bill'] == 21
 
 
 def test_cd_sheet_drops_dealers_with_nothing_lapsed():
@@ -181,3 +181,27 @@ def test_unassigned_dealers_are_those_no_executive_covers():
     assert [(d['party_name'], d['reason'], d['beat_name']) for d in out] == [
         ('FREE', R.REASON_BEAT_UNOWNED, 'Anmol_Agra'),
         ('STRANGER', R.REASON_NOT_IN_MASTER, '')]
+
+
+def test_cd_sheet_sets_credits_against_the_oldest_bills():
+    """Sasthi Plywood: ₹50,000 on account (receipt 4637, a Cr line) pays INV-6 down to ₹8,050;
+    the CD sheet shows what is left, adding up to the party's balance."""
+    today = date(2026, 11, 18)
+    p = 'Sasthi Plywood | Ebco | Jogi Navada'
+    bills = [_b(p, 58050, date(2026, 9, 10), 'INV-6'), _b(p, 23128, date(2026, 9, 18), 'INV-30'),
+             _b(p, 11399, date(2026, 10, 7), 'INV-60'), _b(p, 4375, date(2026, 10, 9), 'INV-69'),
+             _b(p, 7643, date(2026, 10, 17), 'INV-89'), _b(p, -50000, date(2026, 10, 21), '4637')]
+    for b in bills:
+        b['name_key'] = P.name_key(p.split('|')[0])
+    placed, _ = R.place_parties(bills, [_o('SASTHI PLYWOOD', '1318', 'Anmol_BAREILLY')])
+    dealers = R.dealers_on({'1318'}, bills, placed, today)
+    assert dealers[0]['amount'] == 54595 and dealers[0]['max_days_overdue'] == 69
+    cd = R.cd_lapsed(dealers, today)
+    left = {b['ref_no']: b['amount'] for b in cd[0]['bills']}
+    assert left == {'INV-6': 8050, 'INV-30': 23128, 'INV-60': 11399, 'INV-69': 4375, 'INV-89': 7643}
+    assert cd[0]['amount'] == 54595
+    # a credit bigger than every bill leaves nothing to show and nothing overdue
+    big = bills[:-1] + [_b(p, -200000, date(2026, 10, 21), '4637')]
+    big[-1]['name_key'] = bills[0]['name_key']
+    dealers = R.dealers_on({'1318'}, big, placed, today)
+    assert R.cd_lapsed(dealers, today) == [] and dealers[0]['max_days_overdue'] is None

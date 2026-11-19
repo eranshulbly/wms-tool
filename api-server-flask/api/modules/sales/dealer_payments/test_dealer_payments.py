@@ -426,7 +426,8 @@ def test_dealer_screen_rows(master, ids, export1):
     assert (by[janta]['action'], by[janta]['wait_till'], by[janta]['pdc_count']) == (R.ACTION_WAIT, AS_OF + timedelta(days=3), 1)
     assert by[akansh]['received_not_in_tally'] == D('1000')       # OPEN only
     assert by[akansh]['effective_os'] == D('15436') and by[akansh]['pdc_count'] == 0   # CLEARED is not held
-    assert by[akansh]['oldest_overdue_days'] == 91
+    # the ₹1,000 not in Tally pays off the oldest bill (₹686, 91 days): 88 days is left
+    assert by[akansh]['oldest_overdue_days'] == 88
     actions = [r['action'] for r in rows]
     assert actions == sorted(actions, key={'CHASE': 0, 'WAIT': 1, 'NOT_DUE': 2, 'CLEAR': 3}.get)
     chase = [r['effective_os'] for r in rows if r['action'] == R.ACTION_CHASE]
@@ -502,14 +503,45 @@ def test_overdue_days_counted_to_today():
 
 def test_overdue_amounts_by_days():
     d = {'dealer_id': 'D1', 'dealer_name': 'X'}
-    bills = [{'kind': 'invoice', 'ref_no': '1', 'pending_amt': D('10'), 'overdue_days': 2},
-             {'kind': 'invoice', 'ref_no': '2', 'pending_amt': D('30'), 'overdue_days': 4},
-             {'kind': 'invoice', 'ref_no': '3', 'pending_amt': D('5'), 'overdue_days': 4},
-             {'kind': 'invoice', 'ref_no': '4', 'pending_amt': D('50'), 'overdue_days': None},   # not yet due
-             {'kind': 'invoice', 'ref_no': '5', 'pending_amt': D('-7'), 'overdue_days': 9}]      # Cr: not owed
+    day = date(2026, 11, 1)
+    bills = [{'kind': 'invoice', 'ref_no': '1', 'bill_date': day, 'pending_amt': D('10'), 'overdue_days': 2},
+             {'kind': 'invoice', 'ref_no': '2', 'bill_date': day - timedelta(days=2), 'pending_amt': D('30'), 'overdue_days': 4},
+             {'kind': 'invoice', 'ref_no': '3', 'bill_date': day - timedelta(days=2), 'pending_amt': D('5'), 'overdue_days': 4},
+             {'kind': 'invoice', 'ref_no': '4', 'bill_date': day + timedelta(days=5), 'pending_amt': D('50'),
+              'overdue_days': None, 'due_on': day + timedelta(days=30)},                       # not yet due
+             {'kind': 'receipt', 'ref_no': '5', 'bill_date': day + timedelta(days=9), 'pending_amt': D('-7'),
+              'overdue_days': 9}]                                                              # Cr: on account
     s = R.dealer_summary(d, bills, [], [])
-    assert s['overdue'] == [{'days': 4, 'amount': D('35')}, {'days': 2, 'amount': D('10')}]
+    # the ₹7 credit settles the oldest bill (ref 2) first, whatever its own date
+    assert s['overdue'] == [{'days': 4, 'amount': D('28')}, {'days': 2, 'amount': D('10')}]
+    assert s['overdue_os'] == D('38')
     assert R.dealer_summary(d, [], [], [])['overdue'] == []
+
+
+def test_credits_settle_oldest_bills_first():
+    """Sasthi Plywood: ₹50,000 on account (receipt 4637, not allocated in Tally) pays INV-6 down
+    to ₹8,050; nothing else changes and what is left adds up to the party's balance."""
+    d = {'dealer_id': 'D1', 'dealer_name': 'Sasthi Plywood'}
+    today = date(2026, 11, 18)
+    inv = [('26-27-EB-INV-6', date(2026, 9, 10), '58050'), ('26-27-EB-INV-30', date(2026, 9, 18), '23128'),
+           ('26-27-EB-INV-60', date(2026, 10, 7), '11399'), ('26-27-EB-INV-69', date(2026, 10, 9), '4375'),
+           ('26-27-EB-INV-89', date(2026, 10, 17), '7643')]
+    bills = [{'kind': 'invoice', 'ref_no': r, 'bill_date': bd, 'due_on': bd, 'pending_amt': D(a)} for r, bd, a in inv]
+    bills.append({'kind': 'receipt', 'ref_no': '4637', 'bill_date': date(2026, 10, 21), 'due_on': date(2026, 10, 21),
+                  'pending_amt': D('-50000')})
+    bills = R.age_bills(bills, today)
+    left = {b['ref_no']: b['left'] for b in R.settle_oldest_first(bills)}
+    assert left['26-27-EB-INV-6'] == D('8050') and left['26-27-EB-INV-30'] == D('23128')
+    assert sum(left.values()) == D('54595') and '4637' not in left
+    s = R.dealer_summary(d, bills, [], [])
+    assert s['tally_os'] == D('54595') and s['overdue_os'] == D('54595')
+    assert s['oldest_overdue_days'] == 69
+    assert s['overdue'][0] == {'days': 69, 'amount': D('8050')}
+    assert sum(o['amount'] for o in s['overdue']) == D('54595')
+    # a credit larger than the oldest bill runs on into the next ones
+    bills[-1] = {**bills[-1], 'pending_amt': D('-60000')}
+    s = R.dealer_summary(d, bills, [], [])
+    assert s['oldest_overdue_days'] == 61 and s['overdue'][0] == {'days': 61, 'amount': D('21178')}
 
 
 def test_cleared_cheques_not_in_tally():
