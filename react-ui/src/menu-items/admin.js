@@ -1,4 +1,4 @@
-import { IconSettings, IconUpload, IconFileSpreadsheet, IconDiscount2 } from '@tabler/icons';
+import { IconSettings, IconFileSpreadsheet, IconDiscount2 } from '@tabler/icons';
 
 const adminMenu = {
     id: 'admin',
@@ -36,16 +36,6 @@ const adminMenu = {
         },
         // TAT Check's three files (inventory, dispatch & pending, GRN) are uploaded on the
         // TAT Check page itself.
-        // Beat Outstanding's outlet -> beat map (views/dms-uploads/DmsFeedUpload.js). Its
-        // daily Beat Plan and Outstanding Report are uploaded on the Beat Outstanding page.
-        {
-            id: 'outlet-master-upload',
-            title: 'Outlet Master Upload',
-            type: 'item',
-            url: '/outlet-master-upload',
-            icon: IconUpload,
-            breadcrumbs: false,
-        },
         // Future admin menu items go here.
     ],
 };

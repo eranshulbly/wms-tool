@@ -6,11 +6,12 @@ import { getFeedStatus, uploadFeed } from '../../services/tatCheckService';
 import { getBeatFeedStatus, uploadBeatFeed } from '../../services/beatOutstandingService';
 import DmsReportLink, { DMS_REPORTS } from '../../ui-component/DmsReportLink';
 
-// The DMS / Tally uploads. Each upload replaces the previous one of the same kind.
+// The DMS / Tally uploads. Each replaces the previous one of the same kind, except the
+// Outlet Master, which is incremental (new outlets added, those in the file updated).
 //   FEEDS       read by TAT Check (views/tat-check/TatCheck.js) — Admin pages, one per file
-//   BEAT_FEEDS  read by Beat Outstanding (views/beat-outstanding/BeatOutstanding.js) — the
-//               Outlet Master has an Admin page; the daily Beat Plan is uploaded on the
-//               Beat Outstanding page itself (UploadRow below). The Tally outstanding
+//   BEAT_FEEDS  read by Beat Outstanding (views/beat-outstanding/BeatOutstanding.js) — both
+//               uploaded on the Beat Outstanding page (UploadRow below), the Outlet Master
+//               by admins only. The Tally outstanding
 //               report is not an upload: it is never stored (see BeatOutstanding.js)
 
 const TAT_API = { getStatus: getFeedStatus, upload: uploadFeed, usedBy: 'TAT Check' };
@@ -103,9 +104,12 @@ export const UploadRow = ({ def, statuses, onUploaded }) => {
         .join(', ');
       const warn = res.result.warning_count ? ` · ${res.result.warning_count} warning(s)` : '';
       const whose = res.result.distributor ? ` for ${res.result.distributor}` : '';
+      const mg = res.result.merge;
       setMsg({
         type: 'success',
-        text: `Loaded ${counts}${whose}${warn}. Previous upload replaced.`,
+        text: mg
+          ? `Loaded ${counts}${warn}: ${nf.format(mg.added)} new, ${nf.format(mg.updated)} updated; ${nf.format(mg.kept)} not in this file kept — ${nf.format(mg.total)} outlets stored.`
+          : `Loaded ${counts}${whose}${warn}. Previous upload replaced.`,
         warnings: res.result.warnings || [],
       });
       setFile(null);

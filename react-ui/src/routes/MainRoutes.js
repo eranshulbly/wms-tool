@@ -38,7 +38,6 @@ const AdminControls = Loadable(lazy(() => import('../views/admin/AdminControls')
 const BuildPo = Loadable(lazy(() => import('../views/po-builder/BuildPo')));
 const PoBuilderMasters = Loadable(lazy(() => import('../views/po-builder/PoBuilderMasters')));
 const TatCheck = Loadable(lazy(() => import('../views/tat-check/TatCheck')));
-const DmsFeedUpload = Loadable(lazy(() => import('../views/dms-uploads/DmsFeedUpload')));
 const BeatOutstanding = Loadable(lazy(() => import('../views/beat-outstanding/BeatOutstanding')));
 const ExecutiveBeats = Loadable(lazy(() => import('../views/beat-outstanding/ExecutiveBeats')));
 
@@ -75,7 +74,6 @@ const MainRoutes = () => {
                 '/admin-controls',
                 '/sku-master-upload',
                 '/scheme-upload',
-                '/outlet-master-upload',
                 '/beat-outstanding',
                 '/beat-outstanding/executive-beats',
                 '/dealer-payments',
@@ -147,17 +145,6 @@ const MainRoutes = () => {
                         )}
                     />
 
-                    {/* Outlet Master Upload — read by Beat Outstanding, admin only */}
-                    <Route
-                        path="/outlet-master-upload"
-                        render={() => (
-                            <AuthGuard>
-                                <AdminGuard>
-                                    <DmsFeedUpload key="outlets" feed="outlets" />
-                                </AdminGuard>
-                            </AuthGuard>
-                        )}
-                    />
                     {/* Beat Outstanding — each executive's dealers' outstanding for the day, admin only */}
                     <Route
                         path="/beat-outstanding/executive-beats"

@@ -21,6 +21,7 @@ import {
   Typography,
 } from '@material-ui/core';
 import { makeStyles } from '@material-ui/styles';
+import { useSelector } from 'react-redux';
 import { IconChevronDown, IconChevronRight, IconDownload, IconFileZip, IconUpload } from '@tabler/icons';
 import { downloadAll, downloadExecutive, downloadUnassigned, getBeatReport, setDayBeats } from '../../services/beatOutstandingService';
 import { readBlobError } from '../../services/orderService';
@@ -29,7 +30,7 @@ import DmsReportLink, { DMS_REPORTS } from '../../ui-component/DmsReportLink';
 
 // Beat Outstanding — a distributor's Tally outstanding split by the beats each sales
 // executive covers on a day, to hand to them as an Excel file. Built from three uploads:
-// the Outlet Master (outlet -> beat; Admin -> Outlet Master Upload) and, on this page,
+// the Outlet Master (outlet -> beat; uploaded on this page by admins, incremental) and,
 // the day's Beat Plan (executive x day -> beats) and the Tally Outstanding Report. Parties the Outlet Master cannot place on one beat are
 // listed separately so none of the outstanding goes unseen.
 
@@ -75,7 +76,9 @@ const Days = ({ days }) => {
   return <span className={days > OVER_30_DAYS ? classes.red : undefined}>{days}</span>;
 };
 
-// The feeds uploaded on this page; the Outlet Master is only shown, from Admin.
+// The feeds uploaded on this page. The Outlet Master is incremental (new outlets added,
+// those in the file updated, the rest kept) and uploaded by admins only; others see when.
+const OUTLETS_FEED = BEAT_FEEDS.find((f) => f.feed === 'outlets');
 const PAGE_FEEDS = BEAT_FEEDS.filter((f) => f.feed !== 'outlets');
 
 // The Tally outstanding report is never stored: the file picked here stays in this browser
@@ -91,11 +94,11 @@ const OutstandingRow = ({ file, loaded, onPick }) => {
           <Typography variant="caption" className={classes.muted} component="div">
             Tally → Bills Receivable
           </Typography>
-          <Typography variant="caption" component="div" style={{ color: '#b91c1c', fontWeight: 600 }}>
-            {loaded
-              ? `Loaded: ${loaded.distributor || loaded.filename}${loaded.report_to ? ` (up to ${loaded.report_to})` : ''} · ${loaded.bill_count} bills · ${money(loaded.total)}`
-              : 'Not loaded — pick it to see amounts. It is not saved: after a reload, pick it again.'}
-          </Typography>
+          {loaded && (
+            <Typography variant="caption" component="div" style={{ color: '#b91c1c', fontWeight: 600 }}>
+              {`Loaded: ${loaded.distributor || loaded.filename}${loaded.report_to ? ` (up to ${loaded.report_to})` : ''} · ${loaded.bill_count} bills · ${money(loaded.total)}`}
+            </Typography>
+          )}
         </Grid>
         <Grid item xs={12} sm={7}>
           <Box display="flex" alignItems="center" style={{ gap: 8 }} flexWrap="wrap">
@@ -129,26 +132,35 @@ const OutstandingRow = ({ file, loaded, onPick }) => {
 
 const FilesPanel = ({ feeds, onUploaded, outstandingFile, outstanding, onPickOutstanding }) => {
   const classes = useStyles();
+  const { user } = useSelector((state) => state.account);
   const master = feeds.find((f) => f.feed === 'outlets');
   const last = master?.last_upload;
   return (
     <Paper variant="outlined" className={classes.section} style={{ padding: 16 }}>
       <Typography variant="subtitle2">Files</Typography>
-      <Box py={1.5} style={{ borderBottom: '1px solid #eef0f3' }}>
-        <Typography variant="subtitle2">Outlet Master</Typography>
-        {last ? (
-          <Typography variant="caption" component="div">
-            <span style={{ color: '#b91c1c', fontWeight: 600 }}>
-              Last Updated: {fmtDateTime(last.uploaded_on)}
-            </span>
-            <span className={classes.muted}> · <DmsReportLink report={DMS_REPORTS.outlets} /> · uploaded in Admin → Outlet Master Upload</span>
-          </Typography>
-        ) : (
-          <Typography variant="caption" className={classes.red} component="div">
-            Not uploaded yet — upload it from Admin → Outlet Master Upload
-          </Typography>
-        )}
-      </Box>
+      {user?.role === 'admin' ? (
+        <UploadRow
+          def={OUTLETS_FEED}
+          statuses={feeds.filter((f) => f.feed === 'outlets')}
+          onUploaded={() => onUploaded('outlets')}
+        />
+      ) : (
+        <Box py={1.5} style={{ borderBottom: '1px solid #eef0f3' }}>
+          <Typography variant="subtitle2">Outlet Master</Typography>
+          {last ? (
+            <Typography variant="caption" component="div">
+              <span style={{ color: '#b91c1c', fontWeight: 600 }}>
+                Last Updated: {fmtDateTime(last.uploaded_on)}
+              </span>
+              <span className={classes.muted}> · <DmsReportLink report={DMS_REPORTS.outlets} /> · uploaded here by an admin</span>
+            </Typography>
+          ) : (
+            <Typography variant="caption" className={classes.red} component="div">
+              Not uploaded yet — an admin uploads it here
+            </Typography>
+          )}
+        </Box>
+      )}
       {PAGE_FEEDS.map((def) => (
         <UploadRow
           key={def.feed}
@@ -426,7 +438,7 @@ const BeatOutstanding = () => {
                 <Typography variant="h5">{dayLabel(rep.plan_date)}</Typography>
                 {!allowed && (
                   <Typography variant="caption" className={classes.red}>
-                    Pick the Tally outstanding report (Files above) to see amounts and download.
+                    Upload Files above to see amounts and download.
                   </Typography>
                 )}
               </Box>

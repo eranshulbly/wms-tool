@@ -57,7 +57,8 @@ _FEED_TABLE = {
 
 def ingest(feed, stream, filename, company_id, user):
     """Parse and load one upload in one transaction — a failure part-way leaves the
-    previous upload in place, never half of this one. Each replaces all its rows. The
+    previous upload in place, never half of this one. The Beat Plan replaces all its rows;
+    the Outlet Master is merged into what is stored (_merge_outlets). The
     Tally outstanding report is refused: it is never stored (see read_outstanding)."""
     if feed == P.FEED_OUTSTANDING:
         raise BeatOutstandingError('The Tally outstanding report is not stored — pick it on the '
@@ -75,16 +76,49 @@ def ingest(feed, stream, filename, company_id, user):
             (company_id, feed, distributor, meta.get('report_to'), (filename or '')[:255],
              len(rows), (user or 'system')[:100]))
         upload_id = cur.lastrowid
-        cur.execute(f'DELETE FROM {table} WHERE company_id = %s', (company_id,))
+        merge = None
+        if feed == P.FEED_OUTLETS:
+            merge = _merge_outlets(cur, company_id, rows)
+        else:
+            cur.execute(f'DELETE FROM {table} WHERE company_id = %s', (company_id,))
         all_cols = ['company_id', 'upload_id'] + cols
         cur.executemany(
             f'INSERT INTO {table} ({", ".join(all_cols)}) '
             f'VALUES ({", ".join(["%s"] * len(all_cols))})',
             [(company_id, upload_id, *[r[c] for c in cols]) for r in rows])
+        if merge is not None:
+            cur.execute(f'SELECT COUNT(*) AS n FROM {table} WHERE company_id = %s', (company_id,))
+            merge['total'] = cur.fetchone()['n']
     out = {'feed': feed, 'label': P.FEED_LABELS[feed], 'filename': filename,
            'counts': {key: len(rows)}, 'warnings': warnings[:50],
            'warning_count': len(warnings)}
+    if merge is not None:
+        out['merge'] = merge
     return out
+
+
+def _outlet_key(r):
+    """An outlet is the same outlet across uploads by its DMS Outlet_Id; one without an id
+    by its name."""
+    return ('id', r['outlet_id']) if r['outlet_id'] else ('name', r['name_key'])
+
+
+def _merge_outlets(cur, company_id, rows):
+    """The Outlet Master is incremental: the outlets in the file replace their stored rows
+    (a changed beat, name or city is updated), new ones are added, and outlets not in the
+    file are kept. Deletes the rows being replaced; the caller inserts the file's rows.
+    {'added', 'updated', 'kept'}."""
+    cur.execute('SELECT id, outlet_id, name_key FROM bo_outlet WHERE company_id = %s FOR UPDATE',
+                (company_id,))
+    stored = list(cur.fetchall())
+    incoming = {_outlet_key(r) for r in rows}
+    drop = [s['id'] for s in stored if _outlet_key(s) in incoming]
+    for i in range(0, len(drop), 1000):
+        chunk = drop[i:i + 1000]
+        cur.execute(f'DELETE FROM bo_outlet WHERE id IN ({", ".join(["%s"] * len(chunk))})', chunk)
+    updated = len(incoming & {_outlet_key(s) for s in stored})
+    return {'added': len(incoming) - updated, 'updated': updated,
+            'kept': len({_outlet_key(s) for s in stored} - incoming)}
 
 
 def feed_status(company_id):
