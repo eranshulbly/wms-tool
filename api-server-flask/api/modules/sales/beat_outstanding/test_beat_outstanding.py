@@ -266,3 +266,13 @@ def test_tally_town_is_the_last_part_of_the_party_name():
     tables, _, _ = P.parse(P.FEED_OUTSTANDING, buf, 'os.xlsx')
     assert [(b['name_key'], b['town']) for b in tables['bills']] == \
         [('HINDUSTAN TRADERS', 'Rampur'), ('ANAND ENTERPRISES', '')]
+
+
+def test_outlet_alias_places_a_party_whose_name_differs_in_dms():
+    outlets = [_o('M/S MOHAN HARDWARE STORE', '5', 'Anmol_Sambhal', 'Chandausi')]
+    placed, unplaced = R.place_parties([_b('Mohan Hardware', 100, town='Chandausi')], outlets)
+    assert placed[P.name_key('Mohan Hardware')]['beat_name'] == 'Anmol_Sambhal' and not unplaced
+    # once DMS has the Tally name, the exact match is used
+    outlets.append(_o('Mohan Hardware', '6', 'Anmol_Amroha', 'Chandausi'))
+    placed, _ = R.place_parties([_b('Mohan Hardware', 100)], outlets)
+    assert placed[P.name_key('Mohan Hardware')]['beat_name'] == 'Anmol_Amroha'

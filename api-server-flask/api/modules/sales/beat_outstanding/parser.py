@@ -97,6 +97,18 @@ def gstin_key(v):
     return re.sub(r'[^0-9A-Z]', '', _s(v).upper())
 
 
+# Stop-gap until the names are fixed in DMS / Tally: a Tally party's name_key -> the
+# name_key of its outlet in the Outlet Master. Used only when the party's own name is no
+# outlet's (rules.place_parties, dealer_payments.beats.assign), so once a name is fixed
+# the entry is simply unused. Remove an entry when its name is fixed.
+OUTLET_ALIASES = {
+    'MOHAN HARDWARE': 'MOHAN HARDWARE STORE',                         # outlet 5500, Chandausi
+    'ANSHU PLYWOOD STORE': 'ANSHU PLY WOOD STORE',                    # outlet 5299, Bazpur
+    'AGGARWAL MATAL AND HARDWARE': 'AGGARWAL MATAL AND HARDWARE STOR',  # outlet 5698, Meerut
+    'MAP V HOME INTERIROS': 'MAP V HOME INTERIORS',                   # outlet 6343, Kashipur
+}
+
+
 def _table(data, filename):
     """Header and rows of a single-table export (.csv, or the first sheet of an .xlsx)."""
     name = (filename or '').lower()

@@ -17,7 +17,7 @@ one dealer's dues to another executive.
 
 from collections import defaultdict
 
-from api.modules.sales.beat_outstanding.parser import name_key
+from api.modules.sales.beat_outstanding.parser import OUTLET_ALIASES, name_key
 
 BY_NAME, BY_TOWN = 'name', 'town'
 WHY_NOT_IN_MASTER = 'Not in the Outlet Master, and its town is not a city there'
@@ -64,7 +64,8 @@ def assign(dealers, outlets, exec_beats):
     for d in dealers:
         town = name_key(d.get('town'))
         found = {}
-        for k in _names(d):
+        names = _names(d)
+        for k in names + [OUTLET_ALIASES[k] for k in names if k in OUTLET_ALIASES]:
             found = on_beats.get(k) or {}
             if found:
                 break

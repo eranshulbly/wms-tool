@@ -709,3 +709,14 @@ def test_outstanding_xlsx_only_ids_heading_and_notes():
                                    bounced_cheques={}, cheques_note='n', today=date(2026, 11, 19), only_ids=set())
     cells = [c for r in openpyxl.load_workbook(io.BytesIO(empty)).active.iter_rows(values_only=True) for c in r if c]
     assert 'No dealer with outstanding.' in cells
+
+
+def test_beats_assign_uses_the_outlet_alias():
+    from api.modules.sales.dealer_payments import beats as B
+    placed, unassigned = B.assign(
+        [{'dealer_id': 'D1', 'dealer_name': 'Mohan Hardware', 'tally_ledger_name': 'Mohan Hardware | Ebco | Chandausi',
+          'town': 'Chandausi'}],
+        [{'outlet_name': 'M/S MOHAN HARDWARE STORE', 'beat_id': '5', 'beat_name': 'Anmol_Sambhal', 'city': 'Chandausi'},
+         {'outlet_name': 'OTHER', 'beat_id': '6', 'beat_name': 'Anmol_Meerut', 'city': 'Chandausi'}],
+        [{'se_name': 'Kamlesh', 'beat_name': 'Anmol_Sambhal'}, {'se_name': 'Nitesh', 'beat_name': 'Anmol_Meerut'}])
+    assert placed['D1'] == {'executives': ['Kamlesh'], 'beat_name': 'Anmol_Sambhal', 'how': B.BY_NAME} and not unassigned
