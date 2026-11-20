@@ -144,7 +144,8 @@ const Launcher = () => {
             icon: IconCurrencyRupee,
             color: theme.palette.success.dark,
             tint: theme.palette.success.light,
-            path: '/dealer-payments',
+            // Opens on Outstanding, the first page in the Dealer Payments menu.
+            path: '/dealer-payments/outstanding',
             // Admin only, as the backend (sales/dealer_payments/router.py).
             show: isAdmin
         }
