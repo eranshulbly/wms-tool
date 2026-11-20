@@ -17,6 +17,9 @@ their own.
   5. A dealer no executive covers — its beat is in nobody's Executive Beats, or it could
      not be placed on a beat at all (rule 1) — goes on the unassigned list, so its
      outstanding still reaches someone.
+  6. A party's credits (Cr lines) are set against its oldest bills first (settled), so each
+     bill shows only what is still unpaid of it; a bill paid off and a used-up credit are
+     not listed.
 
 Parties that cannot be placed are returned too (`unplaced`), with the reason, so no
 outstanding silently drops out of what is handed to the field.
@@ -96,6 +99,29 @@ def settle_oldest_first(bills):
     return out
 
 
+def settled(bills):
+    """One party's bills as they stand once its Cr lines (on-account receipts, credit notes)
+    are set against its Dr bills, both oldest first by bill date then reference: each line's
+    `amount` is what is left of it, and a line with nothing left is dropped. A credit larger
+    than the bills stays, as what is left of the newest credits. The total is unchanged;
+    Opening, Due on and days are Tally's. Order kept."""
+    def key(b):
+        return (b['bill_date'], str(b['ref_no']))
+    out = [dict(b) for b in bills]
+    drs = sorted((b for b in out if b['amount'] > 0), key=key)
+    i = 0
+    for c in sorted((b for b in out if b['amount'] < 0), key=key):
+        left = -c['amount']
+        while left > 0.005 and i < len(drs):
+            used = min(left, drs[i]['amount'])
+            drs[i]['amount'] = round(drs[i]['amount'] - used, 2)
+            left = round(left - used, 2)
+            if drs[i]['amount'] <= 0:
+                i += 1
+        c['amount'] = -left
+    return [b for b in out if abs(b['amount']) >= 0.005]
+
+
 def _max_days_overdue(bills):
     """Days overdue of the oldest bill still unpaid once credits are set against the oldest
     bills (settle_oldest_first); None when nothing is left to pay. A credit's own age is not
@@ -128,7 +154,8 @@ def dealers_on(beat_ids, bills, placed, today):
         d['amount'] = round(d['amount'] + float(b['amount']), 2)
     out = list(dealers.values())
     for d in out:
-        d['bills'].sort(key=lambda x: x['due_on'])
+        # each bill as it stands once the party's credits are set against the oldest bills
+        d['bills'] = settled(sorted(d['bills'], key=lambda x: x['due_on']))
         d['bill_count'] = len(d['bills'])
         d['max_days_overdue'] = _max_days_overdue(d['bills'])
     out.sort(key=lambda d: (-(d['max_days_overdue'] if d['max_days_overdue'] is not None else -1),
@@ -206,7 +233,8 @@ def unassigned_dealers(bills, placed, unplaced, owned_beat_ids, today):
         d['amount'] = round(d['amount'] + float(b['amount']), 2)
     out = list(dealers.values())
     for d in out:
-        d['bills'].sort(key=lambda x: x['due_on'])
+        # each bill as it stands once the party's credits are set against the oldest bills
+        d['bills'] = settled(sorted(d['bills'], key=lambda x: x['due_on']))
         d['bill_count'] = len(d['bills'])
         d['max_days_overdue'] = _max_days_overdue(d['bills'])
     out.sort(key=lambda d: d['party_name'].lower())

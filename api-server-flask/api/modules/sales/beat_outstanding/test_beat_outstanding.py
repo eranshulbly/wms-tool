@@ -276,3 +276,26 @@ def test_outlet_alias_places_a_party_whose_name_differs_in_dms():
     outlets.append(_o('Mohan Hardware', '6', 'Anmol_Amroha', 'Chandausi'))
     placed, _ = R.place_parties([_b('Mohan Hardware', 100)], outlets)
     assert placed[P.name_key('Mohan Hardware')]['beat_name'] == 'Anmol_Amroha'
+
+
+def test_dealer_bills_take_credits_off_the_oldest_bills():
+    # Maha Maya, Ebco 18-Nov: the 164.50 credit note clears INV-28 and 0.50 of INV-90.
+    def b(ref, d, amt):
+        return {'name_key': 'MAHA', 'party_name': 'Maha Maya', 'ref_no': ref, 'bill_date': d,
+                'due_on': d, 'amount': amt}
+    bills = [b('INV-28', date(2026, 9, 18), 164.0), b('INV-90', date(2026, 10, 19), 24922.0),
+             b('CN-014', date(2026, 10, 19), -164.5), b('INV-106', date(2026, 10, 21), 10998.0)]
+    placed = {'MAHA': {'beat_id': '1', 'beat_name': 'Rudrapur', 'city': 'Rudrapur'}}
+    [d] = R.dealers_on(['1'], bills, placed, date(2026, 11, 20))
+    assert [(x['ref_no'], x['amount']) for x in d['bills']] == [('INV-90', 24921.5), ('INV-106', 10998.0)]
+    assert d['amount'] == 35919.5 and d['bill_count'] == 2
+    assert d['max_days_overdue'] == 32
+    [u] = R.unassigned_dealers(bills, {}, [], set(), date(2026, 11, 20))
+    assert [x['ref_no'] for x in u['bills']] == ['INV-90', 'INV-106']
+
+
+def test_settled_keeps_the_newest_credit_left_over():
+    rows = [{'ref_no': 'A', 'bill_date': date(2026, 9, 1), 'amount': 100.0},
+            {'ref_no': 'R1', 'bill_date': date(2026, 9, 5), 'amount': -80.0},
+            {'ref_no': 'R2', 'bill_date': date(2026, 9, 9), 'amount': -50.0}]
+    assert [(x['ref_no'], x['amount']) for x in R.settled(rows)] == [('R2', -30.0)]

@@ -98,7 +98,9 @@ def build_outstanding_xlsx(*, as_of, dealers, bills, payments, cheques, bounced_
     grand = {'pending': R.ZERO, 'received': R.ZERO, 'pdc': R.ZERO}
     for d in shown:
         s = summaries[d['dealer_id']]
-        dbills = bills_by.get(d['dealer_id'], [])
+        # Each bill as it stands once the dealer's credits are set against the oldest bills
+        # first (settled_lines): a bill a credit paid off, and a used-up credit, are not listed.
+        dbills = R.settled_lines(bills_by.get(d['dealer_id'], []))
         ws.cell(row=row, column=3, value=d['tally_ledger_name']).font = BOLD
         if party_notes and party_notes.get(d['dealer_id']):
             ws.cell(row=row, column=11, value=party_notes[d['dealer_id']]).font = Font(italic=True, color='7A869A')

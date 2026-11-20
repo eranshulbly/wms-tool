@@ -419,6 +419,29 @@ def settle_oldest_first(dbills, received=ZERO):
     return out
 
 
+def settled_lines(dbills):
+    """One dealer's Tally lines as they stand once its Cr lines (on-account receipts, credit
+    notes) are set against its Dr bills, both oldest first by bill date then reference: each
+    line's `pending_amt` is what is left of it, and a line with nothing left is dropped. A
+    credit larger than the bills stays, as what is left of the newest credits. The total is
+    unchanged; Opening, Due on and Overdue days are Tally's. Order kept."""
+    def key(b):
+        return (b.get('bill_date') or date.max, str(b.get('ref_no') or ''))
+    out = [dict(b) for b in dbills]
+    drs = sorted((b for b in out if b['pending_amt'] > 0), key=key)
+    i = 0
+    for c in sorted((b for b in out if b['pending_amt'] < 0), key=key):
+        left = -c['pending_amt']
+        while left > 0 and i < len(drs):
+            used = min(left, drs[i]['pending_amt'])
+            drs[i]['pending_amt'] -= used
+            left -= used
+            if drs[i]['pending_amt'] <= 0:
+                i += 1
+        c['pending_amt'] = -left
+    return [b for b in out if b['pending_amt'] != 0]
+
+
 def overdue_os(dbills, received):
     """(overdue part of Effective O/S, next due date) for one dealer's bills, due dates counted
     to today (age_bills). Payments not in Tally and credit balances (Cr bills: on-account

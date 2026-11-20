@@ -445,7 +445,7 @@ def test_pdcs_to_deposit_are_today_and_tomorrow():
 
 # ── the Outstanding download ──────────────────────────────────────────────────
 
-def test_outstanding_download_matches_tally_and_lists_every_bill(export1, master, ids):
+def test_outstanding_download_matches_tally_and_lists_bills_after_credits(export1, master, ids):
     from api.modules.sales.dealer_payments.exports import build_outstanding_xlsx
     bills = _with_ids(export1['bills'], ids)
     kunj = _dealer(master, 'Kunj')
@@ -461,7 +461,13 @@ def test_outstanding_download_matches_tally_and_lists_every_bill(export1, master
     grand = next(r for r in rows if r[2] == 'Grand Total')
     assert round(grand[5], 2) == 5195763 and grand[6] == 1000 and grand[7] == 500
     bill_rows = [r for r in rows if r[1] and r[1] != 'Ref. No.']
-    assert len(bill_rows) == len(bills) and all(r[6] is None and r[7] is None for r in bill_rows)
+    # each dealer's lines once its credits are set against its oldest bills (settled_lines)
+    by = {}
+    for b in bills:
+        by.setdefault(b['dealer_id'], []).append(b)
+    settled = [x for v in by.values() for x in R.settled_lines(v)]
+    assert len(settled) < len(bills)
+    assert len(bill_rows) == len(settled) and all(r[6] is None and r[7] is None for r in bill_rows)
     assert round(sum(r[5] for r in bill_rows), 2) == 5195763
     # Kunj: received and PDC sit beside Tally O/S on the party's total row
     i = next(n for n, r in enumerate(rows) if r[2] == kunj['tally_ledger_name'])
@@ -720,3 +726,27 @@ def test_beats_assign_uses_the_outlet_alias():
          {'outlet_name': 'OTHER', 'beat_id': '6', 'beat_name': 'Anmol_Meerut', 'city': 'Chandausi'}],
         [{'se_name': 'Kamlesh', 'beat_name': 'Anmol_Sambhal'}, {'se_name': 'Nitesh', 'beat_name': 'Anmol_Meerut'}])
     assert placed['D1'] == {'executives': ['Kamlesh'], 'beat_name': 'Anmol_Sambhal', 'how': B.BY_NAME} and not unassigned
+
+
+def test_settled_lines_take_credits_off_the_oldest_bills():
+    # Maha Maya, Ebco 18-Nov: the 164.50 credit note clears INV-28 and 0.50 of INV-90.
+    bills = [
+        {'ref_no': '26-27-EB-INV-28', 'bill_date': date(2026, 9, 18), 'pending_amt': D('164.00')},
+        {'ref_no': '26-27-EB-INV-90', 'bill_date': date(2026, 10, 19), 'pending_amt': D('24922.00')},
+        {'ref_no': '26-27/EBVCN/014', 'bill_date': date(2026, 10, 19), 'pending_amt': D('-164.50')},
+        {'ref_no': '26-27-EB-INV-106', 'bill_date': date(2026, 10, 21), 'pending_amt': D('10998.00')},
+    ]
+    out = R.settled_lines(bills)
+    assert [(b['ref_no'], b['pending_amt']) for b in out] == [
+        ('26-27-EB-INV-90', D('24921.50')), ('26-27-EB-INV-106', D('10998.00'))]
+    assert sum(b['pending_amt'] for b in out) == sum(b['pending_amt'] for b in bills)
+    assert bills[0]['pending_amt'] == D('164.00')  # input not changed
+
+
+def test_settled_lines_keep_the_newest_credit_left_over():
+    bills = [
+        {'ref_no': 'A', 'bill_date': date(2026, 9, 1), 'pending_amt': D('100')},
+        {'ref_no': 'R1', 'bill_date': date(2026, 9, 5), 'pending_amt': D('-80')},
+        {'ref_no': 'R2', 'bill_date': date(2026, 9, 9), 'pending_amt': D('-50')},
+    ]
+    assert [(b['ref_no'], b['pending_amt']) for b in R.settled_lines(bills)] == [('R2', D('-30'))]
