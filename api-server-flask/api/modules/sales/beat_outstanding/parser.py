@@ -75,12 +75,20 @@ def name_key(name):
     """A party/outlet name reduced to what identifies it, so Tally's ledger name and the
     DMS outlet name meet: 'M/S UPKAR  HARDWARE  STORE' and 'M/s Upkar Hardware Store'
     -> 'UPKAR HARDWARE STORE'. Case, the 'M/S' prefix, '&' vs 'AND', punctuation and
-    repeated spaces are all ignored; nothing else is — no fuzzy matching, because a
-    near-miss would hand one dealer's dues to another beat's executive."""
+    repeated spaces are all ignored, and initials are one word ('V.K.', 'V K' and 'VK'
+    -> 'VK'); nothing else is — no fuzzy matching, because a near-miss would hand one
+    dealer's dues to another beat's executive."""
     s = _s(name).upper().replace('&', ' AND ')
     s = re.sub(r'^\s*M\s*/\s*S\b\.?', '', s)
     s = re.sub(r'[^A-Z0-9]+', ' ', s)
-    return ' '.join(s.split())
+    words = []
+    for w in s.split():
+        # a run of single letters is one word of initials
+        if len(w) == 1 and words and words[-1][1]:
+            words[-1] = (words[-1][0] + w, True)
+        else:
+            words.append((w, len(w) == 1))
+    return ' '.join(w for w, _ in words)
 
 
 def gstin_key(v):
@@ -290,6 +298,8 @@ def parse_outstanding(data, filename):
         bills.append({
             'party_name': party,
             'name_key': name_key(party.split('|')[0]),
+            # 'Name | Ebco | Town': the town settles a name on two beats (rules.place_parties)
+            'town': party.split('|')[-1].strip() if party.count('|') >= 2 else '',
             'bill_date': bill_date,
             'ref_no': ref,
             'amount': round(amount, 2),

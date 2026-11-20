@@ -209,9 +209,12 @@ def save_exec_beats(company_id, rows, user):
 # ── report ───────────────────────────────────────────────────────────────────
 
 def _load(company_id):
-    return mysql_manager.execute_query(
-        'SELECT outlet_name, name_key, beat_id, beat_name, city FROM bo_outlet '
+    # name_key from the outlet name now, not the one stored at upload, so a change to
+    # parser.name_key applies without uploading the Outlet Master again
+    rows = mysql_manager.execute_query(
+        'SELECT outlet_name, beat_id, beat_name, city FROM bo_outlet '
         'WHERE company_id = %s', (company_id,)) or []
+    return [{**r, 'name_key': P.name_key(r['outlet_name'])} for r in rows]
 
 
 def read_outstanding(stream, filename):

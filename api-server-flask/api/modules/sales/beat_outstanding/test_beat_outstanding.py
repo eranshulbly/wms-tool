@@ -15,9 +15,9 @@ def _o(name, beat_id, beat_name='B', city=''):
             'beat_name': beat_name, 'city': city}
 
 
-def _b(party, amount, due=date(2026, 9, 14), ref='INV-1'):
+def _b(party, amount, due=date(2026, 9, 14), ref='INV-1', town=''):
     return {'party_name': party, 'name_key': P.name_key(party), 'bill_date': due,
-            'ref_no': ref, 'amount': amount, 'due_on': due}
+            'ref_no': ref, 'amount': amount, 'due_on': due, 'town': town}
 
 
 def test_name_key_ignores_prefix_case_ampersand_and_spacing():
@@ -235,3 +235,34 @@ def test_outlet_master_keeps_the_gstin_without_the_dms_quote():
            + '"2","5250","No GST Store","Active","Anmol Associates","","1376","Anmol_Aligarh","Aligarh"\n').encode()
     tables, _, _ = P.parse(P.FEED_OUTLETS, io.BytesIO(csv), 'outlets.csv')
     assert [o['gstin'] for o in tables['outlets']] == ['09AOLPA4280M2ZL', '']
+
+
+def test_name_key_joins_initials():
+    assert P.name_key('M/S V.K. GLASS STORE') == P.name_key('VK Glass Store') == 'VK GLASS STORE'
+    assert P.name_key('M/S S.K. ENTERPRISES') == P.name_key('S K Enterprises') == 'SK ENTERPRISES'
+    assert P.name_key('A ONE TRADERS') == 'A ONE TRADERS'          # one letter alone stays a word
+    assert P.name_key('R.K. & SONS') == 'RK AND SONS'
+
+
+def test_name_on_two_beats_is_settled_by_the_tally_town():
+    outlets = [_o('M/S HINDUSTAN TRADERS', '1', 'Anmol_RAMPUR', 'Rampur'),
+               _o('M/S HINDUSTAN TRADERS', '2', 'Anmol_BAREILLY', 'Bijnor')]
+    placed, unplaced = R.place_parties([_b('Hindustan Traders', 100, town='Rampur')], outlets)
+    assert placed[P.name_key('Hindustan Traders')]['beat_name'] == 'Anmol_RAMPUR' and not unplaced
+    # a town neither outlet is in, or no town, is still not guessed
+    for town in ('Lucknow', ''):
+        placed, unplaced = R.place_parties([_b('Hindustan Traders', 100, town=town)], outlets)
+        assert not placed and unplaced[0]['reason'] == R.REASON_AMBIGUOUS
+
+
+def test_tally_town_is_the_last_part_of_the_party_name():
+    buf = _tally([
+        ['Dist'], ['Date', 'Ref. No.', "Party's Name", 'Pending', 'Due on'],
+        [None, '', 'Hindustan Traders | Ebco | Rampur', None, None],
+        [date(2026, 9, 14), 'R1', '', 10, date(2026, 9, 14)],
+        [None, '', 'Anand Enterprises', None, None],
+        [date(2026, 9, 14), 'R2', '', 5, date(2026, 9, 14)],
+    ])
+    tables, _, _ = P.parse(P.FEED_OUTSTANDING, buf, 'os.xlsx')
+    assert [(b['name_key'], b['town']) for b in tables['bills']] == \
+        [('HINDUSTAN TRADERS', 'Rampur'), ('ANAND ENTERPRISES', '')]

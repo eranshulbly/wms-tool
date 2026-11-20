@@ -4,8 +4,9 @@ their own.
 
   1. A Tally party is placed on a beat when its name (parser.name_key) is the name of
      exactly one beat in the Outlet Master. A name on two beats (two shops with one name
-     in different towns) is ambiguous and placed on neither — guessing would send one
-     dealer's dues to the wrong executive.
+     in different towns) is settled by the party's Tally town ('Name | Ebco | Town') when
+     exactly one of those outlets is in that city; otherwise it is ambiguous and placed on
+     neither — guessing would send one dealer's dues to the wrong executive.
   2. An executive's dealers on a date are the placed parties on the beats the beat plan
      gives them that date.
   3. Days overdue are counted from the bill's due date to `today`, not taken from the
@@ -22,6 +23,8 @@ outstanding silently drops out of what is handed to the field.
 """
 
 from collections import defaultdict
+
+from api.modules.sales.beat_outstanding.parser import name_key
 
 REASON_NOT_IN_MASTER = 'Not in the Outlet Master'
 REASON_NO_BEAT = 'In the Outlet Master but on no beat'
@@ -46,6 +49,10 @@ def place_parties(bills, outlets):
     placed, unplaced = {}, []
     for key, party in _parties(bills).items():
         found = beats.get(key) or {}
+        town = name_key(party.get('town'))
+        if len(found) > 1 and town:
+            in_town = {i: o for i, o in found.items() if name_key(o.get('city')) == town}
+            found = in_town if len(in_town) == 1 else found
         if len(found) == 1:
             o = next(iter(found.values()))
             placed[key] = {'beat_id': o['beat_id'], 'beat_name': o['beat_name'],
@@ -68,6 +75,7 @@ def _parties(bills):
     for b in bills:
         p = out.setdefault(b['name_key'], {'party_name': b['party_name'], 'name_key': b['name_key'],
                                            'distributor': b.get('distributor') or '',
+                                           'town': b.get('town') or '',
                                            'bill_count': 0, 'amount': 0.0})
         p['bill_count'] += 1
         p['amount'] = round(p['amount'] + float(b['amount']), 2)
