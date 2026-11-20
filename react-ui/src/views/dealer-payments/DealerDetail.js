@@ -81,20 +81,19 @@ const PAY_COLOR = { OPEN: 'warning', POSTED: 'success', CANCELLED: 'default', BO
 const KIND = {
   invoice: 'Invoice', bounce: 'Bounced receipt', credit_note: 'Credit note', receipt: 'Receipt (on account)', other: 'Other'
 };
-// The dealer's action (sales/dealer_payments/rules.py action_for). NOT DUE: money is owed but
-// no bill is past its due date yet; `wait_till` is then the next due date.
-export const ACTION_COLOR = { CHASE: 'error', WAIT: 'warning', NOT_DUE: 'info', CLEAR: 'success' };
+// The dealer's action (sales/dealer_payments/rules.py action_for). NOT DUE (money owed, no bill
+// past its due date yet) is not shown: such a dealer has no action chip, only REMIND when due.
+export const ACTION_COLOR = { CHASE: 'error', WAIT: 'warning', CLEAR: 'success' };
 // REMIND (rules.py REMIND_AFTER_DAYS): NOT DUE, but the oldest unpaid bill is 20+ days old.
 export const RemindChip = ({ r }) =>
   r.remind ? (
     <Chip size="small" label={`REMIND · ${r.oldest_bill_age_days} days old`}
       sx={{ ml: 0.5, bgcolor: '#f59e0b', color: '#fff', fontWeight: 600 }} />
   ) : null;
-export const actionLabel = (r) => {
-  if (r.action === 'WAIT') return `WAIT till ${fmtDate(r.wait_till)}`;
-  if (r.action === 'NOT_DUE') return r.wait_till ? `NOT DUE till ${fmtDate(r.wait_till)}` : 'NOT DUE';
-  return r.action;
-};
+export const actionLabel = (r) => (r.action === 'WAIT' ? `WAIT till ${fmtDate(r.wait_till)}` : r.action);
+// The action chip; none for NOT DUE (or no action).
+export const ActionChip = ({ r }) =>
+  r.action && r.action !== 'NOT_DUE' ? <Chip size="small" color={ACTION_COLOR[r.action]} label={actionLabel(r)} /> : null;
 const H = { fontWeight: 600, whiteSpace: 'nowrap' };
 
 const Section = ({ title, count, children }) => (
@@ -201,8 +200,9 @@ const DealerDetail = ({ dealerId }) => {
           <Stat label="Overdue (amount · days)" value={<OverdueList overdue={s.overdue} />} />
           <Grid item xs={6} sm={4} md={2}>
             <Typography variant="caption" color="textSecondary" component="div">Action</Typography>
-            <Chip size="small" color={ACTION_COLOR[s.action]} label={actionLabel(s)} />
+            <ActionChip r={s} />
             <RemindChip r={s} />
+            {s.action === 'NOT_DUE' && !s.remind && '—'}
           </Grid>
         </Grid>
       </Paper>

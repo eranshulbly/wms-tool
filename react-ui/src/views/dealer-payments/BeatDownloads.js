@@ -3,7 +3,6 @@ import {
   Alert,
   Box,
   Button,
-  Chip,
   CircularProgress,
   Collapse,
   IconButton,
@@ -16,7 +15,7 @@ import {
 } from '@material-ui/core';
 import { IconChevronDown, IconChevronRight, IconDownload } from '@tabler/icons';
 import { downloadBeatFile, errMsg, getBeats } from '../../services/dealerPaymentsService';
-import { ACTION_COLOR, actionLabel, RemindChip } from './DealerDetail';
+import { ActionChip, RemindChip } from './DealerDetail';
 
 // Beat-wise: the Outstanding file cut per sales executive, by the beats each owns in
 // Dealer Payments → Executive Beats. A dealer is placed on a beat by its name in the DMS
@@ -49,7 +48,7 @@ const Dealers = ({ items, noteHead }) => (
           <TableCell align="right" sx={{ ...NUM, fontWeight: 600 }}>{inr(d.effective_os)}</TableCell>
           <TableCell align="right">{d.oldest_overdue_days > 0 ? d.oldest_overdue_days : '—'}</TableCell>
           <TableCell sx={NUM}>
-            {d.action && <Chip size="small" color={ACTION_COLOR[d.action]} label={actionLabel(d)} />}
+            <ActionChip r={d} />
             <RemindChip r={d} />
           </TableCell>
           <TableCell><Typography variant="caption" color="textSecondary">{d.note}</Typography></TableCell>

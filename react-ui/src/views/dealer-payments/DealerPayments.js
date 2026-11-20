@@ -36,7 +36,7 @@ import {
 } from '../../services/dealerPaymentsService';
 import PaymentForm from './PaymentForm';
 import DealerDetail, {
-  ACTION_COLOR, actionLabel, RemindChip, ChequeStatusChip, CHEQUE_STATUS, countedIn, OverdueList, pdcs, Received
+  ActionChip, RemindChip, ChequeStatusChip, CHEQUE_STATUS, countedIn, OverdueList, pdcs, Received
 } from './DealerDetail';
 
 // The daily dealer screen (spec 4): who to chase, who to wait for (PDC), who is not due yet,
@@ -362,8 +362,8 @@ const DealerPayments = () => {
                 <TextField {...FILTER_INPUT} select value={filters.action} onChange={setFilter('action')}
                   SelectProps={{ displayEmpty: true }}>
                   <MenuItem value="">All</MenuItem>
-                  {['CHASE', 'WAIT', 'NOT_DUE', 'CLEAR'].map((a) => (
-                    <MenuItem key={a} value={a}>{a.replace('_', ' ')}</MenuItem>
+                  {['CHASE', 'WAIT', 'CLEAR'].map((a) => (
+                    <MenuItem key={a} value={a}>{a}</MenuItem>
                   ))}
                   <MenuItem value="REMIND">REMIND (not due, bill 20+ days old)</MenuItem>
                 </TextField>
@@ -403,7 +403,7 @@ const DealerPayments = () => {
                 <TableCell align="right" sx={{ fontWeight: 600 }}>{inr(r.effective_os)}</TableCell>
                 <TableCell align="right"><OverdueList overdue={r.overdue} /></TableCell>
                 <TableCell>
-                  <Chip size="small" color={ACTION_COLOR[r.action]} label={actionLabel(r)} />
+                  <ActionChip r={r} />
                   <RemindChip r={r} />
                 </TableCell>
               </TableRow>
